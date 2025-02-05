@@ -1,0 +1,8 @@
+.env
+.streamlit/chrome-mac-arm64/
+.streamlit/doorlock-432423-390c2bdfb237.json
+pages/refresh.csv
+content.csv
+cs.sql
+private_files/
+private_embeddings/

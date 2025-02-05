@@ -1,0 +1,251 @@
+import streamlit as st
+import pandas as pd
+import mysql.connector
+from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Set page configuration
+st.set_page_config(page_title="주간업무 뷰어", page_icon="📊", layout="wide")
+
+def connect_to_db():
+    try:
+        connection = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4',
+            collation='utf8mb4_general_ci'
+        )
+        return connection
+    except Exception as e:
+        st.error(f"데이터베이스 연결 오류: {e}")
+        return None
+
+def get_week_dates():
+    today = datetime.now()
+    # 이번주 월요일
+    this_monday = today - timedelta(days=today.weekday())
+    # 지난주 월요일
+    last_monday = this_monday - timedelta(days=7)
+    # 지난주 금요일
+    last_friday = this_monday - timedelta(days=3)
+    
+    # 시간을 00:00:00으로 설정
+    this_monday = this_monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    last_monday = last_monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    last_friday = last_friday.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    return last_monday, last_friday, this_monday
+
+def get_weekly_report():
+    conn = connect_to_db()
+    if not conn:
+        return None
+    
+    last_monday, last_friday, this_monday = get_week_dates()
+    
+    try:
+        # 전주 업무 데이터 가져오기 (daily)
+        last_week_query = """
+        WITH numbered_rows AS (
+            SELECT 담당자,
+                   업무일지,
+                   진행현황,
+                   ROW_NUMBER() OVER (PARTITION BY 담당자 ORDER BY id) as row_num,
+                   일자
+            FROM newbiz_daily
+            WHERE DATE(일자) BETWEEN DATE(%s) AND DATE(%s)
+        )
+        SELECT 담당자,
+               GROUP_CONCAT(
+                   CONCAT(row_num, '. ', IFNULL(업무일지, ''))
+                   ORDER BY 일자, row_num
+                   SEPARATOR '\n'
+               ) as 전주업무,
+               GROUP_CONCAT(
+                   CONCAT(row_num, '. ', IFNULL(진행현황, ''))
+                   ORDER BY 일자, row_num
+                   SEPARATOR '\n'
+               ) as 진행상황
+        FROM numbered_rows
+        GROUP BY 담당자
+        """
+        
+        # 이번주 계획 데이터 가져오기 (weekly)
+        this_week_query = """
+        WITH numbered_rows AS (
+            SELECT 담당자,
+                   금주업무,
+                   완료일정,
+                   비고,
+                   ROW_NUMBER() OVER (PARTITION BY 담당자 ORDER BY id) as row_num
+            FROM newbiz_weekly
+            WHERE DATE(일자) = DATE(%s)
+        )
+        SELECT 담당자,
+               GROUP_CONCAT(
+                   CONCAT(row_num, '. ', IFNULL(금주업무, ''))
+                   ORDER BY row_num
+                   SEPARATOR '\n'
+               ) as 금주업무,
+               GROUP_CONCAT(
+                   CONCAT(row_num, '. ', 
+                         CASE 
+                             WHEN 완료일정 REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}' 
+                             THEN DATE_FORMAT(STR_TO_DATE(LEFT(완료일정, 10), '%Y-%m-%d'), '%Y.%m.%d')
+                             WHEN 완료일정 REGEXP '^[0-9]{4}.[0-9]{2}.[0-9]{2}'
+                             THEN LEFT(완료일정, 10)
+                             ELSE IFNULL(완료일정, '')
+                         END)
+                   ORDER BY row_num
+                   SEPARATOR '\n'
+               ) as 완료일정,
+               GROUP_CONCAT(
+                   CONCAT(row_num, '. ', IFNULL(비고, ''))
+                   ORDER BY row_num
+                   SEPARATOR '\n'
+               ) as 비고
+        FROM numbered_rows
+        GROUP BY 담당자
+        """
+        
+        # 데이터 조회
+        df_last_week = pd.read_sql(last_week_query, conn, params=(last_monday, last_friday))
+        df_this_week = pd.read_sql(this_week_query, conn, params=(this_monday,))
+        
+        # 데이터 병합 전 담당자 컬럼 정리
+        df_last_week['담당자'] = df_last_week['담당자'].str.strip()
+        df_this_week['담당자'] = df_this_week['담당자'].str.strip()
+        
+        # 데이터 병합
+        df_combined = pd.merge(df_last_week, df_this_week, on='담당자', how='outer')
+        
+        return df_combined
+        
+    except Exception as e:
+        st.error(f"데이터 조회 오류: {e}")
+        return None
+    finally:
+        conn.close()
+
+def main():
+    st.title("📊 주간 업무 현황")
+    
+    # 날짜 정보 표시
+    last_monday, last_friday, this_monday = get_week_dates()
+    
+    # 날짜 정보를 더 눈에 띄게 표시
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"📅 전주 업무: {last_monday.strftime('%Y.%m.%d')} ~ {last_friday.strftime('%Y.%m.%d')}")
+    with col2:
+        st.info(f"📅 이번주 계획 (작성일: {this_monday.strftime('%Y.%m.%d')})")
+    
+    # 데이터 가져오기
+    df_report = get_weekly_report()
+    
+    if df_report is not None and not df_report.empty:
+        # 담당자 목록 생성
+        all_담당자 = ['전체'] + sorted(df_report['담당자'].str.strip().unique().tolist())
+        selected_담당자 = st.selectbox('담당자 선택', all_담당자, key='담당자_선택')
+        
+        # 스타일 설정
+        st.markdown("""
+        <style>
+        .streamlit-expanderHeader {
+            background-color: #f0f2f6;
+            color: black;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .custom-textarea {
+            width: 100%;
+            height: 300px;  /* 150px에서 300px로 높이 증가 */
+            padding: 10px;
+            background-color: #f8f9fa;
+            color: black;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            font-size: 14px;
+            resize: none;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+            overflow-y: auto;  /* 세로 스크롤 추가 */
+            max-height: 500px;  /* 최대 높이 설정 */
+        }
+        
+        /* 스크롤바 스타일링 */
+        .custom-textarea::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        .custom-textarea::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        
+        .custom-textarea::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        
+        .custom-textarea::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        # 데이터 컨테이너 생성
+        data_container = st.container()
+        
+        with data_container:
+            # 각 담당자별로 확장 가능한 섹션으로 표시
+            for idx, row in df_report.iterrows():
+                # 선택된 담당자의 데이터만 표시
+                if selected_담당자 == '전체' or row['담당자'].strip() == selected_담당자.strip():
+                    with st.expander(f"📋 {row['담당자']}", expanded=True):
+                        col1, col2, col3, col4, col5 = st.columns([2,1,2,1,1])
+                        
+                        with col1:
+                            st.markdown("**🔹 전주 업무**")
+                            value = str(row['전주업무']) if pd.notna(row['전주업무']) else ""
+                            st.markdown(f"""
+                            <div class="custom-textarea">{value}</div>
+                            """, unsafe_allow_html=True)
+                        
+                        with col2:
+                            st.markdown("**🔸 진행상황**")
+                            value = str(row['진행상황']) if pd.notna(row['진행상황']) else ""
+                            st.markdown(f"""
+                            <div class="custom-textarea">{value}</div>
+                            """, unsafe_allow_html=True)
+                        
+                        with col3:
+                            st.markdown("**📌 금주 업무**")
+                            value = str(row['금주업무']) if pd.notna(row['금주업무']) else ""
+                            st.markdown(f"""
+                            <div class="custom-textarea">{value}</div>
+                            """, unsafe_allow_html=True)
+                        
+                        with col4:
+                            st.markdown("**📅 완료일정**")
+                            value = str(row['완료일정']) if pd.notna(row['완료일정']) else ""
+                            st.markdown(f"""
+                            <div class="custom-textarea">{value}</div>
+                            """, unsafe_allow_html=True)
+                        
+                        with col5:
+                            st.markdown("**📝 비고**")
+                            value = str(row['비고']) if pd.notna(row['비고']) else ""
+                            st.markdown(f"""
+                            <div class="custom-textarea">{value}</div>
+                            """, unsafe_allow_html=True)
+    else:
+        st.warning("📢 표시할 업무 데이터가 없습니다. 데이터를 먼저 입력해주세요.")
+
+if __name__ == "__main__":
+    main()
