@@ -165,13 +165,105 @@ def get_table_data(table_name, search_term=None):
         st.error(f"Error: {err}")
         return []
 
+def create_vote_tables():
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vote_questions (
+                question_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                multiple_choice BOOLEAN DEFAULT FALSE,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                status ENUM('active', 'closed') DEFAULT 'active',
+                created_by VARCHAR(50)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vote_options (
+                option_id INT AUTO_INCREMENT PRIMARY KEY,
+                question_id INT,
+                option_text TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (question_id) REFERENCES vote_questions(question_id)
+                ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vote_responses (
+                response_id INT AUTO_INCREMENT PRIMARY KEY,
+                question_id INT,
+                option_id INT,
+                voter_name VARCHAR(50),
+                reasoning TEXT,
+                voted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (question_id) REFERENCES vote_questions(question_id)
+                ON DELETE CASCADE,
+                FOREIGN KEY (option_id) REFERENCES vote_options(option_id)
+                ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vote_llm_responses (
+                response_id INT AUTO_INCREMENT PRIMARY KEY,
+                question_id INT,
+                option_id INT,
+                llm_model VARCHAR(50),
+                reasoning TEXT,
+                weight INT DEFAULT 1,
+                voted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (question_id) REFERENCES vote_questions(question_id)
+                ON DELETE CASCADE,
+                FOREIGN KEY (option_id) REFERENCES vote_options(option_id)
+                ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        # 기존 테이블에 weight 컬럼 추가 시도
+        try:
+            cursor.execute("""
+                ALTER TABLE vote_llm_responses
+                ADD COLUMN weight INT DEFAULT 1
+            """)
+        except mysql.connector.Error as err:
+            if err.errno == 1060:  # Duplicate column error
+                pass  # 이미 컬럼이 존재하면 무시
+            else:
+                raise err
+
+        # 기존 테이블에 reasoning 컬럼 추가 시도
+        try:
+            cursor.execute("""
+                ALTER TABLE vote_responses
+                ADD COLUMN reasoning TEXT
+            """)
+        except mysql.connector.Error as err:
+            if err.errno == 1060:  # Duplicate column error
+                pass
+            else:
+                raise err
+
+        conn.commit()
+        st.success("투표 시스템 테이블이 성공적으로 생성/수정되었습니다!")
+
+    except mysql.connector.Error as err:
+        st.error(f"테이블 생성/수정 중 오류가 발생했습니다: {err}")
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("DB 테이블 생성/수정/삭제 시스템")
 
     # 작업 선택
     operation = st.radio(
         "수행할 작업을 선택하세요",
-        ["테이블 생성/수정", "테이블 삭제", "테이블 데이터 검색"]
+        ["테이블 생성/수정", "테이블 삭제", "테이블 데이터 검색", "투표 시스템 테이블 생성"]
     )
 
     # 기존 테이블 목록 표시
@@ -225,6 +317,9 @@ def main():
                     st.rerun()
         else:
             st.warning("삭제할 테이블이 없습니다.")
+
+    elif operation == "투표 시스템 테이블 생성":
+        create_vote_tables()
 
     else:  # 테이블 생성/수정
         # 테이블 이름 입력

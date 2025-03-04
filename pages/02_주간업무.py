@@ -49,20 +49,66 @@ cursor = conn.cursor()
 # Create form fields for the user input
 st.subheader("금주 주간 업무 계획만 작성해 주세요.")
 
-# Registered date field (default is current time)
-일자 = st.date_input("일자", value=current_time)
+# 일자와 담당자 입력 후 전주 업무 자동 로드를 위한 함수
+def load_last_week_tasks(일자, 담당자):
+    try:
+        # 전주 월요일 계산
+        selected_date = datetime.strptime(일자.strftime('%Y-%m-%d'), '%Y-%m-%d')
+        last_monday = selected_date - timedelta(days=7)
+        
+        # 전주 데이터 조회 쿼리
+        cursor.execute("""
+            WITH numbered_rows AS (
+                SELECT 금주업무, 완료일정,
+                       ROW_NUMBER() OVER (ORDER BY id) as row_num
+                FROM newbiz_weekly
+                WHERE DATE(일자) = DATE(%s) AND 담당자 = %s
+            )
+            SELECT 
+                GROUP_CONCAT(
+                    CONCAT(row_num, '. ', 
+                           IFNULL(금주업무, ''), 
+                           ' (완료일정: ', 
+                           CASE 
+                               WHEN 완료일정 REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}' 
+                               THEN DATE_FORMAT(STR_TO_DATE(LEFT(완료일정, 10), '%Y-%m-%d'), '%Y.%m.%d')
+                               WHEN 완료일정 REGEXP '^[0-9]{4}.[0-9]{2}.[0-9]{2}'
+                               THEN LEFT(완료일정, 10)
+                               ELSE IFNULL(완료일정, '')
+                           END,
+                           ')')
+                    ORDER BY row_num
+                    SEPARATOR '\n'
+                ) as last_week_summary
+            FROM numbered_rows
+        """, (last_monday, 담당자))
+        
+        result = cursor.fetchone()
+        return result[0] if result and result[0] else ""
+    except Exception as e:
+        st.error(f"전주 업무 로드 중 오류 발생: {e}")
+        return ""
 
-# 담당자 선택
-담당자 = st.selectbox("담당자", ["장창환", "박성범","이상현","기타"])
+# 일자와 담당자 입력 후 전주 업무 자동 로드
+일자 = st.date_input("일자", value=current_time)
+담당자 = st.selectbox("담당자", ["장창환", "박성범","김성현","이상현","기타"])
+
+# 전주 업무 자동 로드
+last_week_tasks = load_last_week_tasks(일자, 담당자)
+
+# 전주업무종합 텍스트 영역에 자동으로 채우기
+전주업무종합 = st.text_area("전주업무종합", 
+                      value=last_week_tasks,
+                      height=200,
+                      help="전주의 금주업무와 완료일정이 자동으로 로드됩니다.")
 
 # 카테고리 
-카테고리 = st.selectbox("카테고리", ["프로젝트", "내부미팅","고객사미팅", "세미나","교육","해외파트너미팅","기타"])
-금주업무 = st.text_area("금주일정", height=100)
-
+카테고리 = st.selectbox("카테고리", ["프로젝트", "내부미팅","고객사미팅", "세미나","교육","해외파트너미팅","업무지원","기타"])
+금주업무 = st.text_area("금주업무", height=100)# 구글 시트에서 기존 데이터 검색
 # MySQL에서 동일한 날짜와 업무유형을 가진 데이터 검색
 registered_date_for_query = 일자.strftime('%Y.%m.%d')  # 시간 제외
 cursor.execute("""
-    SELECT 완료일정, 비고 
+    SELECT 완료일정, 비고 , 전주업무종합
     FROM newbiz_weekly 
     WHERE DATE(일자) = %s AND 담당자 = %s AND 카테고리 = %s AND 금주업무 = %s
 """, (registered_date_for_query, 담당자, 카테고리,금주업무))
@@ -78,13 +124,13 @@ else:
     완료일정 = st.date_input("완료일정", value=current_time)
     비고 = st.text_area("비고",height=250)
 
-# 구글 시트에서 기존 데이터 검색
+
 sheet_data = sheet.get_all_values()
 df_sheet = pd.DataFrame(sheet_data[1:], columns=sheet_data[0])
 #st.write("Column names from Google Sheet:", df_sheet.columns.tolist())
 
 # 구글 시트에 동일한 등록 날짜와 업무유형을 가진 데이터 검색
-matching_rows = df_sheet[(df_sheet['일자'] == registered_date_for_query) & (df_sheet['담당자'] == 담당자) & (df_sheet['카테고리'] == 카테고리) & (df_sheet['금주일정'] == 금주업무)]
+matching_rows = df_sheet[(df_sheet['일자'] == registered_date_for_query) & (df_sheet['담당자'] == 담당자) & (df_sheet['카테고리'] == 카테고리) & (df_sheet['금주업무'] == 금주업무)]
 
 # Submit button to save to Google Sheets and MySQL
 if st.button("Save to Google Sheets and MySQL"):
@@ -93,13 +139,13 @@ if st.button("Save to Google Sheets and MySQL"):
     완료일정_str = 완료일정.strftime('%Y.%m.%d')  # 완료일정도 문자열로 변환
 
     # 새로운 데이터 행
-    new_row = [registered_date_str, 담당자, 카테고리, 금주업무, 완료일정_str, 비고]  # 완료일정_str 사용
+    new_row = [registered_date_str, 담당자, 카테고리, 금주업무, 완료일정_str, 비고,전주업무종합]  # 완료일정_str 사용
 
     # 구글 시트에 동일한 데이터가 있을 경우 업데이트, 없을 경우 추가
     if not matching_rows.empty:
         # 업데이트할 행 번호 찾기 (구글 시트는 1부터 시작하므로 +2)
         row_index = matching_rows.index[0] + 2
-        sheet.update(f'A{row_index}:F{row_index}', [new_row])
+        sheet.update(f'A{row_index}:G{row_index}', [new_row])
         st.success("The work journal has been updated in Google Sheets!")
     else:
         # 새로운 행 추가
@@ -128,9 +174,9 @@ if st.button("Save to Google Sheets and MySQL"):
     else:
         # 새로운 데이터 삽입
         cursor.execute("""
-            INSERT INTO newbiz_weekly (일자, 담당자, 카테고리, 금주업무, 완료일정, 비고) 
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (registered_date_for_db, 담당자, 카테고리, 금주업무, 완료일정, 비고))
+            INSERT INTO newbiz_weekly (일자, 담당자, 카테고리, 금주업무, 완료일정, 비고,전주업무종합) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (registered_date_for_db, 담당자, 카테고리, 금주업무, 완료일정, 비고,전주업무종합))
         st.success("The work journal has been saved to MySQL!")
 
 # Fetch the sheet data to display the current data in the sheet
