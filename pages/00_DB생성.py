@@ -257,13 +257,205 @@ def create_vote_tables():
         cursor.close()
         conn.close()
 
+def create_dot_collector_tables():
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # 회의/토픽 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dot_meetings (
+                meeting_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                status ENUM('active', 'closed') DEFAULT 'active',
+                created_by VARCHAR(50),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                closed_at DATETIME
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        # 사용자 신뢰도 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dot_user_credibility (
+                user_id INT AUTO_INCREMENT PRIMARY KEY,
+                user_name VARCHAR(50) NOT NULL UNIQUE,
+                credibility_score FLOAT DEFAULT 1.0,
+                total_dots_given INT DEFAULT 0,
+                total_dots_received INT DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        # 의견/아이디어 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dot_ideas (
+                idea_id INT AUTO_INCREMENT PRIMARY KEY,
+                meeting_id INT,
+                user_id INT,
+                idea_text TEXT NOT NULL,
+                category ENUM('suggestion', 'concern', 'question', 'other'),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (meeting_id) REFERENCES dot_meetings(meeting_id),
+                FOREIGN KEY (user_id) REFERENCES dot_user_credibility(user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        # 평가(dots) 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dot_ratings (
+                rating_id INT AUTO_INCREMENT PRIMARY KEY,
+                idea_id INT,
+                rater_id INT,
+                rating_type ENUM('agreement', 'feasibility', 'impact') NOT NULL,
+                rating_value INT NOT NULL,  # 1-5 scale
+                comment TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (idea_id) REFERENCES dot_ideas(idea_id),
+                FOREIGN KEY (rater_id) REFERENCES dot_user_credibility(user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        conn.commit()
+        st.success("Dot Collector 테이블이 성공적으로 생성되었습니다!")
+
+    except mysql.connector.Error as err:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {err}")
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_dot_expertise_tables():
+    """분야별 전문성 관리를 위한 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # 분야 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dot_expertise_areas (
+                area_id INT PRIMARY KEY,
+                area_code VARCHAR(20) NOT NULL UNIQUE,
+                area_name VARCHAR(50) NOT NULL,
+                description TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+        
+        # 사용자별 분야 전문성 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dot_user_expertise (
+                user_id INT,
+                area_id INT,
+                expertise_score FLOAT DEFAULT 1.0,
+                total_ideas INT DEFAULT 0,
+                total_ratings INT DEFAULT 0,
+                successful_ratings INT DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, area_id),
+                FOREIGN KEY (user_id) REFERENCES dot_user_credibility(user_id),
+                FOREIGN KEY (area_id) REFERENCES dot_expertise_areas(area_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+        
+        # 회의-분야 연결 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dot_meeting_areas (
+                meeting_id INT,
+                area_id INT,
+                is_primary BOOLEAN DEFAULT FALSE,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (meeting_id, area_id),
+                FOREIGN KEY (meeting_id) REFERENCES dot_meetings(meeting_id),
+                FOREIGN KEY (area_id) REFERENCES dot_expertise_areas(area_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+        
+        # meetings 테이블에 area_id 컬럼 추가 (안전하게 처리)
+        try:
+            # 컬럼 존재 여부 확인
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM information_schema.COLUMNS 
+                WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'dot_meetings' 
+                AND COLUMN_NAME = 'primary_area_id'
+            """)
+            column_exists = cursor.fetchone()[0] > 0
+            
+            if not column_exists:
+                # 컬럼 추가
+                cursor.execute("""
+                    ALTER TABLE dot_meetings
+                    ADD COLUMN primary_area_id INT,
+                    ADD FOREIGN KEY (primary_area_id) 
+                    REFERENCES dot_expertise_areas(area_id)
+                """)
+        except mysql.connector.Error as err:
+            st.warning(f"meetings 테이블 수정 중 오류 (무시 가능): {err}")
+        
+        conn.commit()
+        return True, "분야별 전문성 관리 테이블이 생성되었습니다!"
+    except mysql.connector.Error as err:
+        return False, f"테이블 생성 중 오류가 발생했습니다: {err}"
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_business_strategy_tables():
+    """사업 전략 관련 테이블 생성"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # 사업 전략 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS business_strategies (
+                strategy_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                industry VARCHAR(100),
+                target_market VARCHAR(200),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                content TEXT,
+                analysis_result TEXT,
+                status ENUM('draft', 'completed', 'analyzed') DEFAULT 'draft'
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        # 전략 평가 히스토리 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_evaluations (
+                evaluation_id INT AUTO_INCREMENT PRIMARY KEY,
+                strategy_id INT,
+                evaluation_type VARCHAR(50),
+                score DECIMAL(3,1),
+                feedback TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (strategy_id) REFERENCES business_strategies(strategy_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+
+        conn.commit()
+        st.success("사업 전략 테이블이 성공적으로 생성되었습니다!")
+
+    except mysql.connector.Error as err:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {err}")
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("DB 테이블 생성/수정/삭제 시스템")
 
     # 작업 선택
     operation = st.radio(
         "수행할 작업을 선택하세요",
-        ["테이블 생성/수정", "테이블 삭제", "테이블 데이터 검색", "투표 시스템 테이블 생성"]
+        ["테이블 생성/수정", "테이블 삭제", "테이블 데이터 검색", "투표 시스템 테이블 생성", "Dot Collector 테이블 생성",
+         "분야별 전문성 테이블 생성", "사업 전략 테이블 생성"]
     )
 
     # 기존 테이블 목록 표시
@@ -320,6 +512,21 @@ def main():
 
     elif operation == "투표 시스템 테이블 생성":
         create_vote_tables()
+
+    elif operation == "Dot Collector 테이블 생성":
+        create_dot_collector_tables()
+
+    elif operation == "분야별 전문성 테이블 생성":
+        if st.button("테이블 생성"):
+            success, message = create_dot_expertise_tables()
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
+
+    elif operation == "사업 전략 테이블 생성":
+        if st.button("테이블 생성"):
+            create_business_strategy_tables()
 
     else:  # 테이블 생성/수정
         # 테이블 이름 입력

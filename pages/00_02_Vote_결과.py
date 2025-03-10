@@ -57,38 +57,43 @@ def get_all_questions():
         conn.close()
 
 def get_question_results(question_id):
+    """투표 결과와 투표자 목록 조회"""
     conn = connect_to_db()
     cursor = conn.cursor(dictionary=True)
     
     try:
-        # 선택지별 투표 수와 이유 조회
+        # 전체 투표 수 조회
+        cursor.execute("""
+            SELECT COUNT(*) as total_votes
+            FROM vote_responses
+            WHERE question_id = %s
+        """, (question_id,))
+        total_votes = cursor.fetchone()['total_votes']
+        
+        # 옵션별 결과 조회
         cursor.execute("""
             SELECT 
+                o.option_id,
                 o.option_text,
                 COUNT(r.response_id) as vote_count,
-                COUNT(r.response_id) * 100.0 / 
-                (SELECT COUNT(*) FROM vote_responses WHERE question_id = %s) as vote_percentage,
-                GROUP_CONCAT(
-                    CASE 
-                        WHEN r.reasoning IS NOT NULL AND r.reasoning != '' 
-                        THEN CONCAT(r.voter_name, ': ', r.reasoning)
-                        ELSE NULL 
-                    END
-                    SEPARATOR '\n'
-                ) as reasonings
+                COALESCE(
+                    ROUND(COUNT(r.response_id) * 100.0 / NULLIF(%s, 0), 1),
+                    0.0
+                ) as vote_percentage,
+                GROUP_CONCAT(DISTINCT r.reasoning SEPARATOR '\n') as reasonings
             FROM vote_options o
             LEFT JOIN vote_responses r ON o.option_id = r.option_id
             WHERE o.question_id = %s
             GROUP BY o.option_id, o.option_text
             ORDER BY vote_count DESC
-        """, (question_id, question_id))
+        """, (total_votes, question_id))
         results = cursor.fetchall()
         
-        # 투표자 목록 조회 (익명 제외)
+        # 투표자 목록 조회
         cursor.execute("""
             SELECT DISTINCT voter_name
             FROM vote_responses
-            WHERE question_id = %s AND voter_name != '익명'
+            WHERE question_id = %s AND voter_name IS NOT NULL
             ORDER BY voter_name
         """, (question_id,))
         voters = cursor.fetchall()
@@ -361,6 +366,32 @@ def get_question_options(question_id):
         cursor.close()
         conn.close()
 
+def get_vote_results():
+    """투표 결과 조회"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                v.option_id,
+                o.option_text,
+                COUNT(v.vote_id) as vote_count,
+                COALESCE(
+                    (COUNT(v.vote_id) * 100.0 / 
+                    NULLIF((SELECT COUNT(*) FROM votes), 0)), 
+                    0
+                ) as vote_percentage
+            FROM vote_options o
+            LEFT JOIN votes v ON o.option_id = v.option_id
+            GROUP BY o.option_id, o.option_text
+            ORDER BY vote_count DESC
+        """)
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     # 모든 투표 문제 가져오기
     questions = get_all_questions()
@@ -415,13 +446,22 @@ def main():
             with col2:
                 st.write("### 상세 결과")
                 for result in results:
-                    st.write(f"- {result['option_text']}")
-                    st.write(f"  - 투표 수: {result['vote_count']}")
-                    st.write(f"  - 비율: {result['vote_percentage']:.1f}%")
-                    if result['reasonings']:
-                        with st.expander("선택 이유 보기"):
-                            for reasoning in result['reasonings'].split('\n'):
-                                st.write(reasoning)
+                    st.write(f"#### {result['option_text']}")
+                    
+                    # 안전한 값 추출
+                    vote_count = result.get('vote_count', 0) or 0
+                    vote_percentage = result.get('vote_percentage', 0.0) or 0.0
+                    
+                    # 결과 표시
+                    st.write(f"투표 수: {vote_count} ({vote_percentage:.1f}%)")
+                    
+                    # 선택 이유 표시
+                    if result.get('reasonings'):
+                        with st.expander("💬 선택 이유 보기"):
+                            reasonings = result['reasonings'].split('\n')
+                            for reasoning in reasonings:
+                                if reasoning.strip():
+                                    st.markdown(f"- {reasoning}")
             
             # 투표자 목록 (익명 제외)
             if voters:

@@ -61,6 +61,10 @@ def save_question(title, description, multiple_choice, options, created_by):
 def main():
     st.write("## 새로운 투표 문제 등록")
     
+    # 세션 상태에 선택지 개수 초기화
+    if 'option_count' not in st.session_state:
+        st.session_state.option_count = 4  # 기본 4개 선택지
+    
     # 입력 폼
     with st.form("vote_question_form"):
         title = st.text_input("제목", help="투표 문제의 제목을 입력하세요")
@@ -69,11 +73,11 @@ def main():
         created_by = st.text_input("작성자", help="문제 작성자의 이름을 입력하세요")
         
         st.write("### 선택지 입력")
-        st.write("최대 10개의 선택지를 입력할 수 있습니다. 빈 칸은 무시됩니다.")
+        st.caption("최소 2개의 선택지가 필요합니다. 빈 칸은 무시됩니다.")
         
-        # 10개의 선택지 입력 필드
+        # 현재 선택지 개수만큼 입력 필드 생성
         options = []
-        for i in range(10):
+        for i in range(st.session_state.option_count):
             option = st.text_input(f"선택지 {i+1}", key=f"option_{i}")
             options.append(option)
         
@@ -103,9 +107,24 @@ def main():
             if success:
                 st.success(message)
                 # 폼 초기화를 위한 rerun
+                st.session_state.option_count = 4  # 선택지 개수 초기화
                 st.rerun()
             else:
                 st.error(message)
+    
+    # 폼 외부에 선택지 추가/제거 버튼
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("➕ 선택지 추가") and st.session_state.option_count < 15:
+            st.session_state.option_count += 1
+            st.rerun()
+    
+    with col2:
+        if st.button("➖ 선택지 제거") and st.session_state.option_count > 2:
+            st.session_state.option_count -= 1
+            st.rerun()
+    
+    st.caption(f"현재 선택지 수: {st.session_state.option_count} (최대 15개)")
 
     # 기존 투표 문제 목록 표시
     st.write("## 등록된 투표 문제 목록")
