@@ -448,6 +448,96 @@ def create_business_strategy_tables():
         cursor.close()
         conn.close()
 
+def create_decision_tree_tables():
+    """비즈니스 의사결정 트리 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # 의사결정 트리 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS decision_trees (
+                tree_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                category VARCHAR(50),
+                discount_rate DECIMAL(5,2),  -- 할인율
+                analysis_period INT,         -- 분석기간(년)
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 의사결정 노드 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS decision_nodes (
+                node_id INT AUTO_INCREMENT PRIMARY KEY,
+                tree_id INT NOT NULL,
+                parent_id INT,
+                node_type ENUM('decision', 'chance', 'outcome') NOT NULL,
+                question TEXT NOT NULL,
+                description TEXT,
+                market_size DECIMAL(15,2),      -- 시장 규모
+                market_growth DECIMAL(5,2),      -- 시장 성장률
+                competition_level INT,           -- 경쟁 강도 (1-5)
+                risk_level INT,                  -- 위험도 (1-5)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tree_id) REFERENCES decision_trees(tree_id),
+                FOREIGN KEY (parent_id) REFERENCES decision_nodes(node_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 선택지/시나리오 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS decision_options (
+                option_id INT AUTO_INCREMENT PRIMARY KEY,
+                node_id INT NOT NULL,
+                option_text TEXT NOT NULL,
+                initial_investment DECIMAL(15,2),  -- 초기 투자비용
+                operating_cost DECIMAL(15,2),      -- 연간 운영비용
+                expected_revenue DECIMAL(15,2),    -- 연간 예상 매출
+                market_share DECIMAL(5,2),         -- 예상 시장 점유율
+                probability DECIMAL(5,2),          -- 발생 확률
+                npv DECIMAL(15,2),                -- 순현재가치
+                roi DECIMAL(5,2),                 -- 투자수익률
+                payback_period DECIMAL(5,2),      -- 회수기간
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (node_id) REFERENCES decision_nodes(node_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ 비즈니스 의사결정 트리 테이블이 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def drop_decision_tree_tables():
+    """의사결정 트리 테이블 삭제"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # 외래 키 제약 조건으로 인해 역순으로 삭제
+        cursor.execute("DROP TABLE IF EXISTS decision_options")
+        cursor.execute("DROP TABLE IF EXISTS decision_nodes")
+        cursor.execute("DROP TABLE IF EXISTS decision_trees")
+
+        conn.commit()
+        st.success("✅ 의사결정 트리 테이블이 삭제되었습니다!")
+
+    except mysql.connector.Error as err:
+        st.error(f"테이블 삭제 중 오류가 발생했습니다: {err}")
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("DB 테이블 생성/수정/삭제 시스템")
 
@@ -455,7 +545,7 @@ def main():
     operation = st.radio(
         "수행할 작업을 선택하세요",
         ["테이블 생성/수정", "테이블 삭제", "테이블 데이터 검색", "투표 시스템 테이블 생성", "Dot Collector 테이블 생성",
-         "분야별 전문성 테이블 생성", "사업 전략 테이블 생성"]
+         "분야별 전문성 테이블 생성", "사업 전략 테이블 생성", "의사결정 트리 테이블 생성", "의사결정 트리 테이블 삭제"]
     )
 
     # 기존 테이블 목록 표시
@@ -527,6 +617,14 @@ def main():
     elif operation == "사업 전략 테이블 생성":
         if st.button("테이블 생성"):
             create_business_strategy_tables()
+
+    elif operation == "의사결정 트리 테이블 생성":
+        if st.button("테이블 생성"):
+            create_decision_tree_tables()
+
+    elif operation == "의사결정 트리 테이블 삭제":  # 새로운 옵션 처리
+        if st.button("테이블 삭제", type="secondary"):
+            drop_decision_tree_tables()
 
     else:  # 테이블 생성/수정
         # 테이블 이름 입력
