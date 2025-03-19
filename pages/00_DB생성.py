@@ -538,6 +538,757 @@ def drop_decision_tree_tables():
         cursor.close()
         conn.close()
 
+def create_strategy_framework_tables():
+    """전략 프레임워크 적용을 위한 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # 전략 프레임워크 적용 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_framework_applications (
+                application_id INT AUTO_INCREMENT PRIMARY KEY,
+                original_strategy TEXT NOT NULL,
+                framework_id INT NOT NULL,
+                modified_strategy TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by INT,
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+        
+        # 경영 이론 마스터 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS management_theories (
+                theory_id INT AUTO_INCREMENT PRIMARY KEY,
+                category VARCHAR(100) NOT NULL,
+                name VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+        
+        # 경영 이론 데이터 초기화
+        cursor.execute("TRUNCATE TABLE management_theories")
+        
+        # 경영 이론 데이터 입력
+        theories_data = [
+            # 1. 경영 전략 (Strategic Management)
+            ("경영 전략", "SWOT 분석", "기업의 내부 강점/약점과 외부 기회/위협을 분석하여 전략을 수립하는 프레임워크"),
+            ("경영 전략", "PESTEL 분석", "거시환경 분석을 위한 정치, 경제, 사회, 기술, 환경, 법률적 요소 분석"),
+            ("경영 전략", "포터의 5가지 힘 분석", "산업의 경쟁 구조를 분석하는 프레임워크"),
+            ("경영 전략", "블루오션 전략", "경쟁이 없는 새로운 시장 공간을 창출하는 전략"),
+            ("경영 전략", "경쟁 우위", "지속 가능한 경쟁 우위를 확보하기 위한 전략"),
+            ("경영 전략", "VRIO 프레임워크", "자원의 가치, 희소성, 모방 가능성, 조직을 분석하는 프레임워크"),
+            ("경영 전략", "밸류 체인 분석", "기업의 가치 창출 활동을 분석하는 프레임워크"),
+            ("경영 전략", "전략적 그룹 분석", "산업 내 유사한 전략을 가진 기업들을 그룹화하여 분석"),
+            ("경영 전략", "핵심 역량 이론", "기업의 핵심 경쟁력을 식별하고 개발하는 이론"),
+            ("경영 전략", "시장 지위 이론", "시장에서의 포지셔닝 전략을 수립하는 이론"),
+            
+            # 2. 리더십 (Leadership)
+            ("리더십", "상황적 리더십 이론", "상황에 따라 적절한 리더십 스타일을 적용하는 이론"),
+            ("리더십", "변혁적 리더십", "비전과 카리스마로 조직원들의 변화를 이끄는 리더십"),
+            ("리더십", "거래적 리더십", "보상과 처벌을 통한 성과 관리 중심의 리더십"),
+            ("리더십", "카리스마 리더십", "개인의 특별한 영향력을 통한 리더십"),
+            ("리더십", "서번트 리더십", "구성원을 섬기고 지원하는 리더십"),
+            ("리더십", "권력과 영향력 이론", "조직 내 권력 구조와 영향력 행사 방식"),
+            ("리더십", "리더십 그리드 이론", "과업과 관계 중심의 리더십 스타일 매트릭스"),
+            ("리더십", "감성 리더십", "감성 지능을 활용한 리더십"),
+            ("리더십", "유목 리더십", "유연하고 적응적인 리더십"),
+            ("리더십", "윤리적 리더십", "도덕성과 윤리를 중시하는 리더십"),
+            
+            # 3. 조직 관리 (Organizational Management)
+            ("조직 관리", "조직 행동 이론", "조직 내 개인과 그룹의 행동을 이해하고 관리하는 이론"),
+            ("조직 관리", "맥그리거의 XY 이론", "인간의 본성에 대한 두 가지 상반된 관점을 통한 관리 이론"),
+            ("조직 관리", "조직 문화 이론", "조직의 가치, 신념, 행동 양식을 이해하고 관리하는 이론"),
+            ("조직 관리", "홀의 문화 차원 이론", "문화적 차이가 조직에 미치는 영향을 분석하는 이론"),
+            ("조직 관리", "리더-구성원 교환 이론", "리더와 구성원 간의 관계 품질에 관한 이론"),
+            ("조직 관리", "학습 조직", "지속적인 학습과 혁신을 추구하는 조직 모델"),
+            ("조직 관리", "아지리스의 성숙-미성숙 이론", "개인의 성장과 조직 발전의 관계를 설명하는 이론"),
+            ("조직 관리", "조직 내 커뮤니케이션 이론", "조직 내 효과적인 의사소통 방법론"),
+            ("조직 관리", "직무 설계 이론", "효율적인 직무 구조화와 설계 방법"),
+            ("조직 관리", "경영혁신 이론", "조직의 혁신적 변화 관리 방법론"),
+            
+            # 4. 마케팅 (Marketing)
+            ("마케팅", "4P 마케팅 믹스", "제품, 가격, 유통, 촉진의 통합적 마케팅 전략"),
+            ("마케팅", "STP 전략", "시장 세분화, 타겟팅, 포지셔닝의 전략적 접근"),
+            ("마케팅", "고객 여정 지도", "고객 경험의 전체 과정을 시각화하고 분석하는 도구"),
+            ("마케팅", "브랜드 자산 이론", "브랜드의 가치와 영향력을 측정하고 관리하는 이론"),
+            ("마케팅", "퍼미션 마케팅", "고객의 동의를 기반으로 하는 마케팅 접근법"),
+            ("마케팅", "관계 마케팅", "고객과의 장기적 관계 구축을 중시하는 마케팅"),
+            ("마케팅", "제품 수명 주기 이론", "제품의 시장 진입부터 쇠퇴까지의 단계별 전략"),
+            ("마케팅", "콘텐츠 마케팅 전략", "가치 있는 콘텐츠를 통한 고객 확보 전략"),
+            ("마케팅", "충성도 프로그램 이론", "고객 충성도 향상을 위한 프로그램 설계"),
+            ("마케팅", "구전 마케팅", "고객 간 자발적 정보 전파를 활용한 마케팅"),
+            
+            # 5. 운영 관리 (Operations Management)
+            ("운영 관리", "린 생산 방식", "낭비를 제거하고 가치를 최적화하는 생산 방식"),
+            ("운영 관리", "식스 시그마", "품질 향상과 변동성 감소를 위한 체계적 접근"),
+            ("운영 관리", "칸반 시스템", "작업 흐름을 시각화하고 관리하는 시스템"),
+            ("운영 관리", "품질 관리 이론", "전사적 품질 관리를 위한 종합적 접근"),
+            ("운영 관리", "제약 이론", "시스템의 제약요소를 관리하여 성과를 개선하는 이론"),
+            ("운영 관리", "지속 가능성 운영", "환경과 사회를 고려한 지속 가능한 운영 방식"),
+            ("운영 관리", "적시생산", "재고를 최소화하고 생산 효율을 높이는 시스템"),
+            ("운영 관리", "공급망 관리", "공급망 전체의 효율성을 최적화하는 관리 방식"),
+            ("운영 관리", "ERP 시스템", "기업 자원을 통합적으로 관리하는 시스템"),
+            ("운영 관리", "서비스 운영 관리", "서비스 제공 프로세스의 효율적 관리"),
+            
+            # 6. 혁신과 창의성 (Innovation & Creativity)
+            ("혁신과 창의성", "개방형 혁신", "외부 자원을 활용한 혁신 전략"),
+            ("혁신과 창의성", "파괴적 혁신", "기존 시장을 근본적으로 변화시키는 혁신"),
+            ("혁신과 창의성", "혁신 확산 이론", "혁신이 사회에 퍼져나가는 과정을 설명하는 이론"),
+            ("혁신과 창의성", "설계 사고", "사용자 중심의 문제 해결 방법론"),
+            ("혁신과 창의성", "기술 수명 주기 이론", "기술의 발전과 쇠퇴 과정을 설명하는 이론"),
+            ("혁신과 창의성", "삼중 나선 모델", "산학연 협력을 통한 혁신 창출 모델"),
+            ("혁신과 창의성", "클레이튼 크리스텐슨의 혁신 이론", "지속적/파괴적 혁신의 특성과 영향"),
+            ("혁신과 창의성", "창의성의 5단계 이론", "창의적 문제 해결의 단계별 접근"),
+            ("혁신과 창의성", "이노베이션 킷캣 모델", "혁신의 단계적 실행 방법론"),
+            ("혁신과 창의성", "혁신 생태계 이론", "혁신 주체들 간의 상호작용과 발전 과정"),
+            
+            # 7. 재무 관리 (Financial Management)
+            ("재무 관리", "EVA", "기업의 실질적인 경제적 부가가치 측정"),
+            ("재무 관리", "자본 비용 이론", "자본 조달 비용의 최적화 방안"),
+            ("재무 관리", "자본 구조 이론", "부채와 자기자본의 최적 비율 결정"),
+            ("재무 관리", "현금 흐름 분석", "기업의 현금 유입과 유출 관리"),
+            ("재무 관리", "기업가치 평가", "기업의 실질 가치 산정 방법"),
+            ("재무 관리", "효율적 시장 가설", "시장 가격의 정보 반영 효율성"),
+            ("재무 관리", "투자 포트폴리오 이론", "위험과 수익의 최적 균형 달성"),
+            ("재무 관리", "재무비율 분석", "기업의 재무 상태와 성과 평가"),
+            ("재무 관리", "위험 관리 이론", "재무적 위험의 식별과 관리"),
+            ("재무 관리", "M&A 전략", "기업 인수합병의 전략적 접근"),
+            
+            # 8. 인사 관리 (Human Resources Management)
+            ("인사 관리", "직무 만족 이론", "직원의 직무 만족도 향상 방안"),
+            ("인사 관리", "인재 관리", "핵심 인재의 확보와 육성 전략"),
+            ("인사 관리", "동기 부여 이론", "직원의 동기 부여 메커니즘"),
+            ("인사 관리", "공정성 이론", "조직 내 공정성 인식과 영향"),
+            ("인사 관리", "목표 설정 이론", "효과적인 목표 설정과 성과 관리"),
+            ("인사 관리", "사회적 교환 이론", "조직과 구성원 간의 상호 호혜적 관계"),
+            ("인사 관리", "직무 분석 이론", "직무의 체계적 분석과 설계"),
+            ("인사 관리", "성과 평가 이론", "공정하고 효과적인 성과 평가 방법"),
+            ("인사 관리", "팀 다이내믹스", "팀의 형성과 발전 과정"),
+            ("인사 관리", "인재 유지 전략", "핵심 인재의 이탈 방지 전략"),
+            
+            # 9. 경영 정보 시스템 (Management Information Systems)
+            ("경영 정보 시스템", "정보 시스템 전략", "IT 자원의 전략적 활용 방안"),
+            ("경영 정보 시스템", "빅데이터 분석", "대규모 데이터의 분석과 활용"),
+            ("경영 정보 시스템", "디지털 전환 전략", "디지털 기술을 통한 비즈니스 혁신"),
+            ("경영 정보 시스템", "클라우드 컴퓨팅", "클라우드 기반의 IT 인프라 구축"),
+            ("경영 정보 시스템", "ERP 시스템 이론", "전사적 자원 관리 시스템의 구축과 운영"),
+            ("경영 정보 시스템", "데이터 거버넌스", "데이터의 품질과 보안 관리"),
+            ("경영 정보 시스템", "IoT 경영 이론", "사물인터넷의 비즈니스 활용"),
+            ("경영 정보 시스템", "블록체인 응용", "블록체인 기술의 비즈니스 적용"),
+            ("경영 정보 시스템", "사이버 보안 관리", "정보 보안 위험의 관리"),
+            ("경영 정보 시스템", "AI 기반 의사결정 시스템", "인공지능을 활용한 의사결정 지원"),
+            
+            # 10. 기타 경영 이론
+            ("기타 경영 이론", "변화 관리 이론", "조직 변화의 효과적 관리"),
+            ("기타 경영 이론", "공유 가치 창출", "사회적 가치와 경제적 가치의 동시 추구"),
+            ("기타 경영 이론", "사회적 책임 경영", "기업의 사회적 책임과 지속가능성"),
+            ("기타 경영 이론", "지속 가능성 모델", "경제, 사회, 환경의 균형적 발전"),
+            ("기타 경영 이론", "아지노모토 이론", "품질과 가치의 최적 균형점 도출"),
+            ("기타 경영 이론", "비즈니스 윤리 이론", "윤리적 의사결정과 경영"),
+            ("기타 경영 이론", "카이젠 이론", "지속적인 개선과 혁신"),
+            ("기타 경영 이론", "균형성과표", "다차원적 성과 측정과 관리"),
+            ("기타 경영 이론", "홀라크라시", "자율적이고 분산된 조직 구조"),
+            ("기타 경영 이론", "스테이크홀더 이론", "이해관계자 중심의 경영 접근")
+        ]
+        
+        cursor.executemany("""
+            INSERT INTO management_theories (category, name, description)
+            VALUES (%s, %s, %s)
+        """, theories_data)
+        
+        conn.commit()
+        st.success("✅ 전략 프레임워크 테이블이 생성되고 100개의 경영 이론이 입력되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_business_model_canvas_tables():
+    """Business Model Canvas 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # Business Model Canvas 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS business_model_canvas (
+                canvas_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                version INT DEFAULT 1,
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # Canvas 컴포넌트 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS canvas_components (
+                component_id INT AUTO_INCREMENT PRIMARY KEY,
+                canvas_id INT NOT NULL,
+                component_type ENUM(
+                    'key_partners',
+                    'key_activities',
+                    'key_resources',
+                    'value_propositions',
+                    'customer_relationships',
+                    'channels',
+                    'customer_segments',
+                    'cost_structure',
+                    'revenue_streams'
+                ) NOT NULL,
+                content TEXT NOT NULL,
+                priority INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (canvas_id) REFERENCES business_model_canvas(canvas_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # Canvas 분석 및 코멘트 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS canvas_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                canvas_id INT NOT NULL,
+                analysis_type ENUM('strength', 'weakness', 'opportunity', 'threat', 'comment') NOT NULL,
+                content TEXT NOT NULL,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (canvas_id) REFERENCES business_model_canvas(canvas_id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ Business Model Canvas 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_swot_analysis_tables():
+    """SWOT 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # SWOT 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS swot_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                version INT DEFAULT 1,
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # SWOT 항목 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS swot_items (
+                item_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                category ENUM('strength', 'weakness', 'opportunity', 'threat') NOT NULL,
+                content TEXT NOT NULL,
+                priority INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES swot_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ SWOT 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_marketing_mix_tables():
+    """4P/7P 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # 4P/7P 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS marketing_mix_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                analysis_type ENUM('4P', '7P') NOT NULL,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 4P/7P 컴포넌트 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS marketing_mix_components (
+                component_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                component_type ENUM(
+                    'product',
+                    'price',
+                    'place',
+                    'promotion',
+                    'people',
+                    'process',
+                    'physical_evidence'
+                ) NOT NULL,
+                content TEXT NOT NULL,
+                priority INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES marketing_mix_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ 4P/7P 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_pestel_analysis_tables():
+    """PEST/PESTEL 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # PESTEL 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pestel_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                analysis_type ENUM('PEST', 'PESTEL') NOT NULL,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # PESTEL 컴포넌트 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pestel_components (
+                component_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                component_type ENUM(
+                    'political',
+                    'economic',
+                    'social',
+                    'technological',
+                    'environmental',
+                    'legal'
+                ) NOT NULL,
+                content TEXT NOT NULL,
+                impact_level ENUM('high', 'medium', 'low') DEFAULT 'medium',
+                trend ENUM('increasing', 'stable', 'decreasing') DEFAULT 'stable',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES pestel_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ PEST/PESTEL 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_five_forces_tables():
+    """Porter's 5 Forces 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # 5 Forces 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS five_forces_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 5 Forces 컴포넌트 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS five_forces_components (
+                component_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                component_type ENUM(
+                    'rivalry',
+                    'new_entrants',
+                    'substitutes',
+                    'buyer_power',
+                    'supplier_power'
+                ) NOT NULL,
+                content TEXT NOT NULL,
+                threat_level ENUM('very_low', 'low', 'medium', 'high', 'very_high') DEFAULT 'medium',
+                key_factors TEXT,
+                recommendations TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES five_forces_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ Porter's 5 Forces 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_value_chain_tables():
+    """Value Chain 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # Value Chain 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS value_chain_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # Value Chain 컴포넌트 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS value_chain_components (
+                component_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                activity_type ENUM(
+                    'inbound_logistics',
+                    'operations',
+                    'outbound_logistics',
+                    'marketing_sales',
+                    'service',
+                    'firm_infrastructure',
+                    'hr_management',
+                    'technology_development',
+                    'procurement'
+                ) NOT NULL,
+                activity_category ENUM('primary', 'support') NOT NULL,
+                content TEXT NOT NULL,
+                strength_level ENUM('very_weak', 'weak', 'moderate', 'strong', 'very_strong') DEFAULT 'moderate',
+                improvement_points TEXT,
+                cost_impact DECIMAL(5,2),
+                value_impact DECIMAL(5,2),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES value_chain_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ Value Chain 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_gap_analysis_tables():
+    """GAP 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # GAP 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gap_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # GAP 분석 항목 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gap_analysis_items (
+                item_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                current_state TEXT NOT NULL,
+                desired_state TEXT NOT NULL,
+                gap_description TEXT NOT NULL,
+                priority ENUM('low', 'medium', 'high') DEFAULT 'medium',
+                action_plan TEXT,
+                timeline VARCHAR(100),
+                resources_needed TEXT,
+                metrics TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES gap_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ GAP 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_blue_ocean_tables():
+    """Blue Ocean 전략 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # Blue Ocean 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS blue_ocean_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                industry VARCHAR(100) NOT NULL,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 4 Actions Framework 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS blue_ocean_actions (
+                action_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                action_type ENUM('eliminate', 'reduce', 'raise', 'create') NOT NULL,
+                factor VARCHAR(200) NOT NULL,
+                description TEXT,
+                impact_level INT DEFAULT 3,
+                priority INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES blue_ocean_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # Strategy Canvas 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS blue_ocean_canvas (
+                canvas_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                competing_factor VARCHAR(200) NOT NULL,
+                industry_score INT NOT NULL,
+                company_score INT NOT NULL,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES blue_ocean_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ Blue Ocean 전략 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_innovators_dilemma_tables():
+    """Innovator's Dilemma 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # Innovator's Dilemma 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS innovators_dilemma_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                industry VARCHAR(100) NOT NULL,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 현재 기술/제품 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS innovators_current_tech (
+                tech_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                tech_name VARCHAR(200) NOT NULL,
+                description TEXT,
+                market_position ENUM('low', 'mid', 'high') NOT NULL,
+                performance_level INT NOT NULL,
+                customer_demand INT NOT NULL,
+                market_size DECIMAL(10,2),
+                profit_margin DECIMAL(5,2),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES innovators_dilemma_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 파괴적 혁신 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS innovators_disruptive_tech (
+                tech_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                tech_name VARCHAR(200) NOT NULL,
+                description TEXT,
+                innovation_type ENUM('low_end', 'new_market') NOT NULL,
+                current_performance INT NOT NULL,
+                expected_growth_rate DECIMAL(5,2),
+                potential_market_size DECIMAL(10,2),
+                development_status ENUM('research', 'development', 'testing', 'market_entry') NOT NULL,
+                risk_level ENUM('low', 'medium', 'high') NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES innovators_dilemma_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 대응 전략 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS innovators_strategies (
+                strategy_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                strategy_type ENUM('defend', 'adapt', 'disrupt') NOT NULL,
+                description TEXT NOT NULL,
+                implementation_plan TEXT,
+                required_resources TEXT,
+                timeline VARCHAR(100),
+                success_metrics TEXT,
+                priority INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES innovators_dilemma_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ Innovator's Dilemma 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_portfolio_analysis_tables():
+    """Portfolio 분석 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # Portfolio 분석 메인 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                analysis_type ENUM('bcg', 'ge_mckinsey', 'ansoff') NOT NULL,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status ENUM('draft', 'completed', 'archived') DEFAULT 'draft',
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # Portfolio 항목 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_items (
+                item_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT NOT NULL,
+                item_name VARCHAR(200) NOT NULL,
+                description TEXT,
+                market_growth DECIMAL(5,2),
+                market_share DECIMAL(5,2),
+                market_attractiveness INT,
+                business_strength INT,
+                market_penetration DECIMAL(5,2),
+                market_development DECIMAL(5,2),
+                product_development DECIMAL(5,2),
+                diversification DECIMAL(5,2),
+                current_revenue DECIMAL(10,2),
+                potential_revenue DECIMAL(10,2),
+                investment_required DECIMAL(10,2),
+                risk_level ENUM('low', 'medium', 'high') DEFAULT 'medium',
+                priority INT DEFAULT 0,
+                recommendations TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES portfolio_analysis(analysis_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ Portfolio 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("DB 테이블 생성/수정/삭제 시스템")
 
@@ -545,7 +1296,10 @@ def main():
     operation = st.radio(
         "수행할 작업을 선택하세요",
         ["테이블 생성/수정", "테이블 삭제", "테이블 데이터 검색", "투표 시스템 테이블 생성", "Dot Collector 테이블 생성",
-         "분야별 전문성 테이블 생성", "사업 전략 테이블 생성", "의사결정 트리 테이블 생성", "의사결정 트리 테이블 삭제"]
+         "분야별 전문성 테이블 생성", "사업 전략 테이블 생성", "의사결정 트리 테이블 생성", "의사결정 트리 테이블 삭제",
+         "전략 프레임워크 테이블 생성", "Business Model Canvas 테이블 생성", "SWOT 분석 테이블 생성", "4P/7P 분석 테이블 생성",
+         "PESTEL 분석 테이블 생성", "5 Forces 분석 테이블 생성", "Value Chain 분석 테이블 생성", "GAP 분석 테이블 생성", "Blue Ocean 분석 테이블 생성",
+         "Innovator's Dilemma 분석 테이블 생성", "Portfolio 분석 테이블 생성"]
     )
 
     # 기존 테이블 목록 표시
@@ -625,6 +1379,50 @@ def main():
     elif operation == "의사결정 트리 테이블 삭제":  # 새로운 옵션 처리
         if st.button("테이블 삭제", type="secondary"):
             drop_decision_tree_tables()
+
+    elif operation == "전략 프레임워크 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_strategy_framework_tables()
+
+    elif operation == "Business Model Canvas 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_business_model_canvas_tables()
+
+    elif operation == "SWOT 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_swot_analysis_tables()
+
+    elif operation == "4P/7P 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_marketing_mix_tables()
+
+    elif operation == "PESTEL 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_pestel_analysis_tables()
+
+    elif operation == "5 Forces 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_five_forces_tables()
+
+    elif operation == "Value Chain 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_value_chain_tables()
+
+    elif operation == "GAP 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_gap_analysis_tables()
+
+    elif operation == "Blue Ocean 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_blue_ocean_tables()
+
+    elif operation == "Innovator's Dilemma 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_innovators_dilemma_tables()
+
+    elif operation == "Portfolio 분석 테이블 생성":
+        if st.button("테이블 생성 및 초기 데이터 입력"):
+            create_portfolio_analysis_tables()
 
     else:  # 테이블 생성/수정
         # 테이블 이름 입력

@@ -71,7 +71,24 @@ class StrategyOutput(BaseModel):
 class FinancialPlanOutput(BaseModel):
     financial_plan: Dict[str, Any]
 
+def get_management_theories():
+    """경영 이론 목록 반환"""
+    theories = {
+        "일반": "일반적인 경영 전략 접근",
+        "SWOT 분석": "기업의 강점, 약점, 기회, 위협 요인을 분석하여 전략 수립",
+        "블루오션 전략": "경쟁이 없는 새로운 시장 창출에 초점",
+        "포터의 5가지 힘": "산업 구조 분석을 통한 전략 수립",
+        "핵심 역량": "기업의 핵심 능력을 기반으로 한 전략",
+        "밸류 체인": "가치 사슬 분석을 통한 경쟁우위 확보",
+        "개방형 혁신": "외부 자원을 활용한 혁신 전략",
+        "파괴적 혁신": "시장을 근본적으로 변화시키는 혁신 전략",
+        "린 생산 방식": "낭비 제거를 통한 효율성 극대화",
+        "디지털 전환": "디지털 기술을 활용한 비즈니스 모델 혁신"
+    }
+    return theories
+
 def create_strategy_tasks(agents, industry, target_market, goals):
+    """전략 수립 태스크 생성"""
     market_analyst, strategist, financial_analyst = agents
     
     # 시장 분석 태스크
@@ -485,32 +502,48 @@ def format_market_analysis(data):
 """
 
 def format_strategy(data):
-    """전략 결과를 마크다운 형식으로 변환"""
+    """전략 결과를 읽기 쉬운 마크다운 형식으로 변환"""
     return f"""
-### 핵심 전략
-- **비전**: {data['core_strategy']['vision']}
-- **미션**: {data['core_strategy']['mission']}
-- **핵심 목표**:
-  {chr(10).join([f"  - {obj}" for obj in data['core_strategy']['key_objectives']])}
+# 🎯 사업 전략 요약
 
-### 차별화 전략
-- **가치 제안**: {data['differentiation']['value_proposition']}
-- **핵심 차별화 포인트**:
-  {chr(10).join([f"  - {p}" for p in data['differentiation']['key_points']])}
+## 1️⃣ 전략적 방향성
 
-### 핵심 경쟁력
+### 비전
+> {data['core_strategy']['vision']}
+
+### 미션
+> {data['core_strategy']['mission']}
+
+### 핵심 목표
+{chr(10).join([f"- 🎯 {obj}" for obj in data['core_strategy']['key_objectives']])}
+
+## 2️⃣ 차별화 전략
+
+### 핵심 가치 제안
+> {data['differentiation']['value_proposition']}
+
+### 차별화 요소
+{chr(10).join([f"- ✨ {point}" for point in data['differentiation']['key_points']])}
+
+## 3️⃣ 핵심 역량 개발
+
 {chr(10).join([f'''
-#### {comp['area']}
-- 개발 계획: {comp['development_plan']}
-- 구현 시기: {comp['timeline']}''' for comp in data['competencies']])}
+### {comp['area']} 💪
+- **개발 계획**
+  > {comp['development_plan']}
+- **목표 시점**: `{comp['timeline']}`''' for comp in data['competencies']])}
 
-### 실행 계획
+## 4️⃣ 실행 로드맵
+
 {chr(10).join([f'''
-#### {phase['phase']} ({phase['duration']})
-- 실행 항목:
-  {chr(10).join([f"  - {a}" for a in phase['actions']])}
-- 주요 마일스톤:
-  {chr(10).join([f"  - {m}" for m in phase['milestones']])}''' for phase in data['execution_plan']])}
+### 📍 {phase['phase']} ({phase['duration']})
+
+**주요 활동**
+{chr(10).join([f"- ▫️ {action}" for action in phase['actions']])}
+
+**마일스톤**
+{chr(10).join([f"- 🏁 {milestone}" for milestone in phase['milestones']])}
+''' for phase in data['execution_plan']])}
 """
 
 def format_financial_plan(data):
@@ -600,11 +633,15 @@ def main():
                     st.error("모든 필드를 입력해주세요.")
                     return
                 
-                with st.spinner("AI 팀이 전략을 수립하고 있습니다..."):
+                with st.spinner(f"AI 팀이 전략을 수립하고 있습니다..."):
                     try:
-                        # 에이전트 생성 및 실행
                         agents = create_agents()
-                        tasks = create_strategy_tasks(agents, industry, target_market, goals)
+                        tasks = create_strategy_tasks(
+                            agents, 
+                            industry, 
+                            target_market, 
+                            goals
+                        )
                         crew = Crew(
                             agents=agents,
                             tasks=tasks,

@@ -102,6 +102,10 @@ def main():
     if 'voter_name' not in st.session_state:
         st.session_state.voter_name = ""
     
+    # 투표 완료 상태 관리를 위한 세션 상태
+    if 'completed_votes' not in st.session_state:
+        st.session_state.completed_votes = set()
+    
     st.session_state.voter_name = st.text_input(
         "이름 (선택사항)",
         value=st.session_state.voter_name,
@@ -120,6 +124,11 @@ def main():
         st.write("---")
         st.write(f"## {q['title']}")
         st.write(q['description'])
+        
+        # 이미 투표 완료된 경우 메시지 표시
+        if q['question_id'] in st.session_state.completed_votes:
+            st.success("✅ 투표가 완료되었습니다!")
+            continue
         
         options = get_question_options(q['question_id'])
         if not options:
@@ -142,13 +151,18 @@ def main():
                 )
                 selected_options = [options[selected_index]['option_id']]
             
-            # 선택 이유 입력 필드 추가
             reasoning = st.text_area(
                 "선택 이유 (선택사항)",
                 help="선택하신 이유를 자유롭게 작성해주세요."
             )
             
-            if st.form_submit_button("투표하기"):
+            # 투표 완료 여부에 따라 버튼 상태 설정
+            submit_button = st.form_submit_button(
+                "투표하기",
+                disabled=(q['question_id'] in st.session_state.completed_votes)
+            )
+            
+            if submit_button:
                 if not selected_options:
                     st.error("최소 하나의 선택지를 선택해주세요.")
                 else:
@@ -161,6 +175,9 @@ def main():
                     
                     if success:
                         st.success(message)
+                        # 투표 완료 상태 저장
+                        st.session_state.completed_votes.add(q['question_id'])
+                        st.rerun()  # 페이지 새로고침하여 UI 업데이트
                     else:
                         st.error(message)
 
