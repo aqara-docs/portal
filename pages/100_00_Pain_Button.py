@@ -700,73 +700,6 @@ def get_user_id(user_name):
         cursor.close()
         conn.close()
 
-def get_pain_events(meeting_id=None, mode="independent", show_all=False):
-    """Pain 이벤트 목록 조회"""
-    conn = connect_to_db()
-    cursor = conn.cursor(dictionary=True)
-    
-    try:
-        if mode == "meeting":  # 회의 모드
-            if show_all:  # 모든 회의의 Pain 보기
-                cursor.execute("""
-                    SELECT 
-                        pe.*,
-                        s.user_name as sender_name,
-                        t.user_name as target_name,
-                        m.title as meeting_title
-                    FROM pain_events pe
-                    JOIN dot_user_credibility s ON pe.sender_id = s.user_id
-                    JOIN dot_user_credibility t ON pe.target_id = t.user_id
-                    JOIN dot_meetings m ON pe.meeting_id = m.meeting_id
-                    ORDER BY pe.created_at DESC
-                """)
-            else:  # 특정 회의의 Pain만 보기
-                cursor.execute("""
-                    SELECT 
-                        pe.*,
-                        s.user_name as sender_name,
-                        t.user_name as target_name,
-                        m.title as meeting_title
-                    FROM pain_events pe
-                    JOIN dot_user_credibility s ON pe.sender_id = s.user_id
-                    JOIN dot_user_credibility t ON pe.target_id = t.user_id
-                    JOIN dot_meetings m ON pe.meeting_id = m.meeting_id
-                    WHERE pe.meeting_id = %s
-                    ORDER BY pe.created_at DESC
-                """, (meeting_id,))
-        else:  # 독립 모드
-            if show_all:  # 모든 Pain 보기 (독립 + 회의)
-                cursor.execute("""
-                    SELECT 
-                        pe.*,
-                        s.user_name as sender_name,
-                        t.user_name as target_name,
-                        COALESCE(m.title, '(독립 모드)') as meeting_title
-                    FROM pain_events pe
-                    JOIN dot_user_credibility s ON pe.sender_id = s.user_id
-                    JOIN dot_user_credibility t ON pe.target_id = t.user_id
-                    LEFT JOIN dot_meetings m ON pe.meeting_id = m.meeting_id
-                    ORDER BY pe.created_at DESC
-                """)
-            else:  # 독립 모드 Pain만 보기
-                cursor.execute("""
-                    SELECT 
-                        pe.*,
-                        s.user_name as sender_name,
-                        t.user_name as target_name,
-                        '(독립 모드)' as meeting_title
-                    FROM pain_events pe
-                    JOIN dot_user_credibility s ON pe.sender_id = s.user_id
-                    JOIN dot_user_credibility t ON pe.target_id = t.user_id
-                    WHERE pe.meeting_id IS NULL
-                    ORDER BY pe.created_at DESC
-                """)
-        
-        return cursor.fetchall()
-    finally:
-        cursor.close()
-        conn.close()
-
 def main():
     # DB 초기화 (가장 먼저 실행)
     if not init_db():
@@ -1091,93 +1024,127 @@ def main():
                         st.info("AI 분석을 사용하려면 사이드바에서 AI 분석을 활성화하세요.")
     
     with tabs[2]:
-        st.header("토론/해결")
+        st.header("Pain 토론 & 해결")
         
-        # 모드에 따른 제목과 설명 표시
-        if mode == "회의 모드":
-            if selected_meeting:
-                st.subheader(f"📝 {selected_meeting['title']} - Pain 목록")
-                show_all = st.checkbox("다른 회의의 Pain도 함께 보기")
-                if show_all:
-                    st.write("모든 회의에서 등록된 Pain 목록입니다.")
-                    pains = get_pain_events(mode="meeting", show_all=True)
-                else:
-                    st.write(f"이 회의에서 발생한 Pain 목록입니다.")
-                    pains = get_pain_events(selected_meeting['meeting_id'], mode="meeting")
-            else:
-                st.warning("회의를 선택해주세요.")
-                st.stop()
-        else:  # 독립 모드
-            st.subheader("📝 독립적으로 등록된 Pain 보기")
-            show_all = st.checkbox("모든 Pain 보기 (회의 포함)")
-            if show_all:
-                st.write("모든 Pain 목록입니다 (회의 및 독립 모드).")
-                pains = get_pain_events(mode="independent", show_all=True)
-            else:
-                st.write("회의와 관계없이 독립적으로 등록된 Pain 목록입니다.")
-                pains = get_pain_events(mode="independent")
+        # 회의별 필터
+        show_all = st.checkbox("모든 회의의 Pain 보기")
         
-        if not pains:
-            if mode == "회의 모드":
-                if show_all:
-                    st.info("등록된 Pain이 없습니다.")
-                else:
-                    st.info("이 회의에서 등록된 Pain이 없습니다.")
-            else:
-                st.info("독립적으로 등록된 Pain이 없습니다.")
+        if show_all or mode == "독립 모드":
+            unresolved = get_unresolved_pains()
         else:
-            for pain in pains:
+            unresolved = get_unresolved_pains(selected_meeting['meeting_id'])
+        
+        # Pain 지표 (회의 모드일 때만 표시)
+        if mode == "회의 모드" and selected_meeting:
+            st.subheader("Pain 지표")
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                # 지표 업데이트
+                if st.button("지표 업데이트"):
+                    with st.spinner("지표를 업데이트하는 중..."):
+                        success, msg = update_pain_metrics(selected_meeting['meeting_id'])
+                        if success:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                
+                # 지표 표시
+                metrics = get_pain_metrics(selected_meeting['meeting_id'])
+                if metrics:
+                    for metric in metrics:
+                        st.metric(
+                            metric['description'],
+                            f"{metric['metric_value']:.1f}%"
+                            if metric['metric_type'].endswith('_rate')
+                            or metric['metric_type'].endswith('_ratio')
+                            else f"{metric['metric_value']:.1f}"
+                        )
+        
+        with col2:
+            st.info("""
+            **지표 설명**
+            - Pain 발생 빈도: 총 Pain 발생 횟수
+            - 평균 Pain 레벨: Pain의 평균 강도
+            - 영향 받은 참여자 비율: Pain을 받은 참여자의 비율
+            - 해결률: 해결된 Pain의 비율
+            - 토론 참여율: Pain당 평균 토론 수
+            """)
+        
+        # 미해결 Pain 목록
+        if unresolved:
+            for pain in unresolved:
                 with st.expander(
-                    f"😣 {pain['target_name']}에게 from {pain['sender_name']} "
-                    f"({pain['created_at'].strftime('%Y-%m-%d %H:%M')})"
-                    + (f" - {pain['meeting_title']}" if pain['meeting_title'] else " (독립 모드)")
+                    f"💬 {pain['created_at']} - {pain['category']} "
+                    f"(Pain 레벨: {pain['pain_level']}, 토론: {pain['discussion_count']})"
                 ):
-                    col1, col2 = st.columns([1, 2])
+                    col1, col2 = st.columns([3, 2])
                     
                     with col1:
-                        st.write(f"**Pain 레벨:** {pain['pain_level']}")
-                        st.write(f"**카테고리:** {pain['category']}")
-                        st.write(f"**감정:** {pain['emotion']}")
+                        st.write(f"**발신자:** {pain['sender_name']}")
+                        st.write(f"**대상자:** {pain['target_name']}")
+                        st.write(f"**회의:** {pain['meeting_title']}")
+                        st.write(f"**상황:** {pain['description']}")
+                        
+                        if pain['context']:
+                            st.write(f"**맥락:** {pain['context']}")
+                        
+                        # 토론
+                        st.write("---")
+                        st.write("**💬 토론:**")
+                        
+                        discussions = get_discussions(pain['id'])
+                        for d in discussions:
+                            st.write(f"- **{d['user_name']}:** {d['comment']}")
+                        
+                        # 새 의견 추가
+                        new_comment = st.text_area(
+                            "의견 추가",
+                            key=f"comment_{pain['id']}"
+                        )
+                        
+                        if st.button("의견 등록", key=f"add_comment_{pain['id']}"):
+                            if new_comment:
+                                success, msg = add_discussion(
+                                    pain['id'],
+                                    current_user_id,
+                                    new_comment
+                                )
+                                if success:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
                     
                     with col2:
-                        st.write("**상황 설명:**")
-                        st.write(pain['description'])
-                        if pain['context']:
-                            st.write("**맥락:**")
-                            st.write(pain['context'])
-                    
-                    # AI 분석 결과가 있는 경우 표시
-                    if pain.get('llm_analysis'):
-                        st.write("---")
                         st.write("**🤖 AI 분석:**")
-                        st.write(pain['llm_analysis'])
-                    
-                    # 토론
-                    st.write("---")
-                    st.write("**💬 토론:**")
-                    
-                    discussions = get_discussions(pain['id'])
-                    for d in discussions:
-                        st.write(f"- **{d['user_name']}:** {d['comment']}")
-                    
-                    # 새 의견 추가
-                    new_comment = st.text_area(
-                        "의견 추가",
-                        key=f"comment_{pain['id']}"
-                    )
-                    
-                    if st.button("의견 등록", key=f"add_comment_{pain['id']}"):
-                        if new_comment:
-                            success, msg = add_discussion(
-                                pain['id'],
-                                get_user_id(st.session_state.user_name),
-                                new_comment
-                            )
+                        if pain['llm_analysis']:
+                            st.write(pain['llm_analysis'])
+                        
+                        st.write("---")
+                        st.write("**✅ 해결 상태:**")
+                        
+                        resolution = st.text_area(
+                            "해결 방안",
+                            key=f"resolution_{pain['id']}"
+                        )
+                        
+                        status = st.selectbox(
+                            "상태",
+                            ["pending", "in_progress", "resolved"],
+                            key=f"status_{pain['id']}"
+                        )
+                        
+                        if st.button("상태 업데이트", key=f"update_{pain['id']}"):
+                            success, msg = update_pain_status(pain['id'], status, resolution)
                             if success:
                                 st.success(msg)
                                 st.rerun()
                             else:
                                 st.error(msg)
+        else:
+            st.info("현재 미해결된 Pain이 없습니다. 👍")
 
 if __name__ == "__main__":
     main() 
+    

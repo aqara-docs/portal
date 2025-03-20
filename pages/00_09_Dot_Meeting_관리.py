@@ -52,6 +52,15 @@ def create_meeting(title, description, created_by, primary_area_id, related_area
                     area_id == primary_area_id
                 ))
         
+        # 3. 생성자를 참여자로 자동 등록
+        cursor.execute("""
+            INSERT INTO dot_meeting_participants
+            (meeting_id, user_id)
+            SELECT %s, user_id
+            FROM dot_user_credibility
+            WHERE user_name = %s
+        """, (meeting_id, created_by))
+        
         conn.commit()
         return True, "회의가 생성되었습니다!"
     except mysql.connector.Error as err:

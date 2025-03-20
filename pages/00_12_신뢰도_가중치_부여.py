@@ -88,40 +88,136 @@ def calculate_suggested_credibility(user):
     cursor = conn.cursor(dictionary=True)
     
     try:
-        # 1. 평가 받은 점수 분석
+        # 1. 평가 받은 점수 분석 (최근 1년, 기간별 가중치 적용)
         cursor.execute("""
+            WITH period_ratings AS (
+                SELECT 
+                    r.rating_value,
+                    CASE 
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 3 MONTH) THEN 1.0
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH) THEN 0.8
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 9 MONTH) THEN 0.6
+                        ELSE 0.4
+                    END as time_weight
+                FROM dot_ideas i
+                LEFT JOIN dot_ratings r ON i.idea_id = r.idea_id
+                WHERE i.user_id = %s
+                AND r.created_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
+            )
             SELECT 
-                CAST(AVG(r.rating_value) AS FLOAT) as avg_rating,
-                COUNT(*) as rating_count
-            FROM dot_ideas i
-            LEFT JOIN dot_ratings r ON i.idea_id = r.idea_id
-            WHERE i.user_id = %s
+                CAST(SUM(rating_value * time_weight) / NULLIF(SUM(time_weight), 0) AS FLOAT) as weighted_avg_rating,
+                COUNT(*) as rating_count,
+                STDDEV(rating_value) as rating_stddev
+            FROM period_ratings
         """, (user['user_id'],))
         rating_result = cursor.fetchone()
         
-        avg_rating = float(rating_result['avg_rating'] or 0)
+        avg_rating = float(rating_result['weighted_avg_rating'] or 0)
         rating_count = rating_result['rating_count']
+        rating_stddev = float(rating_result['rating_stddev'] or 0)
         
-        # 평가 점수 계산 (-0.5 ~ +0.5)
-        rating_score = (avg_rating - 2.5) * 0.2
+        # 평가 점수 계산 (-0.4 ~ +0.4)
+        rating_consistency = 1 - min(rating_stddev / 5, 0.5)  # 0.5 ~ 1.0
+        rating_score = (avg_rating - 2.5) * 0.16 * rating_consistency
         
-        # 2. 평가 참여도 분석
+        # 2. 평가 참여도 및 질적 분석 (최근 1년, 기간별 가중치 적용)
         cursor.execute("""
-            SELECT COUNT(*) as given_ratings
-            FROM dot_ratings
-            WHERE rater_id = %s
+            WITH period_participation AS (
+                SELECT 
+                    r.rating_value,
+                    r.idea_id,
+                    CASE 
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 3 MONTH) THEN 1.0
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH) THEN 0.8
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 9 MONTH) THEN 0.6
+                        ELSE 0.4
+                    END as time_weight,
+                    (SELECT AVG(r2.rating_value) 
+                     FROM dot_ratings r2 
+                     WHERE r2.idea_id = r.idea_id) as avg_idea_rating
+                FROM dot_ratings r
+                WHERE r.rater_id = %s
+                AND r.created_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
+            )
+            SELECT 
+                COUNT(*) as given_ratings,
+                SUM(time_weight) as weighted_ratings,
+                AVG(ABS(rating_value - avg_idea_rating)) as rating_deviation
+            FROM period_participation
         """, (user['user_id'],))
         participation = cursor.fetchone()
+        
         given_ratings = participation['given_ratings']
+        weighted_ratings = float(participation['weighted_ratings'] or 0)
+        rating_deviation = float(participation['rating_deviation'] or 0)
         
         # 참여도 점수 계산 (0 ~ 0.3)
-        participation_score = min(given_ratings / 10, 0.3)
+        rating_quality = 1 - min(rating_deviation / 2, 0.5)  # 0.5 ~ 1.0
+        participation_score = min(weighted_ratings / 40, 0.3) * rating_quality
         
-        # 3. 기본 점수 (0.7)
-        base_score = 0.7
+        # 3. 분야별 전문성 반영 (최근 1년, 기간별 가중치 적용)
+        cursor.execute("""
+            WITH area_activity AS (
+                SELECT 
+                    ue.area_id,
+                    ue.expertise_score,
+                    COUNT(DISTINCT CASE 
+                        WHEN i.created_at >= DATE_SUB(NOW(), INTERVAL 3 MONTH) THEN i.idea_id * 1.0
+                        WHEN i.created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH) THEN i.idea_id * 0.8
+                        WHEN i.created_at >= DATE_SUB(NOW(), INTERVAL 9 MONTH) THEN i.idea_id * 0.6
+                        WHEN i.created_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR) THEN i.idea_id * 0.4
+                    END) as weighted_ideas_count,
+                    COUNT(DISTINCT CASE 
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 3 MONTH) THEN r.rating_id * 1.0
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH) THEN r.rating_id * 0.8
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 9 MONTH) THEN r.rating_id * 0.6
+                        WHEN r.created_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR) THEN r.rating_id * 0.4
+                    END) as weighted_ratings_count
+                FROM dot_user_expertise ue
+                LEFT JOIN dot_ideas i ON ue.user_id = i.user_id
+                LEFT JOIN dot_meetings m ON i.meeting_id = m.meeting_id 
+                    AND m.primary_area_id = ue.area_id
+                LEFT JOIN dot_ratings r ON ue.user_id = r.rater_id
+                    AND r.idea_id IN (
+                        SELECT i2.idea_id 
+                        FROM dot_ideas i2 
+                        JOIN dot_meetings m2 ON i2.meeting_id = m2.meeting_id
+                        WHERE m2.primary_area_id = ue.area_id
+                    )
+                WHERE ue.user_id = %s
+                AND (
+                    i.created_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
+                    OR r.created_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
+                )
+                GROUP BY ue.area_id, ue.expertise_score
+            ),
+            total_activity AS (
+                SELECT SUM(weighted_ideas_count + weighted_ratings_count) as total_weight
+                FROM area_activity
+            )
+            SELECT 
+                COALESCE(
+                    SUM(
+                        expertise_score * 
+                        (weighted_ideas_count + weighted_ratings_count) / 
+                        (SELECT total_weight FROM total_activity)
+                    ),
+                    1.0
+                ) as weighted_expertise
+            FROM area_activity
+        """, (user['user_id'],))
+        expertise_result = cursor.fetchone()
+        
+        weighted_expertise = float(expertise_result['weighted_expertise'])
+        expertise_bonus = (weighted_expertise - 1) * 0.1
+        
+        # 4. 기본 점수 (0.6)
+        base_score = 0.6
         
         # 최종 점수 계산 (0.2 ~ 1.5 범위)
-        suggested_score = max(0.2, min(1.5, base_score + rating_score + participation_score))
+        suggested_score = max(0.2, min(1.5, 
+            base_score + rating_score + participation_score + expertise_bonus
+        ))
         
         return suggested_score
     finally:
@@ -414,8 +510,8 @@ def main():
                 with col1:
                     st.write("#### 전문가 현황")
                     st.write(f"- 전문가 수: {area['expert_count'] or 0} 명")
-                    st.write(f"- 평균 전문성: {f'{area['avg_expertise']:.2f}' if area['avg_expertise'] else '0.00'}")
-                    st.write(f"- 최고 전문성: {f'{area['max_expertise']:.2f}' if area['max_expertise'] else '0.00'}")
+                    st.write(f"- 평균 전문성: {area['avg_expertise']:.2f}" if area['avg_expertise'] else '0.00')
+                    st.write(f"- 최고 전문성: {area['max_expertise']:.2f}" if area['max_expertise'] else '0.00')
                 
                 with col2:
                     st.write("#### 활동 통계")

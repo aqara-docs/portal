@@ -56,7 +56,7 @@ def get_meetings():
         conn.close()
 
 def get_meeting_results(meeting_id):
-    """회의 결과 상세 조회"""
+    """회의 결과 상세 조회 - 전문성 가중치 반영"""
     conn = connect_to_db()
     cursor = conn.cursor(dictionary=True)
     
@@ -71,15 +71,24 @@ def get_meeting_results(meeting_id):
                 ea.area_name,
                 i.category,
                 COUNT(DISTINCT r.rating_id) as rating_count,
-                AVG(CASE WHEN r.rating_type = 'agreement' THEN r.rating_value END) as avg_agreement,
-                AVG(CASE WHEN r.rating_type = 'feasibility' THEN r.rating_value END) as avg_feasibility,
-                AVG(CASE WHEN r.rating_type = 'impact' THEN r.rating_value END) as avg_impact,
+                -- 기본 평균
+                AVG(r.rating_value) as raw_avg_rating,
+                -- 전문성 가중 평균
+                SUM(r.rating_value * r.expertise_score * r.credibility_score) / 
+                    NULLIF(SUM(r.expertise_score * r.credibility_score), 0) as weighted_avg_rating,
+                -- 평가 유형별 가중 평균
                 AVG(CASE WHEN r.rating_type = 'agreement' 
-                    THEN r.rating_value * COALESCE(ue2.expertise_score, 1.0) END) as weighted_agreement,
+                    THEN r.rating_value * r.expertise_score * r.credibility_score END) /
+                    NULLIF(AVG(CASE WHEN r.rating_type = 'agreement' 
+                    THEN r.expertise_score * r.credibility_score END), 0) as weighted_agreement,
                 AVG(CASE WHEN r.rating_type = 'feasibility' 
-                    THEN r.rating_value * COALESCE(ue2.expertise_score, 1.0) END) as weighted_feasibility,
+                    THEN r.rating_value * r.expertise_score * r.credibility_score END) /
+                    NULLIF(AVG(CASE WHEN r.rating_type = 'feasibility' 
+                    THEN r.expertise_score * r.credibility_score END), 0) as weighted_feasibility,
                 AVG(CASE WHEN r.rating_type = 'impact' 
-                    THEN r.rating_value * COALESCE(ue2.expertise_score, 1.0) END) as weighted_impact
+                    THEN r.rating_value * r.expertise_score * r.credibility_score END) /
+                    NULLIF(AVG(CASE WHEN r.rating_type = 'impact' 
+                    THEN r.expertise_score * r.credibility_score END), 0) as weighted_impact
             FROM dot_ideas i
             JOIN dot_user_credibility uc ON i.user_id = uc.user_id
             JOIN dot_meetings m ON i.meeting_id = m.meeting_id
@@ -87,12 +96,9 @@ def get_meeting_results(meeting_id):
             LEFT JOIN dot_user_expertise ue ON i.user_id = ue.user_id 
                 AND m.primary_area_id = ue.area_id
             LEFT JOIN dot_ratings r ON i.idea_id = r.idea_id
-            LEFT JOIN dot_user_expertise ue2 ON r.rater_id = ue2.user_id 
-                AND m.primary_area_id = ue2.area_id
             WHERE i.meeting_id = %s
-            GROUP BY i.idea_id, i.idea_text, uc.user_name, uc.credibility_score, 
-                     m.primary_area_id, ea.area_name, i.category
-            ORDER BY rating_count DESC, i.created_at DESC
+            GROUP BY i.idea_id
+            ORDER BY weighted_avg_rating DESC
         """, (meeting_id,))
         return cursor.fetchall()
     finally:
@@ -165,8 +171,7 @@ def main():
     
     # 데이터프레임 생성 및 NaN 처리
     df = pd.DataFrame(results)
-    score_cols = ['avg_agreement', 'avg_feasibility', 'avg_impact', 
-                  'weighted_agreement', 'weighted_feasibility', 'weighted_impact']
+    score_cols = ['weighted_agreement', 'weighted_feasibility', 'weighted_impact']
     df[score_cols] = df[score_cols].fillna(0)
     
     # 1. 종합 통계
@@ -196,26 +201,25 @@ def main():
     
     # 3. 평가 점수 분포
     st.write("## 📈 평가 점수 분포")
-    score_cols = ['avg_agreement', 'avg_feasibility', 'avg_impact']
-    weighted_cols = ['weighted_agreement', 'weighted_feasibility', 'weighted_impact']
+    score_cols = ['weighted_agreement', 'weighted_feasibility', 'weighted_impact']
     score_names = ['동의도', '실현가능성', '영향력']
     
     fig_scores = go.Figure()
     
     # 기본 평균과 가중 평균 박스플롯
-    for col, name in zip(score_cols + weighted_cols, score_names * 2):
+    for col, name in zip(score_cols, score_names):
         values = df[df[col] > 0][col].tolist()
         if values:
             fig_scores.add_trace(go.Box(
                 y=values,
-                name=f"{name} ({'기본' if col in score_cols else '가중'})",
+                name=name,
                 boxpoints='all',
                 jitter=0.3,
                 pointpos=-1.8
             ))
     
     fig_scores.update_layout(
-        title="평가 점수 분포 (기본 vs 가중치 적용)",
+        title="평가 점수 분포 (전문성 가중치 적용)",
         yaxis_title="점수",
         showlegend=True
     )

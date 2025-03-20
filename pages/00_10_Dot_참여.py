@@ -159,6 +159,8 @@ def initialize_tables():
                 rater_id INT NOT NULL,
                 rating_type ENUM('agreement', 'feasibility', 'impact') NOT NULL,
                 rating_value INT NOT NULL,
+                expertise_score FLOAT DEFAULT 1.0,
+                credibility_score FLOAT DEFAULT 1.0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY unique_rating (idea_id, rater_id, rating_type),
@@ -167,12 +169,39 @@ def initialize_tables():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)
         
+        # 기존 테이블에 컬럼 추가 (이미 있는 경우 무시)
+        try:
+            cursor.execute("""
+                ALTER TABLE dot_ratings
+                ADD COLUMN expertise_score FLOAT DEFAULT 1.0,
+                ADD COLUMN credibility_score FLOAT DEFAULT 1.0
+            """)
+            conn.commit()
+            st.success("평가 테이블이 성공적으로 업데이트되었습니다.")
+        except mysql.connector.Error as err:
+            if err.errno != 1060:  # 1060은 "Duplicate column name" 에러
+                raise err
+        
         # 테이블이 제대로 생성되었는지 확인
         cursor.execute("SHOW TABLES LIKE 'dot_ratings'")
         if cursor.fetchone():
-            cursor.execute("SELECT COUNT(*) FROM dot_ratings")
-            count = cursor.fetchone()[0]
-            st.write(f"현재 저장된 평가 수: {count}")
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_ratings,
+                    AVG(expertise_score) as avg_expertise,
+                    AVG(credibility_score) as avg_credibility
+                FROM dot_ratings
+            """)
+            stats = cursor.fetchone()
+            avg_expertise = float(stats[1]) if stats[1] is not None else 1.0
+            avg_credibility = float(stats[2]) if stats[2] is not None else 1.0
+            
+            st.write(
+                "현재 저장된 평가 통계:\n"
+                f"- 총 평가 수: {stats[0]}\n"
+                f"- 평균 전문성 점수: {avg_expertise:.2f}\n"
+                f"- 평균 신뢰도 점수: {avg_credibility:.2f}"
+            )
         
         conn.commit()
     except mysql.connector.Error as err:
@@ -182,52 +211,44 @@ def initialize_tables():
         conn.close()
 
 def save_rating(idea_id, rater_id, rating_type, rating_value):
-    """평가 저장"""
+    """평가 저장 - 전문성 가중치 반영"""
     conn = connect_to_db()
     cursor = conn.cursor(dictionary=True)
     
     try:
-        # 1. 기존 평가 확인
+        # 회의의 주요 분야 확인
         cursor.execute("""
-            SELECT * FROM dot_ratings 
-            WHERE idea_id = %s AND rater_id = %s AND rating_type = %s
-        """, (idea_id, rater_id, rating_type))
-        existing = cursor.fetchone()
-        st.write("기존 평가:", existing)
+            SELECT m.primary_area_id, ue.expertise_score, uc.credibility_score
+            FROM dot_ideas i
+            JOIN dot_meetings m ON i.meeting_id = m.meeting_id
+            LEFT JOIN dot_user_expertise ue ON ue.user_id = %s 
+                AND ue.area_id = m.primary_area_id
+            JOIN dot_user_credibility uc ON uc.user_id = %s
+            WHERE i.idea_id = %s
+        """, (rater_id, rater_id, idea_id))
+        expertise_info = cursor.fetchone()
         
-        # 2. 평가 저장
+        # 평가 저장 시 전문성 정보도 함께 저장
         cursor.execute("""
             INSERT INTO dot_ratings 
-            (idea_id, rater_id, rating_type, rating_value)
-            VALUES (%s, %s, %s, %s)
+            (idea_id, rater_id, rating_type, rating_value, expertise_score, credibility_score)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
-            rating_value = VALUES(rating_value)
-        """, (idea_id, rater_id, rating_type, rating_value))
+            rating_value = VALUES(rating_value),
+            expertise_score = VALUES(expertise_score),
+            credibility_score = VALUES(credibility_score)
+        """, (
+            idea_id, 
+            rater_id, 
+            rating_type, 
+            rating_value,
+            expertise_info['expertise_score'] or 1.0,
+            expertise_info['credibility_score']
+        ))
         
         conn.commit()
-        rows_affected = cursor.rowcount
-        st.write(f"영향받은 행 수: {rows_affected}")
-        
-        # 3. 저장 후 확인
-        cursor.execute("""
-            SELECT * FROM dot_ratings 
-            WHERE idea_id = %s AND rater_id = %s AND rating_type = %s
-        """, (idea_id, rater_id, rating_type))
-        result = cursor.fetchone()
-        st.write("저장된 평가:", result)
-        
-        # 4. 전체 평가 수 확인
-        cursor.execute("""
-            SELECT COUNT(*) as total_ratings
-            FROM dot_ratings
-            WHERE idea_id = %s
-        """, (idea_id,))
-        total = cursor.fetchone()
-        st.write(f"이 의견의 전체 평가 수: {total['total_ratings']}")
-        
         return True, "평가가 저장되었습니다."
     except mysql.connector.Error as err:
-        st.error(f"SQL Error: {err}")
         return False, f"평가 저장 중 오류 발생: {err}"
     finally:
         cursor.close()

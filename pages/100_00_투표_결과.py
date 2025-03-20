@@ -64,8 +64,8 @@ def get_question_results(question_id):
     try:
         # 전체 투표 수 조회
         cursor.execute("""
-            SELECT COUNT(DISTINCT r.response_id) as total_votes
-            FROM vote_responses r
+            SELECT COUNT(*) as total_votes
+            FROM vote_responses
             WHERE question_id = %s
         """, (question_id,))
         total_votes = cursor.fetchone()['total_votes']
@@ -75,9 +75,9 @@ def get_question_results(question_id):
             SELECT 
                 o.option_id,
                 o.option_text,
-                COUNT(DISTINCT r.response_id) as vote_count,
+                COUNT(r.response_id) as vote_count,
                 COALESCE(
-                    ROUND(COUNT(DISTINCT r.response_id) * 100.0 / NULLIF(%s, 0), 1),
+                    ROUND(COUNT(r.response_id) * 100.0 / NULLIF(%s, 0), 1),
                     0.0
                 ) as vote_percentage,
                 GROUP_CONCAT(DISTINCT r.reasoning SEPARATOR '\n') as reasonings
@@ -89,16 +89,12 @@ def get_question_results(question_id):
         """, (total_votes, question_id))
         results = cursor.fetchall()
         
-        # 투표자 목록 조회 (신뢰도 점수 포함)
+        # 투표자 목록 조회
         cursor.execute("""
-            SELECT DISTINCT 
-                r.voter_name,
-                COALESCE(uc.credibility_score, 1.0) as credibility_score
-            FROM vote_responses r
-            LEFT JOIN dot_user_credibility uc 
-                ON r.voter_name COLLATE utf8mb4_unicode_ci = uc.user_name COLLATE utf8mb4_unicode_ci
-            WHERE r.question_id = %s AND r.voter_name IS NOT NULL
-            ORDER BY r.voter_name
+            SELECT DISTINCT voter_name
+            FROM vote_responses
+            WHERE question_id = %s AND voter_name IS NOT NULL
+            ORDER BY voter_name
         """, (question_id,))
         voters = cursor.fetchall()
         
@@ -110,15 +106,15 @@ def get_question_results(question_id):
 def get_available_models():
     """Ollama에서 사용 가능한 모델 목록 반환"""
     return [
-        "llama2:latest",      # 기본 모델
-        "mistral:latest",     # 소형 모델
-        "phi:latest",         # 소형 모델
-        "gemma:latest",       # 소형 모델
-        "neural-chat:latest", # 소형 모델
-        "stablelm2:latest",   # 소형 모델
-        "codellama:latest",   # 코딩 특화 모델
-        "dolphin-phi:latest", # 대화 특화 모델
-        "orca-mini:latest"    # 경량 모델
+        "llama3.3:latest",    # 가장 큰 모델 (42GB)
+        "deepseek-r1:70b",    # 대형 모델 (42GB)
+        "deepseek-r1:32b",    # 중형 모델 (19GB)
+        "phi4:latest",        # 중형 모델 (9.1GB)
+        "deepseek-r1:14b",    # 중형 모델 (9GB)
+        "gemma2:latest",      # 소형 모델 (5.4GB)
+        "llama3.1:latest",    # 소형 모델 (4.9GB)
+        "mistral:latest",     # 소형 모델 (4.1GB)
+        "llama2:latest"       # 소형 모델 (3.8GB)
     ]
 
 def get_llm_vote(question_id, model_name):
@@ -186,41 +182,13 @@ def load_files(files):
     return documents
 
 def create_vectorstore(documents):
-    """벡터 스토어 생성"""
+    """문서로부터 벡터 스토어 생성"""
     try:
-        # 텍스트 분할
-        text_splitter = CharacterTextSplitter(
-            separator="\n",
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len
-        )
-        
-        # 문서 분할
-        splits = text_splitter.split_documents(documents)
-        
-        # 임베딩 생성 (기본 모델 사용)
-        embeddings = OllamaEmbeddings(
-            model="llama2"
-        )
-        
-        # ChromaDB를 사용한 벡터 스토어 생성
-        from langchain.vectorstores import Chroma
-        
-        # 임시 디렉토리 생성
-        with tempfile.TemporaryDirectory() as temp_dir:
-            vectorstore = Chroma.from_documents(
-                documents=splits,
-                embedding=embeddings,
-                persist_directory=temp_dir  # 임시 디렉토리 지정
-            )
-            
-            return vectorstore
-            
+        embeddings = OllamaEmbeddings(model="nomic-embed-text")
+        vectorstore = FAISS.from_documents(documents, embeddings)
+        return vectorstore
     except Exception as e:
         st.error(f"벡터 스토어 생성 중 오류 발생: {e}")
-        if "404" in str(e):
-            st.info("필요한 모델을 설치하려면 터미널에서 다음 명령어를 실행하세요:\n```bash\nollama pull llama2\n```")
         return None
 
 def get_relevant_context(vectorstore, question, options):
@@ -354,85 +322,29 @@ def save_llm_vote(question_id, option_id, model_name, reasoning, weight):
         cursor.close()
         conn.close()
 
-def get_combined_results(question_id, apply_weights=False):
+def get_combined_results(question_id):
     """일반 투표와 LLM 투표 결과 모두 가져오기"""
     conn = connect_to_db()
     cursor = conn.cursor(dictionary=True)
     
     try:
-        if apply_weights:
-            # 신뢰도 가중치를 적용한 쿼리
-            cursor.execute("""
-                WITH vote_data AS (
-                    SELECT 
-                        r.option_id,
-                        COUNT(DISTINCT r.response_id) as vote_count,
-                        SUM(COALESCE(uc.credibility_score, 1.0)) as total_credibility
-                    FROM vote_responses r
-                    LEFT JOIN dot_user_credibility uc 
-                        ON r.voter_name COLLATE utf8mb4_unicode_ci = uc.user_name COLLATE utf8mb4_unicode_ci
-                    WHERE r.question_id = %s
-                    GROUP BY r.option_id
-                ),
-                llm_data AS (
-                    SELECT 
-                        option_id,
-                        SUM(weight) as total_weight
-                    FROM vote_llm_responses
-                    WHERE question_id = %s
-                    GROUP BY option_id
-                )
-                SELECT 
-                    o.option_text,
-                    COALESCE(v.vote_count, 0) as raw_human_votes,
-                    CAST(COALESCE(v.total_credibility, 0) AS SIGNED) as human_votes,
-                    CAST(COALESCE(l.total_weight, 0) AS SIGNED) as weighted_llm_votes,
-                    CAST(
-                        COALESCE(v.total_credibility, 0) + COALESCE(l.total_weight, 0)
-                        AS SIGNED
-                    ) as total_votes
-                FROM vote_options o
-                LEFT JOIN vote_data v ON o.option_id = v.option_id
-                LEFT JOIN llm_data l ON o.option_id = l.option_id
-                WHERE o.question_id = %s
-                ORDER BY total_votes DESC
-            """, (question_id, question_id, question_id))
-        else:
-            cursor.execute("""
-                WITH vote_data AS (
-                    SELECT 
-                        option_id,
-                        COUNT(DISTINCT response_id) as vote_count
-                    FROM vote_responses
-                    WHERE question_id = %s
-                    GROUP BY option_id
-                ),
-                llm_data AS (
-                    SELECT 
-                        option_id,
-                        SUM(weight) as total_weight
-                    FROM vote_llm_responses
-                    WHERE question_id = %s
-                    GROUP BY option_id
-                )
-                SELECT 
-                    o.option_text,
-                    COALESCE(v.vote_count, 0) as human_votes,
-                    CAST(COALESCE(l.total_weight, 0) AS SIGNED) as weighted_llm_votes,
-                    CAST(
-                        COALESCE(v.vote_count, 0) + COALESCE(l.total_weight, 0)
-                        AS SIGNED
-                    ) as total_votes
-                FROM vote_options o
-                LEFT JOIN vote_data v ON o.option_id = v.option_id
-                LEFT JOIN llm_data l ON o.option_id = l.option_id
-                WHERE o.question_id = %s
-                ORDER BY total_votes DESC
-            """, (question_id, question_id, question_id))
-        
-        results = cursor.fetchall()
-        print("Combined Results:", results)  # Debugging output
-        return results
+        cursor.execute("""
+            SELECT 
+                o.option_text,
+                CAST(COUNT(DISTINCT r.response_id) AS SIGNED) as human_votes,
+                CAST(COALESCE(SUM(lr.weight), 0) AS SIGNED) as weighted_llm_votes,
+                CAST(
+                    COUNT(DISTINCT r.response_id) + COALESCE(SUM(lr.weight), 0)
+                    AS SIGNED
+                ) as total_votes
+            FROM vote_options o
+            LEFT JOIN vote_responses r ON o.option_id = r.option_id
+            LEFT JOIN vote_llm_responses lr ON o.option_id = lr.option_id
+            WHERE o.question_id = %s
+            GROUP BY o.option_id, o.option_text
+            ORDER BY total_votes DESC
+        """, (question_id,))
+        return cursor.fetchall()
     finally:
         cursor.close()
         conn.close()
@@ -512,14 +424,8 @@ def main():
         results, voters = get_question_results(selected_question['question_id'])
         
         if results:
-            # Print the column names for debugging
-            print("Column Names:", results[0].keys())  # Debugging output
-
-            # Create DataFrame with correct column names
-            df_results = pd.DataFrame(results).astype({
-                'vote_count': 'int64',
-                'vote_percentage': 'float64'
-            })
+            # 결과를 DataFrame으로 변환
+            df_results = pd.DataFrame(results)
             
             # 차트 그리기
             col1, col2 = st.columns([2, 1])
@@ -561,7 +467,7 @@ def main():
             if voters:
                 with st.expander("투표자 목록 보기 (익명 제외)"):
                     for voter in voters:
-                        st.write(f"- {voter['voter_name']} (신뢰도: {voter['credibility_score']:.2f})")
+                        st.write(f"- {voter['voter_name']}")
             
             # 관리자 기능
             if selected_question['status'] == 'active':
@@ -704,51 +610,26 @@ def main():
         st.write("---")
         st.write("## 📊 통합 결과 비교")
         
-        # 신뢰도 가중치 적용 여부 선택
-        apply_weights = st.checkbox("참여자 신뢰도 가중치 적용", 
-                                  help="체크하면 00_12_신뢰도_가중치_부여.py에서 설정된 신뢰도 점수가 투표에 반영됩니다.")
-        
-        results = get_combined_results(selected_question['question_id'], apply_weights)
+        results = get_combined_results(selected_question['question_id'])
         if results:
-            # Print the column names for debugging
-            print("Combined Results Column Names:", results[0].keys())
-
-            # Create DataFrame with correct column names
-            df_results = pd.DataFrame(results)
-            
-            # Convert numeric columns to appropriate types
-            numeric_columns = ['human_votes', 'weighted_llm_votes', 'total_votes']
-            if apply_weights:
-                numeric_columns.append('raw_human_votes')
-            
-            for col in numeric_columns:
-                if col in df_results.columns:
-                    df_results[col] = pd.to_numeric(df_results[col], errors='coerce').fillna(0).astype('int64')
+            # 데이터프레임 생성 시 타입 명시
+            df_results = pd.DataFrame(results).astype({
+                'human_votes': 'int64',
+                'weighted_llm_votes': 'int64',
+                'total_votes': 'int64'
+            })
             
             # 인간 투표 차트
             fig1 = px.bar(
                 df_results,
                 x='option_text',
-                y='raw_human_votes' if apply_weights else 'human_votes',
-                title=f"인간 투표 결과 {'(가중치 적용 전)' if apply_weights else ''}",
-                labels={'option_text': '선택지', 
-                       'raw_human_votes': '투표 수', 
-                       'human_votes': '투표 수'}
+                y='human_votes',
+                title="인간 투표 결과",
+                labels={'option_text': '선택지', 'human_votes': '투표 수'}
             )
             st.plotly_chart(fig1, use_container_width=True)
             
-            if apply_weights:
-                # 가중치가 적용된 인간 투표 차트
-                fig_weighted = px.bar(
-                    df_results,
-                    x='option_text',
-                    y='human_votes',
-                    title="인간 투표 결과 (가중치 적용 후)",
-                    labels={'option_text': '선택지', 'human_votes': '가중치 적용된 투표 수'}
-                )
-                st.plotly_chart(fig_weighted, use_container_width=True)
-            
-            # 통합 결과 차트
+            # 통합 결과 차트 (가중치 적용)
             df_melted = pd.melt(
                 df_results,
                 id_vars=['option_text'],
@@ -760,7 +641,7 @@ def main():
                 x='option_text',
                 y='value',
                 color='variable',
-                title=f"통합 투표 결과 (인간{' (가중치 적용)' if apply_weights else ''} + LLM)",
+                title="통합 투표 결과 (인간 + 가중치 적용된 LLM)",
                 labels={
                     'option_text': '선택지',
                     'value': '투표 수',
@@ -771,7 +652,7 @@ def main():
             
             # 범례 이름 변경
             fig2.update_traces(
-                name=f"인간 투표{' (가중치 적용)' if apply_weights else ''}",
+                name="인간 투표",
                 selector=dict(name="human_votes")
             )
             fig2.update_traces(
@@ -782,5 +663,4 @@ def main():
             st.plotly_chart(fig2, use_container_width=True)
 
 if __name__ == "__main__":
-    os.environ['PYTHONPATH'] = os.getcwd()
     main() 
