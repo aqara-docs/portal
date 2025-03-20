@@ -13,6 +13,7 @@ from langchain.tools import Tool, BaseTool
 from typing import List
 import asyncio
 import markdown
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
@@ -61,13 +62,14 @@ def create_llm(provider, model_name):
             def __init__(self, model_name, temperature=0.7):
                 self.chat_model = ChatOllama(
                     model=model_name,
-                    temperature=temperature,
-                    num_ctx=4096,  # 컨텍스트 크기 지정
-                    repeat_penalty=1.1,  # 반복 패널티 추가
-                    num_predict=2048,  # 예측 토큰 수 제한
-                    stop=["Human:", "Assistant:"]  # 응답 종료 토큰 지정
+                    temperature=temperature
                 )
                 self.model_name = model_name
+                self.text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=4000,
+                    chunk_overlap=200,
+                    length_function=len
+                )
             
             def __str__(self):
                 return f"Ollama ({self.model_name})"
@@ -81,14 +83,27 @@ def create_llm(provider, model_name):
                     elif not isinstance(prompt, str):
                         prompt = str(prompt)
                     
-                    # 직접 프롬프트 전송
-                    response = self.chat_model.predict(prompt)
-                    
-                    # 응답이 없는 경우 처리
-                    if not response:
-                        return "응답을 생성할 수 없습니다. 다시 시도해주세요."
-                    
-                    return response
+                    # 긴 텍스트 분할
+                    if len(prompt) > 4000:
+                        chunks = self.text_splitter.split_text(prompt)
+                        responses = []
+                        
+                        # 각 청크 처리
+                        for i, chunk in enumerate(chunks):
+                            if i == 0:  # 첫 번째 청크
+                                chunk_prompt = chunk
+                            else:  # 이후 청크들
+                                chunk_prompt = f"이전 내용을 이어서 계속 분석해주세요:\n\n{chunk}"
+                            
+                            response = self.chat_model.predict(chunk_prompt)
+                            responses.append(response)
+                        
+                        # 응답 결합
+                        final_response = "\n\n".join(responses)
+                        return final_response
+                    else:
+                        # 짧은 텍스트는 직접 처리
+                        return self.chat_model.predict(prompt)
                     
                 except Exception as e:
                     st.error(f"Ollama 응답 처리 중 오류: {str(e)}")
