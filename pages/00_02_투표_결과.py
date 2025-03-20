@@ -17,6 +17,8 @@ from langchain.document_loaders import (
     DirectoryLoader
 )
 import tempfile
+import requests
+import json
 
 load_dotenv()
 
@@ -110,15 +112,15 @@ def get_question_results(question_id):
 def get_available_models():
     """Ollama에서 사용 가능한 모델 목록 반환"""
     return [
-        "llama2:latest",      # 기본 모델
-        "mistral:latest",     # 소형 모델
-        "phi:latest",         # 소형 모델
-        "gemma:latest",       # 소형 모델
-        "neural-chat:latest", # 소형 모델
-        "stablelm2:latest",   # 소형 모델
-        "codellama:latest",   # 코딩 특화 모델
-        "dolphin-phi:latest", # 대화 특화 모델
-        "orca-mini:latest"    # 경량 모델
+        "deepseek-r1:70b",  # 42GB - 가장 큰 모델
+        "deepseek-r1:32b",  # 19GB
+        "deepseek-r1:14b",  # 9.0GB
+        "phi4:latest",      # 9.1GB
+        "gemma2:latest",    # 5.4GB
+        "llama3.1:latest",  # 4.9GB
+        "mistral:latest",   # 4.1GB
+        "llama2:latest",    # 3.8GB
+        "llama3.2:latest"   # 2.0GB
     ]
 
 def get_llm_vote(question_id, model_name):
@@ -240,54 +242,62 @@ def get_relevant_context(vectorstore, question, options):
 
 def ask_llm(question, options, model_name, context=""):
     """LLM에게 투표 요청하고 응답 받기"""
-    llm = ChatOllama(
-        model=model_name,
-        temperature=0.1,
-        format="json"
-    )
-    
-    # 문맥이 있는 경우와 없는 경우의 프롬프트 분리
-    if context:
-        prompt = f"""
-        당신은 투표 시스템의 참여자입니다. 
-        아래 제공된 문맥, 질문, 선택지를 신중히 분석하고 가장 적절한 답을 선택해주세요.
+    try:
+        # Ollama API 직접 호출
+        # 프롬프트 구성
+        if context:
+            prompt = f"""
+            당신은 투표 시스템의 참여자입니다. 
+            아래 제공된 문맥, 질문, 선택지를 신중히 분석하고 가장 적절한 답을 선택해주세요.
+            
+            참고할 문맥:
+            {context}
+            
+            질문: {question}
+            
+            선택지:
+            {options}
+            """
+        else:
+            prompt = f"""
+            당신은 투표 시스템의 참여자입니다. 
+            아래 질문과 선택지를 신중히 분석하고 가장 적절한 답을 선택해주세요.
+            
+            질문: {question}
+            
+            선택지:
+            {options}
+            """
         
-        참고할 문맥:
-        {context}
-        
-        질문: {question}
-        
-        선택지:
-        {options}
+        prompt += """
+        다음 JSON 형식으로 정확히 답변해주세요:
+        {
+            "selection": <선택한 번호>,
+            "reasoning": "<선택한 이유에 대한 상세 설명>",
+            "reference": "<참고한 문맥 내용 요약 또는 '문맥 없음'>"
+        }
         """
-    else:
-        prompt = f"""
-        당신은 투표 시스템의 참여자입니다. 
-        아래 질문과 선택지를 신중히 분석하고 가장 적절한 답을 선택해주세요.
         
-        질문: {question}
+        # Ollama API 호출
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": model_name,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+                "temperature": 0.1
+            }
+        )
         
-        선택지:
-        {options}
-        """
-    
-    prompt += """
-    다음 JSON 형식으로 정확히 답변해주세요:
-    {
-        "selection": <선택한 번호>,
-        "reasoning": "<선택한 이유에 대한 상세 설명>",
-        "reference": "<참고한 문맥 내용 요약 또는 '문맥 없음'>"
-    }
-    
-    주의사항:
-    1. selection은 반드시 숫자만 입력
-    2. reasoning은 논리적이고 구체적인 이유 설명
-    3. reference는 참고한 문맥이 있는 경우 관련 내용 요약
-    4. JSON 형식을 정확히 지켜주세요
-    """
-    
-    response = llm.invoke(prompt)
-    return response.content
+        response.raise_for_status()
+        result = response.json()
+        
+        return result.get('response', '')
+        
+    except Exception as e:
+        st.error(f"LLM 호출 중 오류 발생: {str(e)}")
+        return None
 
 def parse_llm_response(response_text):
     """LLM 응답을 파싱하여 선택 번호와 이유 추출"""
