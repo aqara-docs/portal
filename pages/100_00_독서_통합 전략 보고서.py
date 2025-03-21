@@ -119,12 +119,12 @@ def main():
             with col1:
                 blue_ocean = st.checkbox("블루오션 전략 (Blue Ocean Strategy)", 
                     help="ERRC 그리드와 전략 캔버스를 통한 가치 혁신 분석")
-                coopetition = st.checkbox("협력적 경쟁관계 (Coopetition)", 
-                    help="경쟁사와의 협력을 통한 가치 창출 전략")
-                toc = st.checkbox("제약이론 (Theory of Constraints)", 
-                    help="시스템의 제약요소 식별 및 개선을 통한 성과 향상")
-                porter_competitive = st.checkbox("마이클 포터의 경쟁전략", 
-                    help="원가우위, 차별화, 집중화 전략을 통한 경쟁우위 확보")
+                ansoff = st.checkbox("안소프 매트릭스 (Ansoff Matrix)", 
+                    help="시장과 제품 관점의 4가지 성장 전략 도출")
+                pestel = st.checkbox("PESTEL 분석", 
+                    help="정치, 경제, 사회, 기술, 환경, 법률 관점의 거시환경 분석")
+                porter = st.checkbox("포터의 5가지 힘 (Porter's Five Forces)", 
+                    help="산업 구조와 경쟁 강도 분석")
                 swot = st.checkbox("SWOT 분석", 
                     help="강점, 약점, 기회, 위협 요인 분석")
             
@@ -133,10 +133,10 @@ def main():
                     help="9개 블록으로 구성된 비즈니스 모델 분석")
                 vrio = st.checkbox("VRIO 프레임워크", 
                     help="자원 기반 관점의 경쟁 우위 분석")
-                game_theory = st.checkbox("게임이론 (Game Theory)", 
-                    help="전략적 의사결정과 경쟁자 반응 예측을 위한 분석")
                 lean = st.checkbox("린 스타트업 & 고객 개발 모델", 
                     help="MVP와 고객 피드백 기반의 반복 개선 전략")
+                bsc = st.checkbox("밸런스드 스코어카드", 
+                    help="재무, 고객, 프로세스, 학습/성장 관점의 성과 지표")
                 disruptive = st.checkbox("디스럽티브 이노베이션", 
                     help="파괴적 혁신을 통한 시장 재편 전략")
             
@@ -150,14 +150,14 @@ def main():
             # 선택된 프레임워크 목록 생성
             selected_frameworks = []
             if blue_ocean: selected_frameworks.append("블루오션 전략")
-            if coopetition: selected_frameworks.append("협력적 경쟁관계")
-            if toc: selected_frameworks.append("제약이론")
-            if porter_competitive: selected_frameworks.append("마이클 포터의 경쟁전략")
+            if ansoff: selected_frameworks.append("안소프 매트릭스")
+            if pestel: selected_frameworks.append("PESTEL 분석")
+            if porter: selected_frameworks.append("포터의 5가지 힘")
             if swot: selected_frameworks.append("SWOT 분석")
             if bmc: selected_frameworks.append("비즈니스 모델 캔버스")
             if vrio: selected_frameworks.append("VRIO 프레임워크")
-            if game_theory: selected_frameworks.append("게임이론")
             if lean: selected_frameworks.append("린 스타트업 & 고객 개발 모델")
+            if bsc: selected_frameworks.append("밸런스드 스코어카드")
             if disruptive: selected_frameworks.append("디스럽티브 이노베이션")
             if custom_framework: selected_frameworks.append(custom_framework)
 
@@ -622,10 +622,9 @@ def create_strategic_agents(llm, selected_frameworks, active_agents, debug_mode=
         "SWOT 분석": "내부 역량과 외부 환경 분석 전문가",
         "비즈니스 모델 캔버스": "비즈니스 모델 혁신 전문가",
         "포터의 5가지 힘": "산업 구조와 경쟁 분석 전문가",
-        "협력적 경쟁관계": "경쟁사와의 협력 전략 전문가",
-        "제약이론": "시스템 제약 식별 및 개선 전문가",
-        "마이클 포터의 경쟁전략": "경쟁우위 확보 전략 전문가",
-        "게임이론": "전략적 의사결정 및 경쟁자 행동 예측 전문가",
+        "PESTEL 분석": "거시환경 분석 전문가",
+        "안소프 매트릭스": "성장 전략 전문가",
+        "밸런스드 스코어카드": "성과 관리 전문가",
         "디스럽티브 이노베이션": "혁신 전략 전문가"
     }
 
