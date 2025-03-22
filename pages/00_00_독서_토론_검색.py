@@ -83,7 +83,8 @@ def main():
         type_mapping = {
             "요약": "summary",
             "적용": "application",
-            "적용 비교": "application_compare"  # 새로운 유형 추가
+            "적용 고급": "application_advanced",  # 새로운 유형 추가
+            "적용 비교": "application_compare"
         }
         material_type = st.selectbox(
             "자료 유형",
@@ -92,7 +93,7 @@ def main():
     
     # 적용 자료인 경우 분석 키워드 선택
     analysis_keyword = None
-    if material_type in ["적용", "적용 비교"]:
+    if material_type in ["적용", "적용 고급", "적용 비교"]:
         keywords = ["가치 창조", "마케팅", "세일즈", "가치 전달", "재무", "기타"]
         selected_keyword = st.selectbox("분석 키워드", keywords)
         
@@ -104,6 +105,9 @@ def main():
     # 적용 비교 모드
     if material_type == "적용 비교":
         show_application_comparison(selected_title, analysis_keyword, model_key, model_name)
+    # 적용 고급 모드
+    elif material_type == "적용 고급":
+        show_advanced_application(selected_title, analysis_keyword, model_key, model_name)
     else:
         # 기존 파일 목록 조회 및 표시 로직
         files = get_files(selected_title, type_mapping[material_type])
@@ -588,6 +592,334 @@ def compare_applications(content1, content2, keyword, model_key, model_name):
     except Exception as e:
         st.error(f"비교 분석 중 오류 발생: {str(e)}")
         return "비교 분석 중 오류가 발생했습니다. 다시 시도해 주세요."
+
+def show_advanced_application(book_title, keyword, model_key, model_name):
+    """적용 고급 모드 - AI 분석 결과를 반영한 개선된 보고서 생성"""
+    # 기존 get_files 함수 사용 - 키워드와 상관없이 모든 적용 파일 표시
+    files = get_files(book_title, "application")
+    
+    if not files:
+        st.info(f"{book_title}의 적용 자료가 없습니다.")
+        return
+    
+    # 파일 선택
+    selected_file = st.selectbox(
+        "분석할 파일 선택",
+        files,
+        format_func=lambda x: f"{x['file_name']} ({x['created_at'].strftime('%Y-%m-%d')})"
+    )
+    
+    if selected_file:
+        # 파일 내용 표시
+        st.write(f"### 📄 {selected_file['file_name']}")
+        st.markdown(selected_file['content'])
+        st.write("---")
+        st.write(f"*등록일: {selected_file['created_at'].strftime('%Y-%m-%d')}*")
+        
+        # AI 분석 컨테이너
+        analysis_container = st.container()
+        
+        # AI 분석 버튼
+        if st.button("🤖 AI 분석"):
+            with st.spinner("AI가 분석 중입니다..."):
+                analysis_result = analyze_content(selected_file['content'], keyword, model_key, model_name)
+                st.session_state.analysis_result = analysis_result
+        
+        # AI 분석 결과가 있으면 표시
+        if 'analysis_result' in st.session_state:
+            with analysis_container:
+                st.write("### 🔍 AI 분석 결과")
+                st.markdown(st.session_state.analysis_result)
+                
+                # 개선된 보고서 생성 버튼
+                if st.button("✨ 개선된 보고서 생성"):
+                    with st.spinner("AI가 개선된 보고서를 생성 중입니다..."):
+                        improved_report = generate_improved_report(
+                            selected_file['content'], 
+                            st.session_state.analysis_result,
+                            keyword
+                        )
+                        st.session_state.improved_report = improved_report
+                
+                # 개선된 보고서가 있으면 표시
+                if 'improved_report' in st.session_state:
+                    st.write("### 📝 개선된 보고서")
+                    
+                    # 긴 보고서를 섹션별로 분할하여 표시
+                    improved_report = st.session_state.improved_report
+                    sections = improved_report.split("\n## ")
+                    
+                    if len(sections) > 1:
+                        # 첫 번째 섹션 (제목 포함)
+                        st.markdown(sections[0])
+                        
+                        # 나머지 섹션들을 탭으로 표시
+                        tabs = st.tabs([s.split("\n")[0] for s in sections[1:]])
+                        for i, tab in enumerate(tabs):
+                            with tab:
+                                st.markdown("## " + sections[i+1])
+                    else:
+                        # 섹션이 없으면 전체 표시
+                        st.markdown(improved_report)
+                    
+                    # 다운로드 버튼
+                    download_filename = f"{selected_file['file_name'].split('.')[0]}_improved.md"
+                    st.download_button(
+                        label="📥 개선된 보고서 다운로드",
+                        data=st.session_state.improved_report,
+                        file_name=download_filename,
+                        mime="text/markdown"
+                    )
+                    
+                    # 저장 버튼
+                    if st.button("💾 개선된 보고서 저장"):
+                        with st.spinner("보고서를 저장 중입니다..."):
+                            save_result = save_improved_report(
+                                book_title,
+                                keyword,
+                                download_filename,
+                                st.session_state.improved_report
+                            )
+                            if save_result:
+                                st.success("개선된 보고서가 저장되었습니다!")
+                            else:
+                                st.error("보고서 저장 중 오류가 발생했습니다.")
+
+def generate_improved_report(original_content, analysis_result, keyword):
+    """AI 분석 결과를 반영하여 개선된 보고서 생성"""
+    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    
+    try:
+        # 긴 내용을 처리하기 위한 청크 기반 접근법
+        if len(original_content) > 6000:
+            st.info("보고서가 길어 섹션별로 처리합니다. 잠시만 기다려주세요...")
+            
+            # 1. 원본 보고서를 섹션으로 분할
+            sections = split_into_sections(original_content)
+            
+            # 2. 분석 결과에서 개선사항 추출
+            improvements = extract_improvements(analysis_result)
+            
+            # 3. 각 섹션별로 관련 개선사항 적용
+            improved_sections = []
+            progress_bar = st.progress(0)
+            
+            for i, section in enumerate(sections):
+                # 이 섹션과 관련된 개선사항 찾기
+                relevant_improvements = find_relevant_improvements(section, improvements)
+                
+                # 섹션 개선
+                if relevant_improvements:
+                    improved_section = improve_section(section, relevant_improvements, keyword)
+                else:
+                    improved_section = section
+                
+                improved_sections.append(improved_section)
+                progress_bar.progress((i + 1) / len(sections))
+            
+            # 4. 개선된 섹션 결합
+            return "\n\n".join(improved_sections)
+        
+        else:
+            # 기존 방식: 한 번에 처리
+            prompt = f"""
+            다음은 '{keyword}' 관점에서 작성된 원본 사업 전략 보고서입니다:
+            
+            [원본 보고서]
+            {original_content}
+            
+            다음은 이 보고서에 대한 AI 분석 결과입니다:
+            
+            [AI 분석 결과]
+            {analysis_result}
+            
+            위 AI 분석 결과에서 제시된 개선사항과 실행 제안을 반영하여 원본 보고서를 개선해주세요.
+            
+            절대적 요구사항:
+            1. 원본 보고서의 모든 내용을 100% 유지해야 합니다. 어떤 내용도 삭제하거나 축약하지 마세요.
+            2. 원본 보고서의 모든 섹션, 소제목, 구조를 그대로 유지하세요.
+            3. AI 분석에서 지적된 개선점과 실행 제안을 원본 보고서의 적절한 위치에 추가하세요.
+            4. 추가된 내용은 원본 내용과 자연스럽게 통합되어야 합니다.
+            5. 원본의 톤과 스타일을 유지하세요.
+            6. 마크다운 형식을 유지하세요.
+            
+            최종 결과물은 원본 보고서의 모든 내용을 그대로 포함하면서, AI 분석의 개선사항과 제안사항이 자연스럽게 통합된 보고서여야 합니다.
+            """
+            
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "당신은 비즈니스 전략 보고서 개선 전문가입니다. 원본 보고서의 모든 내용과 구조를 100% 유지하면서 분석 결과를 반영하여 보고서를 자연스럽게 개선합니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=4000
+            )
+            
+            return response.choices[0].message.content
+            
+    except Exception as e:
+        st.error(f"개선된 보고서 생성 중 오류 발생: {str(e)}")
+        return "개선된 보고서를 생성하는 중 오류가 발생했습니다."
+
+def split_into_sections(content):
+    """보고서를 섹션으로 분할"""
+    # 제목 패턴으로 분할 (# 또는 ## 등으로 시작하는 라인)
+    import re
+    sections = re.split(r'\n(#+\s+)', content)
+    
+    # 분할된 결과 재구성
+    if sections[0].strip() == '':
+        sections = sections[1:]
+    
+    processed_sections = []
+    for i in range(0, len(sections), 2):
+        if i+1 < len(sections):
+            processed_sections.append(sections[i] + sections[i+1])
+        else:
+            processed_sections.append(sections[i])
+    
+    return processed_sections if processed_sections else [content]
+
+def extract_improvements(analysis_result):
+    """분석 결과에서 개선사항 추출"""
+    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    
+    prompt = f"""
+    다음 AI 분석 결과에서 주요 개선사항과 실행 제안을 추출해주세요:
+    
+    {analysis_result}
+    
+    각 개선사항을 다음 형식으로 정리해주세요:
+    1. 개선 영역: (예: 마케팅 전략, 고객 관계 등)
+    2. 개선 내용: (구체적인 개선 제안)
+    3. 관련 키워드: (이 개선사항과 관련된 키워드 목록)
+    """
+    
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",  # 가벼운 모델 사용
+        messages=[
+            {"role": "system", "content": "당신은 비즈니스 분석 전문가입니다. 분석 결과에서 핵심 개선사항을 추출합니다."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2
+    )
+    
+    return response.choices[0].message.content
+
+def find_relevant_improvements(section, improvements):
+    """섹션과 관련된 개선사항 찾기"""
+    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    
+    prompt = f"""
+    다음 보고서 섹션과 관련된 개선사항을 찾아주세요:
+    
+    [보고서 섹션]
+    {section}
+    
+    [개선사항 목록]
+    {improvements}
+    
+    이 섹션과 관련된 개선사항만 선택하여 반환해주세요.
+    """
+    
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",  # 가벼운 모델 사용
+        messages=[
+            {"role": "system", "content": "당신은 비즈니스 분석 전문가입니다. 보고서 섹션과 관련된 개선사항을 찾습니다."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2
+    )
+    
+    return response.choices[0].message.content
+
+def improve_section(section, relevant_improvements, keyword):
+    """섹션 개선"""
+    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    
+    prompt = f"""
+    다음 보고서 섹션을 개선해주세요:
+    
+    [원본 섹션]
+    {section}
+    
+    [관련 개선사항]
+    {relevant_improvements}
+    
+    '{keyword}' 관점에서 위 개선사항을 반영하여 섹션을 개선해주세요.
+    
+    절대적 요구사항:
+    1. 원본 섹션의 모든 내용을 100% 유지해야 합니다. 어떤 내용도 삭제하거나 축약하지 마세요.
+    2. 원본 섹션의 구조를 그대로 유지하세요.
+    3. 개선사항을 원본 내용과 자연스럽게 통합하세요.
+    4. 원본의 톤과 스타일을 유지하세요.
+    """
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "당신은 비즈니스 전략 보고서 개선 전문가입니다. 원본 내용을 100% 유지하면서 개선사항을 통합합니다."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2
+    )
+    
+    return response.choices[0].message.content
+
+def save_improved_report(book_title, keyword, file_name, content):
+    """개선된 보고서를 저장"""
+    try:
+        # 저장 경로 설정
+        save_dir = f"data/{book_title}/application"
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # 파일명에 키워드와 날짜 추가
+        today = datetime.now().strftime("%Y%m%d")
+        save_path = f"{save_dir}/{keyword}_{today}_improved.md"
+        
+        # 파일 저장
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        
+        return True
+    except Exception as e:
+        st.error(f"파일 저장 중 오류 발생: {str(e)}")
+        return False
+
+def get_application_files(book_title, keyword):
+    """특정 책과 키워드에 해당하는 적용 파일 목록 조회"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor(dictionary=True)
+        
+        # 기존 get_files 함수와 동일한 테이블 이름 사용
+        # 테이블 이름을 book_materials로 변경 (예시)
+        if keyword:
+            query = """
+                SELECT id, file_name, content, created_at
+                FROM book_materials
+                WHERE book_title = %s AND file_type = 'application' AND content LIKE %s
+                ORDER BY created_at DESC
+            """
+            cursor.execute(query, (book_title, f"%{keyword}%"))
+        else:
+            query = """
+                SELECT id, file_name, content, created_at
+                FROM book_materials
+                WHERE book_title = %s AND file_type = 'application'
+                ORDER BY created_at DESC
+            """
+            cursor.execute(query, (book_title,))
+        
+        files = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return files
+    except Exception as e:
+        st.error(f"파일 목록 조회 중 오류 발생: {str(e)}")
+        return []
 
 if __name__ == "__main__":
     main() 

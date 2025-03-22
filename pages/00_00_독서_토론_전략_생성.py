@@ -47,14 +47,15 @@ def main():
             "Ollama-Llama2": "llama2:latest",
             "Ollama-Mistral": "mistral:latest"
         }
-        default_model = "GPT-3.5"
-    else:
-        ai_models = {
-            "GPT-4": "gpt-4o-mini",
-            "GPT-3.5-16K": "gpt-3.5-turbo-16k",
-            "Ollama-Mixtral": "mixtral:latest"
-        }
-        default_model = "GPT-4"
+        if debug_mode:
+            default_model = "GPT-3.5"
+        else:
+            ai_models = {
+                "GPT-4": "gpt-4o-mini",
+                "GPT-3.5-16K": "gpt-3.5-turbo-16k",
+                "Ollama-Mixtral": "mixtral:latest"
+            }
+            default_model = "GPT-4"
     
     # OpenAI API 키 설정
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -491,9 +492,9 @@ def generate_strategy_with_crewai(summary_content, application_content, keyword,
             role="전략 프로젝트 매니저",
             goal="전체 전략 수립 프로세스 조정 및 관리",
             backstory="수석 프로젝트 매니저로서 복잡한 전략 프로젝트를 성공적으로 이끈 풍부한 경험이 있습니다.",
-            verbose=True,
-            llm=llm
-        )
+        verbose=True,
+        llm=llm
+    )
         
         if debug_mode:
             st.write("### 🚀 태스크 실행 시작")
@@ -609,9 +610,9 @@ def create_strategic_agents(llm, selected_frameworks, active_agents, debug_mode=
         role="전략 기획 코디네이터",
         goal="모든 분석과 전략을 통합하여 실행 가능한 전략 보고서 작성",
         backstory="수석 전략 컨설턴트로서 다양한 산업의 전략 수립 경험이 풍부하며, 여러 전문가의 의견을 조율하고 통합하는 역할을 수행합니다.",
-        verbose=True,
-        llm=llm
-    )
+                verbose=True,
+                llm=llm
+            )
     agents.append(coordinator)
     if debug_mode:
         st.write("✅ 코디네이터 에이전트 생성 완료")
@@ -719,7 +720,7 @@ def create_strategic_tasks(agents, summary_content, application_content, keyword
     # 2. 프레임워크별 분석 태스크
     for i, framework in enumerate(selected_frameworks):
         framework_task = Task(
-            description=f"""
+                description=f"""
             {framework}를 사용하여 '{keyword}' 관련 전략을 분석하세요.
             
             요구사항:
@@ -761,7 +762,7 @@ def create_strategic_tasks(agents, summary_content, application_content, keyword
             st.write(f"✅ {agent.role} 전문가 태스크 생성 중")
         
         expert_task = Task(
-            description=f"""
+        description=f"""
             {agent.role}의 관점에서 '{keyword}' 관련 전략을 분석하고 제안하세요.
             
             요구사항:
@@ -822,7 +823,7 @@ def create_strategic_tasks(agents, summary_content, application_content, keyword
 
     # 4. 최종 통합 전략 태스크 수정
     final_task = Task(
-        description=f"""
+            description=f"""
         모든 분석 결과를 통합하여 포괄적인 전략 보고서를 작성하세요.
         
         요구사항:
