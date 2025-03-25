@@ -1289,6 +1289,36 @@ def create_portfolio_analysis_tables():
         cursor.close()
         conn.close()
 
+def create_toc_analysis_tables():
+    """TOC 분석을 위한 테이블 생성"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS toc_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                area VARCHAR(50) NOT NULL,
+                current_state JSON NOT NULL,
+                constraints JSON NOT NULL,
+                solutions JSON NOT NULL,
+                implementation_plan JSON NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ TOC 분석 테이블이 성공적으로 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("DB 테이블 생성/수정/삭제 시스템")
 
@@ -1299,7 +1329,7 @@ def main():
          "분야별 전문성 테이블 생성", "사업 전략 테이블 생성", "의사결정 트리 테이블 생성", "의사결정 트리 테이블 삭제",
          "전략 프레임워크 테이블 생성", "Business Model Canvas 테이블 생성", "SWOT 분석 테이블 생성", "4P/7P 분석 테이블 생성",
          "PESTEL 분석 테이블 생성", "5 Forces 분석 테이블 생성", "Value Chain 분석 테이블 생성", "GAP 분석 테이블 생성", "Blue Ocean 분석 테이블 생성",
-         "Innovator's Dilemma 분석 테이블 생성", "Portfolio 분석 테이블 생성"]
+         "Innovator's Dilemma 분석 테이블 생성", "Portfolio 분석 테이블 생성", "TOC 분석 테이블 생성"]  # TOC 분석 옵션 추가
     )
 
     # 기존 테이블 목록 표시
@@ -1423,6 +1453,10 @@ def main():
     elif operation == "Portfolio 분석 테이블 생성":
         if st.button("테이블 생성 및 초기 데이터 입력"):
             create_portfolio_analysis_tables()
+
+    elif operation == "TOC 분석 테이블 생성":  # TOC 분석 테이블 생성 처리
+        if st.button("테이블 생성"):
+            create_toc_analysis_tables()
 
     else:  # 테이블 생성/수정
         # 테이블 이름 입력
