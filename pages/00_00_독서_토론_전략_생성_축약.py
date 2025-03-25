@@ -167,10 +167,7 @@ def main():
                 for framework in selected_frameworks:
                     st.markdown(f"- {framework}")
             else:
-                st.info("""
-                전략 프레임워크를 선택하지 않았습니다. 
-                AI가 아카라라이프 신사업실의 상황을 분석하여 가장 적합한 프레임워크를 자동으로 선정합니다.
-                """)
+                st.info("전략 프레임워크를 선택하지 않았습니다. AI가 자동으로 적합한 프레임워크를 선정합니다.")
 
             # 선택된 프레임워크를 세션 상태에 저장
             st.session_state.selected_frameworks = selected_frameworks
@@ -542,55 +539,110 @@ def generate_strategy_with_crewai(summary_content, application_content, keyword,
                     update_log(f"❌ {error_msg}")
                 results.append(None)
         
-        # 최종 보고서 생성
-        final_report = f"""
-        # {keyword} 중심 사업 전략 보고서
+        # 최종 보고서를 섹션별로 생성
+        final_sections = []
+        section_tasks = [
+            {
+                "title": "Executive Summary",
+                "description": """
+                경영진을 위한 핵심 요약을 작성하세요:
+                - 핵심 전략 방향과 실행 계획
+                - 단계별 매출 목표(2025년 35억, 2026년 100억, 2027년 250억, 2029년 600억)와 달성 전략
+                - 주요 성공 요인과 리스크 관리 방안
+                - 투자 대비 수익 예상 및 재무 계획
+                """,
+                "pages": 1
+            },
+            {
+                "title": "시장 및 경쟁 분석",
+                "description": """
+                시장과 경쟁 환경을 분석하세요:
+                - 시장 규모와 성장성 분석 (구체적 수치 포함)
+                - 경쟁사 포지셔닝과 주요 경쟁사 분석
+                - 고객 세그먼트별 니즈와 기회 분석
+                - SWOT 분석 결과 및 시사점
+                """,
+                "pages": 2
+            },
+            {
+                "title": "매출 목표 달성 전략",
+                "description": """
+                연도별 매출 목표(2025년 35억, 2026년 100억, 2027년 250억, 2029년 600억) 달성을 위한 
+                구체적인 전략과 액션 플랜을 수립하세요:
+                
+                - 연도별 매출 목표 달성을 위한 핵심 전략
+                - 제품/서비스 포트폴리오 전략과 가격 정책
+                - 채널별 매출 계획과 성장 전략
+                - 고객 확보 및 유지 전략
+                - 각 전략별 구체적인 액션 플랜(담당자, 일정, 예산 포함)
+                """,
+                "pages": 4
+            },
+            {
+                "title": "마케팅 및 영업 전략",
+                "description": """
+                매출 목표 달성을 지원할 마케팅 및 영업 전략을 수립하세요:
+                - 브랜드 포지셔닝과 차별화 전략
+                - 채널별 마케팅 전략과 예산 배분
+                - 영업 조직 및 프로세스 설계
+                - 구체적인 마케팅 캠페인 계획
+                - 실행 일정과 담당 조직
+                """,
+                "pages": 3
+            },
+            {
+                "title": "운영 및 재무 계획",
+                "description": """
+                사업 운영과 재무 계획을 수립하세요:
+                - 조직 구조와 인력 계획
+                - 프로세스 최적화 방안
+                - 연도별 손익 계획과 투자 계획
+                - 원가 구조 최적화 전략
+                - 현금흐름 관리 방안
+                """,
+                "pages": 3
+            },
+            {
+                "title": "리스크 관리 및 실행 계획",
+                "description": """
+                리스크 관리와 전략 실행 계획을 수립하세요:
+                - 주요 리스크 요인과 대응 전략
+                - 단계별 실행 로드맵
+                - 조직별 역할과 책임
+                - KPI 설정 및 성과 측정 방법
+                - 전략 조정 메커니즘
+                """,
+                "pages": 2
+            }
+        ]
 
-        ## 1. 개요
-        - 분석 기반: {st.session_state.book_title}
-        - 핵심 키워드: {keyword}
-        - 적용 프레임워크: {', '.join(selected_frameworks)}
-
-        ## 2. 초기 분석 결과
-        {results[0] if results and results[0] else '초기 분석 결과를 가져올 수 없습니다.'}
-
-        ## 3. 프레임워크 기반 전략 분석
-        """
-        
-        # 프레임워크 분석 결과 추가
-        framework_results = []
-        for i, framework in enumerate(selected_frameworks):
-            task_output = results[i + 1]
-            if task_output:
-                framework_results.append(f"### {framework}\n{task_output}")
-        
-        final_report += "\n\n".join(framework_results) if framework_results else "프레임워크 분석 결과를 가져올 수 없습니다."
-        
-        # 전문가 분석 결과 추가
-        expert_start_idx = len(selected_frameworks) + 1
-        expert_results = []
-        for i, agent in enumerate(agents[len(selected_frameworks)+1:]):
-            task_idx = expert_start_idx + i
-            if task_idx < len(tasks):
-                task_output = results[task_idx]
-                if task_output:
-                    expert_results.append(f"### {agent.role}의 분석\n{task_output}")
-        
-        final_report += "\n\n## 4. 전문가 분석 결과\n"
-        final_report += "\n\n".join(expert_results) if expert_results else "전문가 분석 결과를 가져올 수 없습니다."
-        
-        # 최종 통합 전략 추가
-        if tasks[-1] and results[-1]:
-            final_report += f"\n\n## 5. 통합 전략 제안\n{results[-1]}"
-        else:
-            final_report += "\n\n## 5. 통합 전략 제안\n최종 전략을 가져올 수 없습니다."
+        for section in section_tasks:
+            section_task = Task(
+                description=f"""
+                {section['description']}
+                
+                작성 시 필수 준수사항:
+                1. 반드시 한글로 작성할 것
+                2. 모든 수치와 목표는 구체적으로 제시할 것
+                3. 실행 계획은 상세하게 기술할 것 (담당자, 일정, 예산 포함)
+                4. 각 전문가의 분석 내용을 빠짐없이 통합적으로 반영할 것
+                5. 해당 섹션은 약 {section['pages']}페이지 분량으로 작성할 것
+                6. 특히 매출 목표 달성을 위한 구체적인 액션 플랜을 강조할 것
+                
+                보고서는 전문적이고 논리적인 어조로, 명확한 헤딩과 서브헤딩, 표, 
+                리스트 등을 활용하여 가독성 높게 작성하십시오.
+                """,
+                expected_output=f"{section['title']} 섹션 (약 {section['pages']}페이지 분량의 상세 분석)",
+                agent=agents[0],
+                context=tasks
+            )
+            tasks.append(section_task)
         
         if debug_mode:
-            st.write("### 📑 최종 보고서 생성 완료")
-            st.write(final_report)
+            st.write("✅ 모든 태스크 생성 완료")
         
-        return final_report
-        
+        return tasks
+
     except Exception as e:
         error_msg = f"전략 생성 중 오류 발생: {str(e)}"
         if update_log:
@@ -605,6 +657,20 @@ def generate_strategy_with_crewai(summary_content, application_content, keyword,
 def create_strategic_agents(llm, selected_frameworks, active_agents, debug_mode=False):
     """전략 수립을 위한 에이전트 생성"""
     agents = []
+    
+    # 프레임워크 전문가 정의를 먼저 수행
+    framework_experts = {
+        "블루오션 전략": "가치 혁신과 시장 창출 전략 전문가",
+        "SWOT 분석": "내부 역량과 외부 환경 분석 전문가",
+        "비즈니스 모델 캔버스": "비즈니스 모델 혁신 전문가",
+        "마이클 포터의 경쟁전략": "경쟁우위 확보 전략 전문가",
+        "협력적 경쟁관계": "경쟁사와의 협력 전략 전문가",
+        "제약이론": "시스템 제약 식별 및 개선 전문가",
+        "VRIO 프레임워크": "지속가능한 경쟁 우위 분석 전문가",
+        "게임이론": "전략적 의사결정 및 경쟁자 행동 예측 전문가",
+        "린 스타트업": "빠른 시장 검증과 피봇 전문가",
+        "디스럽티브 이노베이션": "시장 판도 변화 전문가"
+    }
     
     if debug_mode:
         st.write("### 🤖 에이전트 생성 시작")
@@ -647,25 +713,26 @@ def create_strategic_agents(llm, selected_frameworks, active_agents, debug_mode=
                 - 리소스 확보 방안
                 - 실행 가능성
             
-            선택 가능한 프레임워크:
-            - 블루오션 전략: 새로운 시장 창출과 차별화
-            - SWOT 분석: 내부 역량과 외부 환경 분석
-            - 비즈니스 모델 캔버스: 사업 모델 혁신
-            - 마이클 포터의 경쟁전략: 경쟁 우위 확보
-            - 협력적 경쟁관계: 전략적 파트너십
-            - 제약이론: 성장 제약 요인 극복
-            - VRIO 프레임워크: 지속가능한 경쟁 우위
-            - 게임이론: 경쟁자 대응 전략
-            - 린 스타트업: 빠른 시장 검증과 피봇
-            - 디스럽티브 이노베이션: 시장 판도 변화
+            선택 가능한 프레임워크 목록:
+            1. 블루오션 전략
+            2. SWOT 분석
+            3. 비즈니스 모델 캔버스
+            4. 마이클 포터의 경쟁전략
+            5. 협력적 경쟁관계
+            6. 제약이론
+            7. VRIO 프레임워크
+            8. 게임이론
+            9. 린 스타트업
+            10. 디스럽티브 이노베이션
             
-            응답 형식:
-            1. [선택한 프레임워크 1]: [선택 이유와 적용 방안]
-            2. [선택한 프레임워크 2]: [선택 이유와 적용 방안]
-            3. [선택한 프레임워크 3]: [선택 이유와 적용 방안]
+            위 목록에서 정확히 3개의 프레임워크를 선택하여 다음 형식으로만 응답하세요:
+            1. [프레임워크명]
+            2. [프레임워크명]
+            3. [프레임워크명]
             
-            결론: 세 프레임워크의 통합적 활용 방안
+            다른 설명이나 이유는 포함하지 마세요.
             """,
+            expected_output="1. [프레임워크명]\n2. [프레임워크명]\n3. [프레임워크명]",
             agent=framework_selector
         )
         
@@ -680,47 +747,43 @@ def create_strategic_agents(llm, selected_frameworks, active_agents, debug_mode=
         # 프레임워크 선정 결과 처리
         try:
             result = temp_crew.kickoff()
+            result_text = str(result)  # CrewOutput을 문자열로 변환
+            
             # 결과에서 프레임워크 이름만 추출
-            frameworks = []
-            for line in result.split('\n'):
-                if line.startswith(('1.', '2.', '3.')):
-                    framework = line.split(':')[0].split('.')[1].strip()
-                    frameworks.append(framework)
-            selected_frameworks = frameworks[:3]
+            selected_frameworks = []
+            for line in result_text.split('\n'):
+                if line.strip().startswith(('1.', '2.', '3.')):
+                    framework = line.split('.')[1].strip()
+                    if framework in framework_experts:
+                        selected_frameworks.append(framework)
+            
+            if len(selected_frameworks) != 3:
+                if debug_mode:
+                    st.write(f"선택된 프레임워크: {selected_frameworks}")
+                raise ValueError("프레임워크 3개를 선정하지 못했습니다.")
             
             if debug_mode:
                 st.write("🎯 AI가 선택한 프레임워크:")
                 for i, framework in enumerate(selected_frameworks, 1):
                     st.write(f"{i}. {framework}")
         except Exception as e:
-            st.warning("프레임워크 자동 선택 중 오류 발생. 기본 프레임워크를 사용합니다.")
+            if debug_mode:
+                st.write(f"프레임워크 선택 오류: {str(e)}")
+                st.write(f"AI 응답: {result_text if 'result_text' in locals() else '응답 없음'}")
+            st.warning("프레임워크 자동 선택 중 오류가 발생하여 기본 프레임워크를 사용합니다.")
             selected_frameworks = ["비즈니스 모델 캔버스", "블루오션 전략", "린 스타트업"]
-    
+
     # 1. 코디네이터 에이전트 (항상 포함)
     coordinator = Agent(
         role="전략 기획 코디네이터",
         goal="모든 분석과 전략을 통합하여 실행 가능한 전략 보고서 작성",
         backstory="수석 전략 컨설턴트로서 다양한 산업의 전략 수립 경험이 풍부하며, 여러 전문가의 의견을 조율하고 통합하는 역할을 수행합니다.",
-                verbose=True,
-                llm=llm
-            )
+        verbose=True,
+        llm=llm
+    )
     agents.append(coordinator)
-    if debug_mode:
-        st.write("✅ 코디네이터 에이전트 생성 완료")
-
+    
     # 2. 프레임워크 전문가 에이전트
-    framework_experts = {
-        "블루오션 전략": "가치 혁신과 시장 창출 전략 전문가",
-        "SWOT 분석": "내부 역량과 외부 환경 분석 전문가",
-        "비즈니스 모델 캔버스": "비즈니스 모델 혁신 전문가",
-        "포터의 5가지 힘": "산업 구조와 경쟁 분석 전문가",
-        "협력적 경쟁관계": "경쟁사와의 협력 전략 전문가",
-        "제약이론": "시스템 제약 식별 및 개선 전문가",
-        "마이클 포터의 경쟁전략": "경쟁우위 확보 전략 전문가",
-        "게임이론": "전략적 의사결정 및 경쟁자 행동 예측 전문가",
-        "디스럽티브 이노베이션": "혁신 전략 전문가"
-    }
-
     for framework in selected_frameworks:
         if framework in framework_experts:
             agent = Agent(
@@ -767,42 +830,57 @@ def create_strategic_tasks(agents, summary_content, application_content, keyword
     if debug_mode:
         st.write("### 📋 태스크 생성 시작")
 
-    # 1. 초기 통합 분석 태스크
+    # 1. 초기 통합 분석 태스크 수정
     initial_analysis = Task(
         description=f"""
         '{keyword}' 관점에서 요약 내용과 기존 적용 내용을 심층 분석하세요.
+        특히 아카라라이프 신사업실의 매출 목표를 고려하여 분석을 진행하세요.
         
         분석 요구사항:
         1. 핵심 개념과 시사점 도출
         2. 기존 전략의 강점과 개선점
         3. '{keyword}' 관련 주요 기회 요인
-        4. 실행 가능한 전략 방향 제시
+        4. 매출 목표 달성을 위한 실행 가능한 전략 방향 제시
+        5. 매출 목표와의 연계성 분석
         
         [요약 내용]
         {summary_content}
         
         [기존 적용 내용]
         {application_content}
+        
+        주요 고려사항:
+        - 기존 적용 내용에서 언급된 매출 목표를 반드시 참고할 것
+        - 매출 목표 달성을 위한 구체적인 전략 제시
+        - 목표 달성의 현실성 검토 및 필요한 조정사항 제안
         """,
         expected_output="""
         다음 형식으로 상세한 분석 보고서를 작성하세요:
         
         # 초기 분석 보고서
         
-        ## 1. 핵심 개념과 시사점
+        ## 1. 매출 목표 분석
+        - 현재 매출 목표
+        - 목표의 실현 가능성 평가
+        - 목표 달성을 위한 핵심 요구사항
+        
+        ## 2. 핵심 개념과 시사점
         - (5개 이상의 핵심 발견사항)
         
-        ## 2. 기존 전략 분석
+        ## 3. 기존 전략 분석
         ### 강점
         - (3개 이상)
         ### 개선점
         - (3개 이상)
         
-        ## 3. 주요 기회 요인
+        ## 4. 주요 기회 요인
         - (4개 이상의 구체적 기회)
         
-        ## 4. 전략 방향 제안
-        - (3-5개의 실행 가능한 전략)
+        ## 5. 전략 방향 제안
+        ### 매출 목표 연계 전략
+        - (매출 목표 달성을 위한 3-5개의 핵심 전략)
+        ### 실행 계획
+        - (구체적인 실행 방안과 일정)
         """,
         agent=agents[0]
     )
@@ -912,258 +990,104 @@ def create_strategic_tasks(agents, summary_content, application_content, keyword
         expert_tasks.append(expert_task)
         tasks.append(expert_task)
 
-    # 4. 최종 통합 전략 태스크 수정
-    final_task = Task(
+    # 최종 통합 전략을 섹션별로 생성
+    final_sections = []
+    section_tasks = [
+        {
+            "title": "Executive Summary",
+            "description": """
+            경영진을 위한 핵심 요약을 작성하세요:
+            - 핵심 전략 방향과 실행 계획
+            - 단계별 매출 목표(2025년 35억, 2026년 100억, 2027년 250억, 2029년 600억)와 달성 전략
+            - 주요 성공 요인과 리스크 관리 방안
+            - 투자 대비 수익 예상 및 재무 계획
+            """,
+            "pages": 1
+        },
+        {
+            "title": "시장 및 경쟁 분석",
+            "description": """
+            시장과 경쟁 환경을 분석하세요:
+            - 시장 규모와 성장성 분석 (구체적 수치 포함)
+            - 경쟁사 포지셔닝과 주요 경쟁사 분석
+            - 고객 세그먼트별 니즈와 기회 분석
+            - SWOT 분석 결과 및 시사점
+            """,
+            "pages": 2
+        },
+        {
+            "title": "매출 목표 달성 전략",
+            "description": """
+            연도별 매출 목표(2025년 35억, 2026년 100억, 2027년 250억, 2029년 600억) 달성을 위한 
+            구체적인 전략과 액션 플랜을 수립하세요:
+            
+            - 연도별 매출 목표 달성을 위한 핵심 전략
+            - 제품/서비스 포트폴리오 전략과 가격 정책
+            - 채널별 매출 계획과 성장 전략
+            - 고객 확보 및 유지 전략
+            - 각 전략별 구체적인 액션 플랜(담당자, 일정, 예산 포함)
+            """,
+            "pages": 4
+        },
+        {
+            "title": "마케팅 및 영업 전략",
+            "description": """
+            매출 목표 달성을 지원할 마케팅 및 영업 전략을 수립하세요:
+            - 브랜드 포지셔닝과 차별화 전략
+            - 채널별 마케팅 전략과 예산 배분
+            - 영업 조직 및 프로세스 설계
+            - 구체적인 마케팅 캠페인 계획
+            - 실행 일정과 담당 조직
+            """,
+            "pages": 3
+        },
+        {
+            "title": "운영 및 재무 계획",
+            "description": """
+            사업 운영과 재무 계획을 수립하세요:
+            - 조직 구조와 인력 계획
+            - 프로세스 최적화 방안
+            - 연도별 손익 계획과 투자 계획
+            - 원가 구조 최적화 전략
+            - 현금흐름 관리 방안
+            """,
+            "pages": 3
+        },
+        {
+            "title": "리스크 관리 및 실행 계획",
+            "description": """
+            리스크 관리와 전략 실행 계획을 수립하세요:
+            - 주요 리스크 요인과 대응 전략
+            - 단계별 실행 로드맵
+            - 조직별 역할과 책임
+            - KPI 설정 및 성과 측정 방법
+            - 전략 조정 메커니즘
+            """,
+            "pages": 2
+        }
+    ]
+
+    for section in section_tasks:
+        section_task = Task(
             description=f"""
-        모든 분석 결과를 통합하여 포괄적인 전략 보고서를 작성하세요.
-        
-        요구사항:
-        1. Executive Summary (경영진 요약)
-            - 핵심 전략 방향 (3-5개)
-            - 주요 실행 계획 (단기/중기/장기)
-            - 기대 효과 (정량적/정성적)
-            - 투자 대비 수익 예상
-        
-        2. 시장 및 환경 분석
-            - 산업 동향 및 시장 기회
-            - 경쟁 환경 분석 (주요 경쟁사 3-5개)
-            - 고객 세그먼트 및 니즈 분석
-            - PESTEL 요약 (정치/경제/사회/기술/환경/법률)
-        
-        3. 3C 심층 분석
-            - Customer (고객): 세그먼트별 상세 분석, 구매 여정, 페인 포인트
-            - Competitor (경쟁사): 강점/약점, 시장 점유율, 차별화 전략
-            - Company (자사): 핵심 역량, 개선 필요 영역, 경쟁 우위 요소
-        
-        4. 전략 프레임워크 통합 분석
-            - 선택된 각 프레임워크의 핵심 시사점
-            - 프레임워크 간 연계성 및 통합적 인사이트
-            - 전략적 우선순위 도출
-        
-        5. 사업 전략 (Business Strategy)
-            - 비전 및 미션 재정립
-            - 사업 모델 혁신 방안
-            - 가치 제안 (Value Proposition) 강화
-            - 수익 모델 다변화
-            - 파트너십 및 협업 전략
-        
-        6. 마케팅 전략 (Marketing Strategy)
-            - 브랜드 포지셔닝 및 메시지
-            - 채널 전략 (온/오프라인)
-            - 콘텐츠 및 커뮤니케이션 전략
-            - 고객 경험 설계
-            - 마케팅 KPI 및 측정 방안
-        
-        7. 영업 전략 (Sales Strategy)
-            - 영업 채널 최적화
-            - 가격 전략 및 정책
-            - 영업 프로세스 개선
-            - 고객 관계 관리 (CRM) 전략
-            - 영업 인력 역량 강화
-        
-        8. 운영 전략 (Operations Strategy)
-            - 공급망 최적화
-            - 품질 관리 체계
-            - 프로세스 효율화
-            - 기술 인프라 구축
-            - 지속가능성 통합
-        
-        9. 상세 실행 계획 (Action Plan)
-            - 단기 전략 (0-6개월): 구체적 실행 항목, 담당자, 예산, 일정
-            - 중기 전략 (6-18개월): 주요 이니셔티브, 필요 자원, 기대 성과
-            - 장기 전략 (18개월 이상): 전략적 방향성, 투자 계획, 성장 로드맵
-        
-        10. 재무 계획 및 투자 전략
-            - 예상 손익 계산서 (3-5년)
-            - 투자 계획 및 자금 조달
-            - 손익분기점 분석
-            - 재무적 리스크 관리
-        
-        11. 리스크 관리 및 대응 계획
-            - 주요 리스크 요인 식별 (내부/외부)
-            - 리스크별 영향도 및 발생 가능성 평가
-            - 구체적 대응 전략 및 비상 계획
-            - 모니터링 체계 및 조기 경보 시스템
-        
-        12. 성과 측정 및 평가 체계
-            - 핵심 성과 지표 (KPI) 설정
-            - 모니터링 및 보고 체계
-            - 피드백 루프 및 개선 프로세스
-            - 성과 인센티브 연계 방안
-        
-        13. 결론 및 제언
-            - 핵심 성공 요인 (CSF)
-            - 우선적 실행 과제
-            - 경영진을 위한 권고사항
-            - 기대 효과 종합
-        """,
-        expected_output="""
-        # 사업 전략 보고서 최종본
-        
-        ## Executive Summary
-        (핵심 내용 1-2페이지 요약 - 경영진이 빠르게 이해할 수 있도록 작성)
-        
-        ## 1. 시장 및 환경 분석
-        ### 산업 동향 및 시장 기회
-        - (주요 트렌드 및 기회 요인 5개 이상)
-        
-        ### 경쟁 환경 분석
-        - (주요 경쟁사별 상세 분석)
-        
-        ### 고객 세그먼트 및 니즈
-        - (세그먼트별 특성 및 니즈 분석)
-        
-        ### PESTEL 요약
-        - (각 요소별 핵심 영향 요인)
-        
-        ## 2. 3C 심층 분석
-        ### Customer (고객)
-        - (세그먼트별 상세 분석)
-        - (구매 여정 및 의사결정 요인)
-        - (페인 포인트 및 기회 영역)
-        
-        ### Competitor (경쟁사)
-        - (주요 경쟁사별 강점/약점)
-        - (시장 점유율 및 포지셔닝)
-        - (경쟁사 전략 및 대응 방안)
-        
-        ### Company (자사)
-        - (핵심 역량 및 자원)
-        - (개선 필요 영역)
-        - (차별화 요소 및 경쟁 우위)
-        
-        ## 3. 전략 프레임워크 통합 분석
-        (각 프레임워크별 핵심 시사점 및 통합적 인사이트)
-        
-        ## 4. 사업 전략 (Business Strategy)
-        ### 비전 및 미션
-        - (재정립된 비전/미션 제안)
-        
-        ### 사업 모델 혁신
-        - (혁신 방안 3-5개)
-        
-        ### 가치 제안 강화
-        - (강화된 가치 제안 내용)
-        
-        ### 수익 모델 다변화
-        - (신규/개선된 수익 모델 제안)
-        
-        ### 파트너십 및 협업 전략
-        - (주요 파트너십 대상 및 협업 방안)
-        
-        ## 5. 마케팅 전략 (Marketing Strategy)
-        ### 브랜드 포지셔닝 및 메시지
-        - (명확한 포지셔닝 제안)
-        - (핵심 메시지 및 가치)
-        
-        ### 채널 전략
-        - (온/오프라인 채널별 접근 방안)
-        
-        ### 콘텐츠 및 커뮤니케이션 전략
-        - (주요 콘텐츠 유형 및 테마)
-        - (커뮤니케이션 채널별 전략)
-        
-        ### 고객 경험 설계
-        - (고객 여정별 경험 개선 방안)
-        
-        ### 마케팅 KPI 및 측정
-        - (주요 KPI 및 목표치)
-        
-        ## 6. 영업 전략 (Sales Strategy)
-        ### 영업 채널 최적화
-        - (채널별 전략 및 리소스 배분)
-        
-        ### 가격 전략 및 정책
-        - (가격 구조 및 정책 제안)
-        
-        ### 영업 프로세스 개선
-        - (프로세스 개선 방안)
-        
-        ### 고객 관계 관리
-        - (CRM 전략 및 실행 방안)
-        
-        ### 영업 인력 역량 강화
-        - (교육 및 개발 프로그램)
-        
-        ## 7. 운영 전략 (Operations Strategy)
-        ### 공급망 최적화
-        - (공급망 개선 방안)
-        
-        ### 품질 관리 체계
-        - (품질 관리 프로세스 및 기준)
-        
-        ### 프로세스 효율화
-        - (주요 프로세스 개선 방안)
-        
-        ### 기술 인프라 구축
-        - (필요 기술 및 시스템)
-        
-        ### 지속가능성 통합
-        - (지속가능성 실행 방안)
-        
-        ## 8. 상세 실행 계획
-        ### 단기 전략 (0-6개월)
-        - (구체적 실행 항목, 담당자, 예산, 일정)
-        
-        ### 중기 전략 (6-18개월)
-        - (주요 이니셔티브, 필요 자원, 기대 성과)
-        
-        ### 장기 전략 (18개월 이상)
-        - (전략적 방향성, 투자 계획, 성장 로드맵)
-        
-        ## 9. 재무 계획 및 투자 전략
-        ### 예상 손익 계산서
-        - (3-5년 재무 예측)
-        
-        ### 투자 계획 및 자금 조달
-        - (필요 투자금 및 조달 방안)
-        
-        ### 손익분기점 분석
-        - (손익분기점 및 달성 시점)
-        
-        ### 재무적 리스크 관리
-        - (재무 리스크 및 대응 방안)
-        
-        ## 10. 리스크 관리 및 대응 계획
-        ### 주요 리스크 요인
-        - (내부/외부 리스크 식별)
-        
-        ### 리스크 평가
-        - (영향도 및 발생 가능성 평가)
-        
-        ### 대응 전략
-        - (리스크별 구체적 대응 방안)
-        
-        ### 모니터링 체계
-        - (조기 경보 시스템 및 대응 프로세스)
-        
-        ## 11. 성과 측정 및 평가 체계
-        ### 핵심 성과 지표 (KPI)
-        - (영역별 KPI 및 목표치)
-        
-        ### 모니터링 및 보고 체계
-        - (성과 측정 및 보고 프로세스)
-        
-        ### 피드백 및 개선 프로세스
-        - (지속적 개선을 위한 체계)
-        
-        ## 12. 결론 및 제언
-        ### 핵심 성공 요인 (CSF)
-        - (5-7개의 핵심 성공 요인)
-        
-        ### 우선적 실행 과제
-        - (즉시 착수해야 할 3-5개 과제)
-        
-        ### 경영진을 위한 권고사항
-        - (주요 의사결정 및 지원 사항)
-        
-        ### 기대 효과 종합
-        - (정량적/정성적 기대 효과)
-        """,
-        agent=agents[0],
-        context=tasks
-    )
-    tasks.append(final_task)
+            {section['description']}
+            
+            작성 시 필수 준수사항:
+            1. 반드시 한글로 작성할 것
+            2. 모든 수치와 목표는 구체적으로 제시할 것
+            3. 실행 계획은 상세하게 기술할 것 (담당자, 일정, 예산 포함)
+            4. 각 전문가의 분석 내용을 빠짐없이 통합적으로 반영할 것
+            5. 해당 섹션은 약 {section['pages']}페이지 분량으로 작성할 것
+            6. 특히 매출 목표 달성을 위한 구체적인 액션 플랜을 강조할 것
+            
+            보고서는 전문적이고 논리적인 어조로, 명확한 헤딩과 서브헤딩, 표, 
+            리스트 등을 활용하여 가독성 높게 작성하십시오.
+            """,
+            expected_output=f"{section['title']} 섹션 (약 {section['pages']}페이지 분량의 상세 분석)",
+            agent=agents[0],
+            context=tasks
+        )
+        tasks.append(section_task)
     
     if debug_mode:
         st.write("✅ 모든 태스크 생성 완료")
