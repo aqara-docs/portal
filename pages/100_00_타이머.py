@@ -5,12 +5,6 @@ import pandas as pd
 import numpy as np
 from datetime import timedelta, datetime
 import base64
-from openai import OpenAI
-import os
-from dotenv import load_dotenv
-
-# .env 파일 로드
-load_dotenv()
 
 st.set_page_config(page_title="🎯 독서토론 순서정하기", page_icon="🎯", layout="wide")
 
@@ -81,7 +75,7 @@ st.markdown("""
 # 알람 소리 재생을 위한 JavaScript 함수 수정
 def get_alarm_js():
     # Base64로 인코딩된 짧은 비프음 MP3
-    beep_sound = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjIwLjEwMAAAAAAAAAAAAAAA//tUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAAFbgCenp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6e//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjM1AAAAAAAAAAAAAAAAJAAAAAAAAAAAAQVuha3nkgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//sUZAAP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAETEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZB4P8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZDwP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZFoP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV"
+    beep_sound = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjIwLjEwMAAAAAAAAAAAAAAA//tUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAAFbgCenp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6e//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjM1AAAAAAAAAAAAAAAAJAAAAAAAAAAAAQVuha3nkgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//sUZAAP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAETEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZB4P8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZDwP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZFoP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV"
     
     return f"""
     <audio id="beepAudio" style="display: none;">
@@ -542,38 +536,6 @@ def get_audio_js():
     </script>
     """
 
-# 알람 음성 생성 함수
-def generate_alarm_audio():
-    try:
-        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        if not os.getenv('OPENAI_API_KEY'):
-            st.error("OpenAI API 키가 설정되지 않았습니다.")
-            return None
-            
-        # 알람 메시지 생성 (더 자연스러운 문장으로)
-        alarm_text = """
-        토론 시간이 종료되었습니다.
-        토론을 마무리해 주세요.
-        토론을 마무리해 주세요.
-        토론을 마무리해 주세요.
-        """
-        
-        # 음성 생성 (한국어 음성으로 설정)
-        response = client.audio.speech.create(
-            model="tts-1",
-            voice="nova",  # 더 자연스러운 목소리 선택
-            input=alarm_text,
-            speed=0.9  # 약간 천천히 말하도록 설정
-        )
-        
-        # 음성 데이터를 base64로 인코딩
-        audio_base64 = base64.b64encode(response.content).decode('utf-8')
-        return audio_base64
-        
-    except Exception as e:
-        st.error(f"알람 음성 생성 중 오류 발생: {str(e)}")
-        return None
-
 def main():
     st.markdown('<h1 style="color: black;">🎯 독서토론 순서 정하기</h1>', unsafe_allow_html=True)
     st.markdown('<h3 style="color: black;">🎲 오늘의 토론 멤버를 확인하세요!</h3>', unsafe_allow_html=True)
@@ -748,9 +710,7 @@ def main():
                 if remaining.total_seconds() <= 0:
                     if not st.session_state.timer_finished:
                         st.session_state.timer_finished = True
-                        
-                        # 알람 음성과 시각적 효과 함께 표시
-                        st.markdown(f"""
+                        st.markdown("""
                         <div class="fullscreen-alert">
                             <div class="alert-content">
                                 <div class="large-emoji">⏰</div>
@@ -758,33 +718,14 @@ def main():
                                 <div class="alert-subtext">토론을 마무리해 주세요</div>
                             </div>
                         </div>
-                        <audio id="alarmAudio" autoplay style="display: none;">
-                            <source src="data:audio/mp3;base64,{st.session_state.alarm_audio}" type="audio/mp3">
-                        </audio>
                         <script>
-                        // 알람 음성 자동 재생 및 반복
-                        const audio = document.getElementById('alarmAudio');
-                        
-                        function playAlarm() {{
-                            audio.currentTime = 0;
-                            audio.play()
-                                .then(() => console.log('알람 재생 성공'))
-                                .catch(e => console.error('알람 재생 실패:', e));
-                        }}
-                        
-                        // 초기 재생
-                        playAlarm();
-                        
-                        // 2초 간격으로 3번 반복 재생
-                        let playCount = 0;
-                        const interval = setInterval(() => {{
-                            playCount++;
-                            if (playCount < 3) {{
-                                playAlarm();
-                            }} else {{
-                                clearInterval(interval);
-                            }}
-                        }}, 2000);
+                        // 연속 비프음 재생 (0.8초 간격)
+                        (async function playAlerts() {
+                            for(let i = 0; i < 3; i++) {
+                                await playBeep();
+                                await new Promise(resolve => setTimeout(resolve, 800));
+                            }
+                        })();
                         </script>
                         """, unsafe_allow_html=True)
                     
@@ -847,10 +788,6 @@ def main():
             st.session_state.start_time = None
             st.session_state.timer_finished = False
             st.rerun()
-
-    # 앱 시작 시 알람 음성 생성 (한 번만)
-    if 'alarm_audio' not in st.session_state:
-        st.session_state.alarm_audio = generate_alarm_audio()
 
 if __name__ == "__main__":
     main() 
