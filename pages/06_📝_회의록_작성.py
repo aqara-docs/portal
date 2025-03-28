@@ -29,6 +29,12 @@ SAMPLE_RATE = 48000
 CHANNELS = 1
 audio_frames = []
 
+# 녹음 상태 관리를 위한 session_state 초기화
+if 'recording_started' not in st.session_state:
+    st.session_state.recording_started = False
+if 'recording_start_time' not in st.session_state:
+    st.session_state.recording_start_time = None
+
 class AudioRecorder:
     def __init__(self):
         self.audio_frames = []
@@ -187,16 +193,33 @@ def summarize_text(text):
 
 def save_audio_bytes(audio_bytes):
     """오디오 바이트를 파일로 저장"""
-    if audio_bytes:
+    if not audio_bytes:
+        return None
+        
+    try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         temp_dir = tempfile.gettempdir()
         filename = os.path.join(temp_dir, f"meeting_{timestamp}.wav")
         
+        # 파일 크기 검증
+        if len(audio_bytes) < 100:  # 최소 크기 검증
+            st.error("녹음 파일이 너무 작습니다.")
+            return None
+            
         with open(filename, 'wb') as f:
             f.write(audio_bytes)
-        
-        return filename
-    return None
+            
+        # 저장된 파일 검증
+        if os.path.exists(filename) and os.path.getsize(filename) > 0:
+            st.info(f"녹음 파일이 저장되었습니다. (크기: {os.path.getsize(filename)/1024/1024:.2f} MB)")
+            return filename
+        else:
+            st.error("파일 저장에 실패했습니다.")
+            return None
+            
+    except Exception as e:
+        st.error(f"오디오 파일 저장 중 오류가 발생했습니다: {str(e)}")
+        return None
 
 def create_download_link(content, filename, text):
     """다운로드 링크 생성"""
@@ -253,12 +276,58 @@ def main():
         
         # 녹음 컴포넌트
         st.write("🎙️ 녹음 시작/중지")
-        audio_bytes = audio_recorder()
         
+        # 녹음 시간 표시 컨테이너
+        time_placeholder = st.empty()
+        
+        # 녹음 컴포넌트
+        audio_bytes = audio_recorder(
+            pause_threshold=60.0,
+            energy_threshold=0.01,
+            recording_color="#e74c3c",
+            neutral_color="#95a5a6"
+        )
+
+        # 녹음 상태 및 시간 관리
         if audio_bytes:
-            st.audio(audio_bytes, format="audio/wav")
-            st.session_state.audio_file = save_audio_bytes(audio_bytes)
-            st.success("녹음이 완료되었습니다.")
+            if not st.session_state.recording_started:
+                st.session_state.recording_started = True
+                st.session_state.recording_start_time = datetime.now()
+            
+            try:
+                # 녹음 시간 계산
+                current_time = datetime.now()
+                recording_duration = current_time - st.session_state.recording_start_time
+                minutes = int(recording_duration.total_seconds() // 60)
+                seconds = int(recording_duration.total_seconds() % 60)
+                
+                # 파일 크기 확인
+                file_size = len(audio_bytes)
+                
+                # 상태 표시
+                time_placeholder.info(f"⏱️ 녹음 시간: {minutes:02d}:{seconds:02d}")
+                st.write(f"📊 파일 크기: {file_size/1024/1024:.2f} MB")
+                
+                if minutes >= 55:  # 55분 이상 녹음시 경고
+                    st.warning("⚠️ 녹음 시간이 55분을 초과했습니다. 곧 새로운 녹음을 시작하는 것을 추천합니다.")
+                
+                # 최소 파일 크기 검증 (1KB)
+                if file_size > 1024:
+                    st.audio(audio_bytes, format="audio/wav")
+                    st.session_state.audio_file = save_audio_bytes(audio_bytes)
+                    if st.session_state.audio_file:
+                        st.success("✅ 녹음이 완료되었습니다.")
+                        # 녹음 상태 초기화
+                        st.session_state.recording_started = False
+                        st.session_state.recording_start_time = None
+                else:
+                    st.warning("⚠️ 녹음 시간이 너무 짧습니다. 더 길게 녹음해주세요.")
+                    
+            except Exception as e:
+                st.error(f"녹음 처리 중 오류가 발생했습니다: {str(e)}")
+                # 오류 발생시 상태 초기화
+                st.session_state.recording_started = False
+                st.session_state.recording_start_time = None
         
         # 분석 버튼
         if st.button("AI 분석 시작", use_container_width=True):

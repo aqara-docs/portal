@@ -20,7 +20,42 @@ db_database = os.getenv('SQL_DATABASE_NEWBIZ')
 # Setting up Streamlit page
 st.set_page_config(
     page_title="MySQL DB GPT",
-    page_icon="🔒",
+    page_icon="🤖",
+)
+
+# 사용 가능한 모델 목록 (크기 순)
+AVAILABLE_MODELS = [
+    {"name": "llama3.2:latest", "size": "2.0 GB"},
+    {"name": "llama2:latest", "size": "3.8 GB"},
+    {"name": "mistral:latest", "size": "4.1 GB"},
+    {"name": "llama3.1:latest", "size": "4.9 GB"},
+    {"name": "llama3.1:8b", "size": "4.9 GB"},
+    {"name": "gemma:latest", "size": "5.0 GB"},
+    {"name": "gemma2:latest", "size": "5.4 GB"},
+    {"name": "deepseek-r1:14b", "size": "9.0 GB"},
+    {"name": "phi4:latest", "size": "9.1 GB"},
+    {"name": "deepseek-r1:32b", "size": "19 GB"},
+    {"name": "llama3.3:latest", "size": "42 GB"},
+    {"name": "deepseek-r1:70b", "size": "42 GB"},
+]
+
+# 모델 선택 UI
+st.sidebar.title("모델 설정")
+selected_model = st.sidebar.selectbox(
+    "사용할 모델을 선택하세요:",
+    options=[model["name"] for model in AVAILABLE_MODELS],
+    format_func=lambda x: f"{x} ({next(m['size'] for m in AVAILABLE_MODELS if m['name'] == x)})",
+    index=0  # 기본값으로 가장 작은 모델 선택
+)
+
+# Temperature 설정
+temperature = st.sidebar.slider(
+    "Temperature:", 
+    min_value=0.0, 
+    max_value=2.0, 
+    value=0.1, 
+    step=0.1,
+    help="값이 높을수록 더 창의적인 응답을 생성합니다."
 )
 
 # Custom callback handler inheriting from BaseCallbackHandler
@@ -37,13 +72,15 @@ class ChatCallbackHandler(BaseCallbackHandler):
         self.message += token
         self.message_box.markdown(self.message)
 
-# Using Ollama's model for LLM
-llm = ChatOllama(
-    model="llama3.2",
-    temperature=0.1,
-    streaming=True,
-    callbacks=[ChatCallbackHandler()],  # Instantiate the callback handler
-)
+# Ollama 모델 초기화 함수
+@st.cache_resource
+def get_llm(model_name, temp):
+    return ChatOllama(
+        model=model_name,
+        temperature=temp,
+        streaming=True,
+        callbacks=[ChatCallbackHandler()],
+    )
 
 # Function to save the conversation history
 def save_message(message, role):
@@ -128,6 +165,7 @@ prompt = ChatPromptTemplate.from_template(
 
 # Streamlit UI
 st.title("MySQL DB GPT")
+st.markdown(f"현재 선택된 모델: **{selected_model}**")
 st.markdown(
     """
 Welcome! Use this chatbot to ask questions to an AI about your database! 
@@ -156,7 +194,9 @@ if message:
     if data_frames:
         context = "\n\n".join([df.to_string() for df in data_frames.values()])
         
-        # Define chain only if we have context from database
+        # 현재 선택된 모델로 LLM 초기화
+        llm = get_llm(selected_model, temperature)
+        
         chain = (
             {
                 "context": RunnableLambda(lambda _: context),
@@ -168,14 +208,10 @@ if message:
         with st.chat_message("ai"):
             chain.invoke(message)
 
-        # result = chain.invoke(message)
-    
-        # # Send only one response
-        # if isinstance(result, dict) and "content" in result:
-        #     send_message(result["content"], "ai")
-        # else:
-        #     send_message(result, "ai")
-    
-    # Reset the message list after sending to avoid repetition
-    else:
-        st.session_state["messages"] = []
+if st.sidebar.button("대화 내용 초기화"):
+    st.session_state["messages"] = []
+    st.session_state["initial_message_sent"] = False
+    st.rerun()
+
+else:
+    st.session_state["messages"] = []

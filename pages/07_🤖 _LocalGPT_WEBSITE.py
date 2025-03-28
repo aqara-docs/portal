@@ -19,7 +19,45 @@ nltk.download('punkt')
 nltk.data.path.append('/path/to/your/nltk_data')
 
 # Set up page config
-st.set_page_config(page_title="Website GPT", page_icon="🔒")
+st.set_page_config(
+    page_title="Website GPT", 
+    page_icon="🤖"
+)
+
+# 사용 가능한 모델 목록 (크기 순)
+AVAILABLE_MODELS = [
+    {"name": "llama3.2:latest", "size": "2.0 GB"},
+    {"name": "llama2:latest", "size": "3.8 GB"},
+    {"name": "mistral:latest", "size": "4.1 GB"},
+    {"name": "llama3.1:latest", "size": "4.9 GB"},
+    {"name": "llama3.1:8b", "size": "4.9 GB"},
+    {"name": "gemma:latest", "size": "5.0 GB"},
+    {"name": "gemma2:latest", "size": "5.4 GB"},
+    {"name": "deepseek-r1:14b", "size": "9.0 GB"},
+    {"name": "phi4:latest", "size": "9.1 GB"},
+    {"name": "deepseek-r1:32b", "size": "19 GB"},
+    {"name": "llama3.3:latest", "size": "42 GB"},
+    {"name": "deepseek-r1:70b", "size": "42 GB"},
+]
+
+# 모델 선택 UI
+st.sidebar.title("모델 설정")
+selected_model = st.sidebar.selectbox(
+    "사용할 모델을 선택하세요:",
+    options=[model["name"] for model in AVAILABLE_MODELS],
+    format_func=lambda x: f"{x} ({next(m['size'] for m in AVAILABLE_MODELS if m['name'] == x)})",
+    index=0  # 기본값으로 가장 작은 모델 선택
+)
+
+# Temperature 설정
+temperature = st.sidebar.slider(
+    "Temperature:", 
+    min_value=0.0, 
+    max_value=2.0, 
+    value=0.1, 
+    step=0.1,
+    help="값이 높을수록 더 창의적인 응답을 생성합니다."
+)
 
 class ChatCallbackHandler(BaseCallbackHandler):
     message = ""
@@ -35,14 +73,15 @@ class ChatCallbackHandler(BaseCallbackHandler):
         self.message_box.markdown(self.message)
 
 
-llm = ChatOllama(
-    model="llama3.2",
-    temperature=0.1,
-    streaming=True,
-    callbacks=[
-        ChatCallbackHandler(),
-    ],
-)
+# Ollama 모델 초기화 함수
+@st.cache_resource
+def get_llm(model_name, temp):
+    return ChatOllama(
+        model=model_name,
+        temperature=temp,
+        streaming=True,
+        callbacks=[ChatCallbackHandler()],
+    )
 
 # Function to scrape website pages and extract text
 def scrape_website(url):
@@ -76,7 +115,7 @@ def scrape_website(url):
 
 
 @st.cache_data(show_spinner="Embedding website content...")
-def embed_website(url):
+def embed_website(url, model_name):
     cache_dir = LocalFileStore(f"./private_embeddings/{url.replace('/', '_')}")
     splitter = CharacterTextSplitter.from_tiktoken_encoder(
         separator="\n",
@@ -97,10 +136,9 @@ def embed_website(url):
         for split_text in split_texts:
             split_docs.append(Document(page_content=split_text, metadata=doc.metadata))
 
-    embeddings = OllamaEmbeddings(model="llama3.2")
+    embeddings = OllamaEmbeddings(model=model_name)
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(embeddings, cache_dir)
 
-    # Create vector store
     vectorstore = FAISS.from_documents(split_docs, cached_embeddings)
     retriever = vectorstore.as_retriever()
 
@@ -139,6 +177,7 @@ prompt = ChatPromptTemplate.from_template(
 )
 
 st.title("Website Scraping GPT")
+st.markdown(f"현재 선택된 모델: **{selected_model}**")
 
 st.markdown(
     """
@@ -152,13 +191,17 @@ with st.sidebar:
     website_url = st.text_input("Enter website URL", "")
 
 if website_url:
-    retriever = embed_website(website_url)
+    retriever = embed_website(website_url, selected_model)
     send_message("The website data is ready! Ask anything.", "ai", save=False)
     paint_history()
     
     message = st.chat_input("Ask anything about the website content...")
     if message:
         send_message(message, "human")
+        
+        # 현재 선택된 모델로 LLM 초기화
+        llm = get_llm(selected_model, temperature)
+        
         chain = (
             {
                 "context": retriever | RunnableLambda(format_docs),
@@ -169,5 +212,10 @@ if website_url:
         )
         with st.chat_message("ai"):
             chain.invoke(message)
+
+if st.sidebar.button("대화 내용 초기화"):
+    st.session_state["messages"] = []
+    st.rerun()
+
 else:
     st.session_state["messages"] = []
