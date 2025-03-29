@@ -245,8 +245,52 @@ def add_rating(idea_id, rater_id, rating_type, rating_value):
         cursor.close()
         conn.close()
 
+def get_users():
+    """사용자 목록 조회"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute("""
+            SELECT user_id, user_name, credibility_score
+            FROM dot_user_credibility
+            ORDER BY user_name
+        """)
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("🎯 Dot Collector - 회의 관리")
+    
+    # 사용자 선택 (세션 상태 초기화)
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = None
+    
+    # 사이드바에 사용자 선택 추가
+    with st.sidebar:
+        st.subheader("👤 사용자 선택")
+        users = get_users()
+        user_options = {user['user_name']: user['user_id'] for user in users}
+        
+        selected_user = st.selectbox(
+            "사용자 선택",
+            options=list(user_options.keys()),
+            index=None,
+            placeholder="사용자를 선택하세요"
+        )
+        
+        if selected_user:
+            st.session_state.user_id = user_options[selected_user]
+            st.success(f"선택된 사용자: {selected_user}")
+        else:
+            st.warning("사용자를 선택해주세요")
+    
+    # 사용자가 선택되지 않은 경우 경고 표시
+    if not st.session_state.user_id:
+        st.warning("사이드바에서 사용자를 선택해주세요.")
+        st.stop()
     
     # 분야 초기화 확인
     initialize_expertise_areas()
@@ -256,7 +300,19 @@ def main():
         st.write("### 새 회의/토픽 생성")
         title = st.text_input("제목", help="회의나 토론할 토픽의 제목을 입력하세요")
         description = st.text_area("설명", help="회의의 목적이나 토론할 내용을 자세히 설명해주세요")
-        created_by = st.text_input("작성자", help="회의 생성자의 이름을 입력하세요")
+        
+        # 작성자를 현재 선택된 사용자로 자동 설정
+        current_user = next(
+            (user['user_name'] for user in users 
+             if user['user_id'] == st.session_state.user_id),
+            None
+        )
+        created_by = st.text_input(
+            "작성자", 
+            value=current_user,
+            disabled=True,
+            help="현재 로그인된 사용자"
+        )
         
         # 분야 선택 (다중 선택 가능)
         areas = get_expertise_areas()
