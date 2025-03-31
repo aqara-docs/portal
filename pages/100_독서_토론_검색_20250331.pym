@@ -22,30 +22,6 @@ def connect_to_db():
         collation='utf8mb4_unicode_ci'
     )
 
-def summarize_for_tts(text, max_length=3500):
-    """TTS를 위해 텍스트를 요약"""
-    if len(text) <= max_length:
-        return text
-    
-    # 텍스트가 너무 길 경우 주요 섹션만 포함
-    lines = text.split('\n')
-    summary = []
-    current_length = 0
-    
-    for line in lines:
-        # 제목이나 중요 섹션 시작 부분 포함
-        if line.startswith('#') or line.startswith('##'):
-            if current_length + len(line) + 2 <= max_length:
-                summary.append(line)
-                current_length += len(line) + 2
-        # 핵심 내용 포함
-        elif '[핵심 요약]' in line or '[주요 분석]' in line or '[실행 제안]' in line:
-            if current_length + len(line) + 2 <= max_length:
-                summary.append(line)
-                current_length += len(line) + 2
-    
-    return '\n'.join(summary)
-
 def main():
     st.title("📚 독서 토론 조회")
     
@@ -107,28 +83,12 @@ def main():
         type_mapping = {
             "요약": "summary",
             "적용": "application",
-            "적용 고급": "application_advanced",
+            "적용 고급": "application_advanced",  # 새로운 유형 추가
             "적용 비교": "application_compare"
         }
         material_type = st.selectbox(
             "자료 유형",
             list(type_mapping.keys())
-        )
-    
-    # 요약 모드에서 이전 토론 내용 입력 필드 추가
-    previous_topic = None
-    next_topic = None
-    if material_type == "요약":
-        previous_topic = st.text_input(
-            "이전 토론 주제",
-            placeholder="이전 독서 토론의 주제를 입력해주세요",
-            key="previous_topic"
-        )
-    elif material_type == "적용":
-        next_topic = st.text_input(
-            "다음 토론 주제",
-            placeholder="다음 독서 토론의 주제를 입력해주세요",
-            key="next_topic"
         )
     
     # 적용 자료인 경우 분석 키워드 선택
@@ -191,17 +151,8 @@ def main():
                             with col1:
                                 if st.button("🔊 음성으로 듣기"):
                                     with st.spinner("음성을 생성하고 있습니다..."):
-                                        # 클로징 멘트 생성
-                                        closing_ment = f"다음 시간에는 {next_topic if next_topic else '다음 주제'}에 대한 독서 토론을 진행할 예정입니다. 즐거운 하루 되세요. 감사합니다."
-                                        
-                                        # AI 분석 결과와 클로징 멘트만 포함
-                                        combined_text = f"""
-                                        AI 분석 결과입니다.
-                                        {st.session_state.ai_analysis}
-                                        
-                                        {closing_ment}
-                                        """
-                                        audio_html = text_to_speech(combined_text)
+                                        # AI 분석 결과만 음성으로 변환
+                                        audio_html = text_to_speech(st.session_state.ai_analysis)
                                         if audio_html:
                                             st.markdown(audio_html, unsafe_allow_html=True)
                 
@@ -225,21 +176,14 @@ def main():
                             with col1:
                                 if st.button("🔊 음성으로 듣기"):
                                     with st.spinner("음성을 생성하고 있습니다..."):
-                                        # 오프닝 멘트 생성
-                                        opening_ment = f"안녕하세요. 지난번 시간에는 {previous_topic if previous_topic else '이전 주제'}의 내용으로 독서토론을 진행했습니다. 그럼 오늘 독서 토론 내용을 요약해 드리겠습니다."
-                                        
-                                        # 전체 텍스트 구성 및 요약
-                                        full_text = f"""
-                                        {opening_ment}
-                                        
+                                        combined_text = f"""
                                         요약 내용입니다.
                                         {selected_file['content']}
                                         
                                         AI 의견입니다.
                                         {st.session_state.ai_opinion}
                                         """
-                                        summarized_text = summarize_for_tts(full_text)
-                                        audio_html = text_to_speech(summarized_text)
+                                        audio_html = text_to_speech(combined_text)
                                         if audio_html:
                                             st.markdown(audio_html, unsafe_allow_html=True)
         else:
@@ -281,67 +225,144 @@ def get_book_titles():
         conn.close()
 
 def analyze_content(content, keyword, model_key, model_name):
-    """내용 분석"""
-    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    """AI를 사용하여 내용 분석"""
+    base_prompt = f"""
+    다음 사업계획서를 '{keyword}' 관점에서만 집중적으로 분석해 주세요.
+    다른 관점은 제외하고 오직 '{keyword}' 측면에서만 검토해 주시기 바랍니다.
+
+    분석할 텍스트:
+    {content}
     
-    prompt = f"""
-    다음 내용을 '{keyword}' 관점에서 분석해주세요.
+    다음 형식으로 답변해 주세요:
+
+    [핵심 요약]
+    - '{keyword}' 관점에서만 본 핵심 내용을 2-3줄로 요약해 주세요
+    - '{keyword}' 측면의 가장 중요한 시사점 1-2가지를 제시해 주세요
+
+    [주요 분석]
+    1. '{keyword}' 관련 강점 (2가지)
+        - 각 강점이 '{keyword}' 측면에서 가지는 구체적 근거와 효과
     
-    분석 결과는 다음 형식으로 작성해주세요 (전체 글자 수 3500자 이내로 작성).
-    반드시 존대말을 사용해 주세요.
-    
-    [핵심 요약] (300자 이내)
-    - 핵심 내용을 2-3줄로 요약해 주세요
-    
-    [주요 분석] (1800자 이내)
-    1. '{keyword}' 관련 강점
-    - 주요 강점 3-4개를 설명해 주세요
-    
-    2. '{keyword}' 측면의 개선점
-    - 주요 개선점 3-4개를 제시해 주세요
-    
-    [실행 제안] (1400자 이내)
+    2. '{keyword}' 측면의 개선점 (2가지)
+        - 각 개선점이 '{keyword}' 관점에서 가지는 문제와 해결 방안
+
+    [실행 제안]
     1. '{keyword}' 중심의 단기 과제 (1-3개월)
-    - 구체적 실행 방안 3-4개를 제시해 주세요
-    - 각 방안별 기대효과를 설명해 주세요
+        - '{keyword}' 강화를 위한 즉시 실행 가능한 2가지 방안
+        - 각각이 '{keyword}' 측면에서 가져올 기대효과
     
     2. '{keyword}' 중심의 중기 과제 (3-6개월)
-    - 구체적 실행 방안 3-4개를 제시해 주세요
-    - 각 방안별 기대효과를 설명해 주세요
-    
-    * 모든 내용은 반드시 존대말로 작성해 주세요.
-    * 예시: "~해야 합니다", "~할 수 있습니다", "~하시기 바랍니다" 등의 형식으로 작성해 주세요.
-    
-    분석 내용:
-    {content}
+        - '{keyword}' 역량 강화를 위한 2가지 전략 방안
+        - '{keyword}' 관점의 실행 단계와 성과 지표
+
+    * 모든 내용을 '{keyword}' 관점에서만 구체적이고 실용적으로 작성해 주시되, 존댓말을 사용해 주세요.
+    * 다른 관점이나 주제는 제외하고, 오직 '{keyword}'에만 집중해 주세요.
     """
+
+    if "Local" in model_key:
+        prompt = f"""You are a business consultant analyzing a business plan specifically focusing on '{keyword}'.
+        Please provide your analysis in Korean, strictly following this format:
+
+        [키워드 반영도] 
+        '{keyword}'에 대해 '상', '중', '하' 중 하나만 선택
+
+        [평가 근거]
+        '{keyword}'와 직접 관련된 구체적 근거만 2-3줄로 작성
+
+        [전체 논평]
+        '{keyword}' 관점에서만 다음 내용을 3-4줄로 작성:
+        - 강점과 차별화 요소
+        - 실행 가능성
+        - 시장 경쟁력
+
+        [보완 필요사항]
+        '{keyword}'에 관련된 다음 세 가지를 각각 한 줄로 작성:
+        - 구체적인 실행 방안
+        - 위험 요소 대응 방안
+        - 시장 대응 전략
+
+        Review guidelines for '{keyword}':
+        {keyword_guide.get(keyword, "키워드와 관련된 모든 측면을 검토")}
+
+        {base_prompt}
+
+        Important:
+        1. Focus ONLY on aspects related to '{keyword}'
+        2. Provide ALL responses in Korean
+        3. Follow the exact format specified
+        4. Make practical and specific suggestions
+        """
+    else:
+        prompt = base_prompt
+
+    try:
+        if "Local" in model_key:
+            return analyze_with_local_llm(prompt, model_name)
+        else:
+            return analyze_with_openai(prompt, model_name)
+    except Exception as e:
+        st.error(f"AI 분석 중 오류 발생: {str(e)}")
+        return None
+
+def analyze_with_openai(prompt, model):
+    """OpenAI API를 사용한 분석"""
+    try:
+        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "당신은 경영 컨설턴트로서 사업계획서를 분석하고 실용적인 조언을 제공합니다."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        
+        if hasattr(response.choices[0].message, 'content'):
+            return response.choices[0].message.content
+        else:
+            st.error("API 응답에 content가 없습니다.")
+            return None
+            
+    except Exception as e:
+        st.error(f"OpenAI API 호출 중 오류 발생: {str(e)}")
+        return None
+
+def analyze_with_local_llm(prompt, model):
+    """로컬 LLM을 사용한 분석"""
+    url = "http://localhost:11434/api/generate"
+    
+    data = {
+        "model": model,
+        "prompt": prompt,
+        "temperature": 0.3,
+        "max_tokens": 1000
+    }
     
     try:
-        if model_key.startswith("Local"):
-            # 로컬 LLM API 호출
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json={
-                    "model": model_name,
-                    "prompt": prompt,
-                    "max_tokens": 1400  # 토큰 수 제한 (약 3500자)
-                }
-            )
-            return response.json()['response']
-        else:
-            # OpenAI API 호출
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": "당신은 비즈니스 분석 전문가입니다. 항상 존대말을 사용하여 분석 결과를 작성합니다."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=1400,  # 토큰 수 제한 (약 3500자)
-                temperature=0.2
-            )
-            return response.choices[0].message.content
+        response = requests.post(url, json=data, stream=True)
+        
+        # 전체 응답 텍스트를 저장할 변수
+        full_response = ""
+        
+        # 스트리밍 응답 처리
+        for line in response.iter_lines():
+            if line:
+                # 각 라인을 JSON으로 파싱
+                json_response = json.loads(line)
+                if 'response' in json_response:
+                    # 응답 텍스트 누적
+                    full_response += json_response['response']
+                    
+                # 완료 여부 확인
+                if json_response.get('done', False):
+                    break
+        
+        return full_response
+        
     except Exception as e:
-        st.error(f"분석 중 오류 발생: {str(e)}")
+        st.error(f"로컬 LLM 호출 중 오류 발생: {str(e)}")
         return None
 
 def generate_business_opinion(summary_text):
@@ -565,9 +586,9 @@ def compare_applications(content1, content2, keyword, model_key, model_name):
     
     try:
         if "Local" in model_key:
-            return analyze_content(prompt, keyword, model_key, model_name)
+            return analyze_with_local_llm(prompt, model_name)
         else:
-            return analyze_content(prompt, keyword, model_key, model_name)
+            return analyze_with_openai(prompt, model_name)
     except Exception as e:
         st.error(f"비교 분석 중 오류 발생: {str(e)}")
         return "비교 분석 중 오류가 발생했습니다. 다시 시도해 주세요."

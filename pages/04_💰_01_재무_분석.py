@@ -251,7 +251,7 @@ def main():
     with tabs[1]:  # 수익성 분석
         st.header("수익성 분석")
         
-        # Profit Margin & Markup 분석 추가
+        # Profit Margin & Markup 분석
         st.subheader("Profit Margin & Markup 분석")
         col1, col2, col3 = st.columns(3)
         
@@ -288,56 +288,6 @@ def main():
                 
                 st.metric("목표 판매가격", f"₩{target_price:,.0f}")
 
-        # 수익성 시뮬레이션
-        st.subheader("수익성 시뮬레이션")
-        col4, col5 = st.columns(2)
-        
-        with col4:
-            sales_volume = st.number_input("예상 판매량", min_value=0, value=100)
-            fixed_overhead = st.number_input("고정 비용", min_value=0.0, value=100000.0)
-        
-        with col5:
-            if st.button("수익성 시뮬레이션"):
-                total_revenue = selling_price * sales_volume
-                total_cost = (cost_price * sales_volume) + fixed_overhead
-                total_profit = total_revenue - total_cost
-                break_even_units = fixed_overhead / (selling_price - cost_price)
-                
-                st.metric("총 수익", f"₩{total_revenue:,.0f}")
-                st.metric("총 비용", f"₩{total_cost:,.0f}")
-                st.metric("순이익", f"₩{total_profit:,.0f}")
-                st.metric("손익분기점 수량", f"{break_even_units:.0f}개")
-                
-                # 수익성 분석 그래프
-                volumes = np.linspace(0, sales_volume*2, 100)
-                revenues = volumes * selling_price
-                costs = (volumes * cost_price) + fixed_overhead
-                profits = revenues - costs
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=volumes, y=revenues, name='매출'))
-                fig.add_trace(go.Scatter(x=volumes, y=costs, name='총비용'))
-                fig.add_trace(go.Scatter(x=volumes, y=profits, name='이익',
-                                       line=dict(dash='dash')))
-                fig.add_vline(x=break_even_units, line_dash="dot",
-                            annotation_text="손익분기점")
-                
-                fig.update_layout(
-                    title="수익성 분석",
-                    xaxis_title="판매량",
-                    yaxis_title="금액 (₩)",
-                    showlegend=True
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-
-        # 기존의 이익률 분석과 다른 코드들...
-        st.markdown("---")
-        col6, col7 = st.columns(2)
-        
-        with col6:
-            # 기존의 이익률 분석 코드...
-
     with tabs[2]:  # 투자/가치 분석
         st.header("투자 및 가치 분석")
         
@@ -356,54 +306,55 @@ def main():
                 st.write(f"이 고객을 유치하는데 최대 ₩{ltv*0.3:,.0f} 까지 투자할 수 있습니다. (LTV의 30% 기준)")
         
         with col2:
-            st.subheader("허용 획득 비용 (AAC) 계산")
-            ltv_input = st.number_input("LTV", min_value=0.0, value=1000000.0)
-            cost_to_serve = st.number_input("서비스 제공 비용", min_value=0.0, value=400000.0)
-            target_margin = st.number_input("목표 이익률(%)", min_value=0.0, max_value=100.0, value=20.0)
+            st.subheader("허용 획득 비용 (AAC) 분석")
+            target_ltv = st.number_input("목표 LTV", min_value=0.0, value=2400000.0)
+            overhead_ratio = st.number_input("간접비 비율(%)", min_value=0.0, max_value=100.0, value=20.0)
+            profit_margin = st.number_input("목표 이익률(%)", min_value=0.0, max_value=100.0, value=25.0)
             
             if st.button("AAC 계산"):
-                aac = ltv_input - cost_to_serve - (ltv_input * target_margin/100)
+                overhead = target_ltv * (overhead_ratio/100)
+                required_profit = target_ltv * (profit_margin/100)
+                aac = target_ltv - overhead - required_profit
+                
                 st.metric("허용 획득 비용(AAC)", f"₩{aac:,.0f}")
-                st.write(f"고객 획득을 위한 마케팅 예산으로 최대 ₩{aac:,.0f}를 사용할 수 있습니다.")
+                st.write("#### 비용 구조")
+                fig = go.Figure(data=[go.Pie(
+                    labels=['AAC', '간접비', '목표 이익'],
+                    values=[aac, overhead, required_profit],
+                    hole=.3
+                )])
+                st.plotly_chart(fig)
 
     with tabs[3]:  # 비용 분석
-        st.header("비용 구조 분석")
+        st.header("비용 분석")
         
-        # Fixed and Variable Costs
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("고정비/변동비 분석")
-            fixed_costs = st.number_input("월 고정비", min_value=0.0, value=5000000.0)
-            unit_cost = st.number_input("단위당 변동비", min_value=0.0, value=1000.0)
-            units = st.number_input("예상 판매량", min_value=0, value=1000)
-            unit_price = st.number_input("판매 가격", min_value=0.0, value=2000.0)
+            st.subheader("비용 구조 분석")
+            fixed_costs = st.number_input("월 고정비용", min_value=0.0, value=5000000.0)
+            unit_cost = st.number_input("단위당 변동비", min_value=0.0, value=5000.0)
+            units = st.number_input("월 판매량", min_value=0, value=1000)
+            unit_price = st.number_input("판매 단가", min_value=0.0, value=8000.0)
             
-            if st.button("비용 구조 분석"):
+            if st.button("비용 분석"):
                 total_variable_costs = unit_cost * units
                 total_costs = fixed_costs + total_variable_costs
-                total_revenue = unit_price * units
-                profit = total_revenue - total_costs
+                revenue = unit_price * units
+                profit = revenue - total_costs
                 
-                col3, col4, col5 = st.columns(3)
-                with col3:
-                    st.metric("총 고정비", f"₩{fixed_costs:,.0f}")
-                with col4:
-                    st.metric("총 변동비", f"₩{total_variable_costs:,.0f}")
-                with col5:
-                    st.metric("예상 이익", f"₩{profit:,.0f}")
+                st.metric("총 비용", f"₩{total_costs:,.0f}")
+                st.metric("영업이익", f"₩{profit:,.0f}")
                 
                 # 비용 구조 파이 차트
-                fig = go.Figure(data=[
-                    go.Pie(
-                        labels=['고정비', '변동비'],
-                        values=[fixed_costs, total_variable_costs],
-                        hole=.3
-                    )
-                ])
+                fig = go.Figure(data=[go.Pie(
+                    labels=['고정비', '변동비'],
+                    values=[fixed_costs, total_variable_costs],
+                    hole=.3
+                )])
                 fig.update_layout(title="비용 구조")
                 st.plotly_chart(fig)
-
+        
         with col2:
             st.subheader("손익분기점 분석")
             if st.button("손익분기점 계산"):

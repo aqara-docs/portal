@@ -270,26 +270,38 @@ def save_audio_bytes(audio_bytes):
         return None
         
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        temp_dir = tempfile.gettempdir()
-        filename = os.path.join(temp_dir, f"meeting_{timestamp}.wav")
-        
-        # 파일 크기 검증
-        if len(audio_bytes) < 100:  # 최소 크기 검증
-            st.error("녹음 파일이 너무 작습니다.")
-            return None
+        with st.spinner("녹음 파일을 저장하고 있습니다..."):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            temp_dir = tempfile.gettempdir()
+            filename = os.path.join(temp_dir, f"meeting_{timestamp}.wav")
             
-        with open(filename, 'wb') as f:
-            f.write(audio_bytes)
-            
-        # 저장된 파일 검증
-        if os.path.exists(filename) and os.path.getsize(filename) > 0:
-            st.info(f"녹음 파일이 저장되었습니다. (크기: {os.path.getsize(filename)/1024/1024:.2f} MB)")
-            return filename
-        else:
-            st.error("파일 저장에 실패했습니다.")
-            return None
-            
+            # 파일 크기 검증
+            if len(audio_bytes) < 100:  # 최소 크기 검증
+                st.error("녹음 파일이 너무 작습니다.")
+                return None
+                
+            with open(filename, 'wb') as f:
+                f.write(audio_bytes)
+                
+            # 저장된 파일 검증
+            if os.path.exists(filename) and os.path.getsize(filename) > 0:
+                file_size = os.path.getsize(filename)/1024/1024
+                st.success(f"✅ 녹음 파일이 성공적으로 저장되었습니다. (크기: {file_size:.2f} MB)")
+                
+                # 다운로드 버튼 생성
+                with open(filename, 'rb') as f:
+                    audio_bytes = f.read()
+                    st.download_button(
+                        label="🎵 녹음 파일 다운로드",
+                        data=audio_bytes,
+                        file_name=f"meeting_{timestamp}.wav",
+                        mime="audio/wav"
+                    )
+                return filename
+            else:
+                st.error("파일 저장에 실패했습니다.")
+                return None
+                
     except Exception as e:
         st.error(f"오디오 파일 저장 중 오류가 발생했습니다: {str(e)}")
         return None
@@ -347,19 +359,16 @@ def main():
         title = st.text_input("회의 제목")
         participants = st.text_area("참석자 (쉼표로 구분)")
         
-        # 녹음 컴포넌트
-        st.write("🎙️ 녹음 시작/중지")
-        
-        # 녹음 시간 표시 컨테이너
-        time_placeholder = st.empty()
+        # 녹음 진행 상태를 위한 placeholder
+        recording_status = st.empty()
         
         # 녹음 컴포넌트
         audio_bytes = audio_recorder(
-            pause_threshold=1800.0,  # 30분으로 증가 (초 단위)
+            pause_threshold=1800.0,
             energy_threshold=0.01,
             recording_color="#e74c3c",
             neutral_color="#95a5a6",
-            sample_rate=16000  # 샘플레이트를 낮춰서 파일 크기 감소
+            sample_rate=16000
         )
 
         # 녹음 상태 및 시간 관리
@@ -367,6 +376,7 @@ def main():
             if not st.session_state.recording_started:
                 st.session_state.recording_started = True
                 st.session_state.recording_start_time = datetime.now()
+                recording_status.info("🎙️ 녹음 파일을 저장하고 있습니다...")
             
             try:
                 # 녹음 시간 계산
@@ -379,7 +389,7 @@ def main():
                 file_size = len(audio_bytes)
                 
                 # 상태 표시
-                time_placeholder.info(f"⏱️ 녹음 시간: {minutes:02d}:{seconds:02d}")
+                recording_status.info(f"⏱️ 녹음 시간: {minutes:02d}:{seconds:02d}")
                 st.write(f"📊 파일 크기: {file_size/1024/1024:.2f} MB")
                 
                 if minutes >= 28:  # 28분 이상 녹음시 경고
@@ -390,6 +400,7 @@ def main():
                     st.audio(audio_bytes, format="audio/wav")
                     st.session_state.audio_file = save_audio_bytes(audio_bytes)
                     if st.session_state.audio_file:
+                        recording_status.empty()  # 이전 상태 메시지 제거
                         st.success("✅ 녹음이 완료되었습니다.")
                         # 녹음 상태 초기화
                         st.session_state.recording_started = False
@@ -403,90 +414,100 @@ def main():
                 st.session_state.recording_started = False
                 st.session_state.recording_start_time = None
         
+        # AI 분석 상태를 위한 placeholder
+        analysis_status = st.empty()
+        
         # 분석 버튼
         if st.button("AI 분석 시작", use_container_width=True):
             if 'audio_file' in st.session_state and title and participants:
-                with st.spinner("음성을 텍스트로 변환 중..."):
-                    text = transcribe_large_audio(st.session_state.audio_file)
-                    
-                if text:
-                    with st.spinner("텍스트 분석 중..."):
-                        summary, action_items = summarize_text(text)
+                # 즉시 분석 시작 메시지 표시
+                analysis_status.info("🤖 AI 분석이 시작되었습니다...")
+                
+                try:
+                    with st.spinner("음성을 텍스트로 변환 중..."):
+                        text = transcribe_large_audio(st.session_state.audio_file)
                         
-                        if summary:
-                            # DB에 저장
-                            if save_meeting_record(
-                                title,
-                                participants.split(','),
-                                st.session_state.audio_file,
-                                text,
-                                summary,
-                                action_items
-                            ):
-                                st.success("회의록이 저장되었습니다.")
-                                
-                                # 결과 표시
-                                st.subheader("📝 회의록")
-                                st.write(summary)
-                                
-                                if action_items:
-                                    st.subheader("✅ Action Items")
-                                    for item in action_items:
-                                        st.write(item)
-                                
-                                # 다운로드 옵션
-                                st.markdown("### 📥 다운로드")
-                                col1, col2 = st.columns(2)
-                                
-                                with col1:
-                                    # 텍스트 파일 다운로드
-                                    text_content = "\n".join([
-                                        f"회의록: {title}",
-                                        f"날짜: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                                        f"참석자: {', '.join(participants.split(','))}",
-                                        "",
-                                        "=== 회의 요약 ===",
-                                        summary,
-                                        "",
-                                        "=== Action Items ===",
-                                        "\n".join([f"• {item}" for item in action_items]),
-                                        "",
-                                        "=== 전체 내용 ===",
-                                        text
-                                    ])
-                                    st.markdown(
-                                        create_download_link(
-                                            text_content, 
-                                            f"회의록_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                                            "📄 텍스트 파일 다운로드"
-                                        ),
-                                        unsafe_allow_html=True
-                                    )
-                                
-                                with col2:
-                                    # 마크다운 파일 다운로드
-                                    try:
-                                        markdown_content = generate_markdown(
-                                            title,
-                                            datetime.now().strftime('%Y-%m-%d %H:%M'),
-                                            participants.split(','),
+                    if text:
+                        with st.spinner("텍스트 분석 중..."):
+                            summary, action_items = summarize_text(text)
+                            
+                            if summary:
+                                # DB에 저장
+                                if save_meeting_record(
+                                    title,
+                                    participants.split(','),
+                                    st.session_state.audio_file,
+                                    text,
+                                    summary,
+                                    action_items
+                                ):
+                                    analysis_status.empty()  # 분석 시작 메시지 제거
+                                    st.success("✅ 회의록이 성공적으로 저장되었습니다.")
+                                    
+                                    # 결과 표시
+                                    st.subheader("📝 회의록")
+                                    st.write(summary)
+                                    
+                                    if action_items:
+                                        st.subheader("✅ Action Items")
+                                        for item in action_items:
+                                            st.write(item)
+                                    
+                                    # 다운로드 옵션
+                                    st.markdown("### 📥 다운로드")
+                                    col1, col2 = st.columns(2)
+                                    
+                                    with col1:
+                                        # 텍스트 파일 다운로드
+                                        text_content = "\n".join([
+                                            f"회의록: {title}",
+                                            f"날짜: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                                            f"참석자: {', '.join(participants.split(','))}",
+                                            "",
+                                            "=== 회의 요약 ===",
                                             summary,
-                                            action_items,
+                                            "",
+                                            "=== Action Items ===",
+                                            "\n".join([f"• {item}" for item in action_items]),
+                                            "",
+                                            "=== 전체 내용 ===",
                                             text
-                                        )
-                                        
+                                        ])
                                         st.markdown(
                                             create_download_link(
-                                                markdown_content, 
-                                                f"회의록_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                                                "📝 마크다운 파일 다운로드"
+                                                text_content, 
+                                                f"회의록_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                                                "📄 텍스트 파일 다운로드"
                                             ),
                                             unsafe_allow_html=True
                                         )
-                                    except Exception as e:
-                                        st.error(f"마크다운 생성 중 오류가 발생했습니다: {str(e)}")
+                                    
+                                    with col2:
+                                        # 마크다운 파일 다운로드
+                                        try:
+                                            markdown_content = generate_markdown(
+                                                title,
+                                                datetime.now().strftime('%Y-%m-%d %H:%M'),
+                                                participants.split(','),
+                                                summary,
+                                                action_items,
+                                                text
+                                            )
+                                            
+                                            st.markdown(
+                                                create_download_link(
+                                                    markdown_content, 
+                                                    f"회의록_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                                                    "📝 마크다운 파일 다운로드"
+                                                ),
+                                                unsafe_allow_html=True
+                                            )
+                                        except Exception as e:
+                                            st.error(f"마크다운 생성 중 오류가 발생했습니다: {str(e)}")
+                except Exception as e:
+                    st.error(f"음성 변환 중 오류가 발생했습니다: {str(e)}")
             else:
-                st.error("회의 제목, 참석자 정보, 녹음 파일이 모두 필요합니다.")
+                analysis_status.error("❗ 회의 제목, 참석자 정보, 녹음 파일이 모두 필요합니다.")
     
     with tab2:
         st.header("회의록 검색")
