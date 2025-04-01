@@ -53,12 +53,15 @@ class AudioProcessor:
             self.frame_count += 1
             if self.frame_count == 1:
                 st.write(f"First frame received: shape={audio.shape}, dtype={audio.dtype}")
+                st.write(f"Frame format: {frame.format.name}, Layout: {frame.layout.name}")
 
-            # session_state의 recording 상태 확인
-            if st.session_state.recording:
-                self.recording = True
-                # 프레임 데이터 저장
+            # 녹음 중인 경우 프레임 저장
+            if 'recording' in st.session_state and st.session_state.recording:
+                # 프레임 데이터 저장 (모노로 변환)
+                if len(audio.shape) > 1 and audio.shape[1] > 1:
+                    audio = np.mean(audio, axis=1)
                 self.frames.append(audio.copy())
+                
                 # 프레임 수 표시
                 if len(self.frames) % 30 == 0:
                     st.write(f"Recording... Frames: {len(self.frames)}")
@@ -67,6 +70,8 @@ class AudioProcessor:
 
         except Exception as e:
             st.error(f"Frame processing error: {str(e)}")
+            import traceback
+            st.error(traceback.format_exc())
             return frame
 
     def start_recording(self):
@@ -90,7 +95,7 @@ class AudioProcessor:
             if len(self.frames) > 0:
                 try:
                     # 모든 프레임을 하나의 배열로 결합
-                    audio_data = np.concatenate(self.frames, axis=0)
+                    audio_data = np.concatenate(self.frames)
                     st.write(f"Audio data shape: {audio_data.shape}")
                     
                     # WAV 파일로 저장
@@ -121,54 +126,6 @@ def get_audio_processor():
     global processor
     return processor
 
-# WebRTC 스트리머 설정
-webrtc_ctx = webrtc_streamer(
-    key="audio-recorder",
-    mode=WebRtcMode.SENDONLY,
-    rtc_configuration=RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    ),
-    media_stream_constraints={
-        "video": False,
-        "audio": {
-            "echoCancellation": True,
-            "noiseSuppression": True,
-            "autoGainControl": True,
-            "sampleRate": 16000
-        }
-    },
-    async_processing=True,
-    audio_receiver_size=1024,
-    video_processor_factory=None,
-    audio_processor_factory=get_audio_processor
-)
-
-# 녹음 제어 부분
-if webrtc_ctx.state.playing:
-    if st.button("🎙️ 녹음 시작/중지", key="record_button"):
-        if not st.session_state.recording:
-            # 녹음 시작
-            st.session_state.recording = True
-            st.session_state.start_time = datetime.now()
-            processor.start_recording()
-            st.info("🎙️ 녹음이 시작되었습니다...")
-        else:
-            # 녹음 중지
-            st.session_state.recording = False
-            audio_file = processor.stop_recording()
-            st.session_state.start_time = None
-            
-            if audio_file and os.path.exists(audio_file):
-                with open(audio_file, 'rb') as f:
-                    audio_bytes = f.read()
-                    st.audio(audio_bytes, format="audio/wav")
-                    st.download_button(
-                        label="🎵 녹음 파일 다운로드",
-                        data=audio_bytes,
-                        file_name=f"meeting_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav",
-                        mime="audio/wav"
-                    )
-
 def main():
     # OpenAI 클라이언트 초기화
     client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
@@ -188,17 +145,80 @@ def main():
         title = st.text_input("회의 제목")
         participants = st.text_area("참석자 (쉼표로 구분)")
         
-        try:
-            # 녹음 상태 표시
+        # 녹음 상태 표시 컨테이너
+        status_container = st.container()
+        with status_container:
             status_placeholder = st.empty()
             time_placeholder = st.empty()
+        
+        try:
+            # WebRTC 스트리머 설정
+            webrtc_ctx = webrtc_streamer(
+                key="audio-recorder",
+                mode=WebRtcMode.SENDONLY,
+                rtc_configuration=RTCConfiguration(
+                    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+                ),
+                media_stream_constraints={
+                    "video": False,
+                    "audio": {
+                        "echoCancellation": True,
+                        "noiseSuppression": True,
+                        "autoGainControl": True
+                    }
+                },
+                async_processing=True,
+                audio_receiver_size=1024,
+                video_processor_factory=None,
+                audio_processor_factory=get_audio_processor
+            )
 
             # 마이크 상태에 따른 안내 메시지
             if not webrtc_ctx.state.playing:
-                status_placeholder.warning("⚠️ 먼저 'Start' 버튼을 눌러 마이크를 활성화해주세요.")
-            elif not st.session_state.recording:
-                status_placeholder.info("🎙️ 마이크가 활성화되었습니다. '녹음 시작/중지' 버튼을 눌러 녹음을 시작하세요.")
-            
+                status_placeholder.warning("⚠️ 'Start' 버튼을 눌러 마이크를 활성화해주세요.")
+            else:
+                # 녹음 제어 버튼
+                if st.button("🎙️ 녹음 시작/중지", key="record_button"):
+                    if not st.session_state.recording:
+                        # 녹음 시작
+                        processor.frames = []
+                        processor.frame_count = 0
+                        st.session_state.recording = True
+                        st.session_state.start_time = datetime.now()
+                        status_placeholder.info("🎙️ 녹음이 시작되었습니다...")
+                    else:
+                        # 녹음 중지
+                        st.session_state.recording = False
+                        st.session_state.start_time = None
+                        
+                        if len(processor.frames) > 0:
+                            try:
+                                # 오디오 저장 및 처리
+                                audio_data = np.concatenate(processor.frames)
+                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                audio_file = os.path.join(tempfile.gettempdir(), f"meeting_{timestamp}.wav")
+                                
+                                with wave.open(audio_file, 'wb') as wave_file:
+                                    wave_file.setnchannels(1)
+                                    wave_file.setsampwidth(2)
+                                    wave_file.setframerate(processor.sample_rate)
+                                    wave_file.writeframes(audio_data.tobytes())
+                                
+                                # 오디오 재생 및 다운로드
+                                with open(audio_file, 'rb') as f:
+                                    audio_bytes = f.read()
+                                    st.audio(audio_bytes, format="audio/wav")
+                                    st.download_button(
+                                        label="🎵 녹음 파일 다운로드",
+                                        data=audio_bytes,
+                                        file_name=f"meeting_{timestamp}.wav",
+                                        mime="audio/wav"
+                                    )
+                            except Exception as e:
+                                st.error(f"Error saving audio: {str(e)}")
+                        else:
+                            st.warning("No audio frames captured!")
+
             # 녹음 중인 경우 시간 표시
             if st.session_state.recording and st.session_state.start_time and webrtc_ctx.state.playing:
                 current_time = datetime.now()
