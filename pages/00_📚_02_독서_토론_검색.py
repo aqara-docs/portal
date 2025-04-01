@@ -226,7 +226,7 @@ def main():
                                 if st.button("🔊 음성으로 듣기"):
                                     with st.spinner("음성을 생성하고 있습니다..."):
                                         # 오프닝 멘트 생성
-                                        opening_ment = f"안녕하세요. 지난번 시간에는 {previous_topic if previous_topic else '이전 주제'}의 내용으로 독서토론을 진행했습니다. 그럼 오늘 독서 토론 내용을 요약해 드리겠습니다."
+                                        opening_ment = f"안녕하세요. 좋은 아침입니다. 지난번 시간에는 {previous_topic if previous_topic else '이전 주제'}의 내용으로 독서토론을 진행했습니다. 그럼 오늘 독서 토론 내용을 요약해 드리겠습니다."
                                         
                                         # 전체 텍스트 구성 및 요약
                                         full_text = f"""
