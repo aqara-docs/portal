@@ -132,9 +132,9 @@ def visualize_decision_tree(tree_id):
         # 노드 정보 조회
         cursor.execute("""
             SELECT n.*, 
-                   GROUP_CONCAT(o.option_text SEPARATOR '|') as options
+                   GROUP_CONCAT(o.option_name SEPARATOR '|') as options
             FROM decision_nodes n
-            LEFT JOIN decision_options o ON n.node_id = o.node_id
+            LEFT JOIN decision_options o ON n.node_id = o.decision_node_id
             WHERE n.tree_id = %s
             GROUP BY n.node_id
         """, (tree_id,))
@@ -486,7 +486,7 @@ def add_decision_node(tree_id, parent_id=None):
                         if node_type == "결과 노드":
                             cursor.execute("""
                                 INSERT INTO decision_outcomes
-                                (node_id, market_position, strategic_fit, risk_factors)
+                                (decision_node_id, market_position, strategic_fit, risk_factors)
                                 VALUES (%s, %s, %s, %s)
                             """, (
                                 node_id,
@@ -498,7 +498,7 @@ def add_decision_node(tree_id, parent_id=None):
                             for option, data in options_data.items():
                                 cursor.execute("""
                                     INSERT INTO decision_options
-                                    (node_id, option_text, initial_investment, operating_cost,
+                                    (decision_node_id, option_name, initial_investment, operating_cost,
                                      expected_revenue, market_share, probability, npv, roi,
                                      payback_period)
                                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -518,7 +518,7 @@ def add_decision_node(tree_id, parent_id=None):
                             for scenario, data in options_data.items():
                                 cursor.execute("""
                                     INSERT INTO decision_options
-                                    (node_id, option_text, market_share, probability,
+                                    (decision_node_id, option_name, market_share, probability,
                                      revenue_impact, expected_revenue)
                                     VALUES (%s, %s, %s, %s, %s, %s)
                                 """, (
@@ -571,13 +571,13 @@ def calculate_path_values(tree_id, node_id=None):
         cursor.execute("""
             SELECT n.*, 
                    GROUP_CONCAT(
-                       CONCAT(o.option_text, ':', 
+                       CONCAT(o.option_name, ':', 
                              COALESCE(o.probability, ''), ':',
                              COALESCE(o.expected_revenue, 0)
                        ) SEPARATOR '|'
                    ) as options
             FROM decision_nodes n
-            LEFT JOIN decision_options o ON n.node_id = o.node_id
+            LEFT JOIN decision_options o ON n.node_id = o.decision_node_id
             WHERE n.node_id = %s
             GROUP BY n.node_id
         """, (node_id,))
@@ -696,13 +696,13 @@ def update_node_expected_values(tree_id):
             for i, step in enumerate(steps):
                 cursor.execute("""
                     UPDATE decision_nodes n
-                    JOIN decision_options o ON n.node_id = o.node_id
+                    JOIN decision_options o ON n.node_id = o.decision_node_id
                     SET n.expected_value = GREATEST(COALESCE(n.expected_value, 0), %s),
                         n.optimal_choice = CASE 
                             WHEN %s > COALESCE(n.expected_value, 0) THEN %s 
                             ELSE n.optimal_choice 
                         END
-                    WHERE o.option_text = %s
+                    WHERE o.option_name = %s
                 """, (expected_value, expected_value, step, step))
         
         conn.commit()
@@ -741,7 +741,7 @@ def view_decision_tree(tree_id):
                 SELECT n.*,
                        GROUP_CONCAT(
                            CONCAT(
-                               o.option_text, ':', 
+                               o.option_name, ':', 
                                COALESCE(o.initial_investment, 0), ':',
                                COALESCE(o.operating_cost, 0), ':',
                                COALESCE(o.expected_revenue, 0), ':',
@@ -753,7 +753,7 @@ def view_decision_tree(tree_id):
                            ) SEPARATOR '|'
                        ) as options
                 FROM decision_nodes n
-                LEFT JOIN decision_options o ON n.node_id = o.node_id
+                LEFT JOIN decision_options o ON n.node_id = o.decision_node_id
                 WHERE n.tree_id = %s
                 GROUP BY n.node_id
                 ORDER BY n.created_at
@@ -980,6 +980,15 @@ def create_decision_tree_tables():
     cursor = conn.cursor()
     
     try:
+        # 외래 키 체크 비활성화
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+        
+        # 기존 테이블 삭제
+        cursor.execute("DROP TABLE IF EXISTS decision_outcomes")
+        cursor.execute("DROP TABLE IF EXISTS decision_options")
+        cursor.execute("DROP TABLE IF EXISTS decision_nodes")
+        cursor.execute("DROP TABLE IF EXISTS decision_trees")
+        
         # 의사결정 트리 테이블
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS decision_trees (
@@ -1012,8 +1021,8 @@ def create_decision_tree_tables():
                 expected_value DECIMAL(15,2),
                 optimal_choice VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (tree_id) REFERENCES decision_trees(tree_id),
-                FOREIGN KEY (parent_id) REFERENCES decision_nodes(node_id)
+                FOREIGN KEY (tree_id) REFERENCES decision_trees(tree_id) ON DELETE CASCADE,
+                FOREIGN KEY (parent_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
@@ -1021,8 +1030,8 @@ def create_decision_tree_tables():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS decision_options (
                 option_id INT AUTO_INCREMENT PRIMARY KEY,
-                node_id INT NOT NULL,
-                option_text TEXT NOT NULL,
+                decision_node_id INT NOT NULL,  # 컬럼명 변경
+                option_name VARCHAR(255) NOT NULL,
                 initial_investment DECIMAL(15,2),
                 operating_cost DECIMAL(15,2),
                 expected_revenue DECIMAL(15,2),
@@ -1035,31 +1044,34 @@ def create_decision_tree_tables():
                 path_probability DECIMAL(5,2),
                 path_value DECIMAL(15,2),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (node_id) REFERENCES decision_nodes(node_id)
+                FOREIGN KEY (decision_node_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
-        # 결과 노드 상세 정보 테이블 추가
+        # 결과 노드 상세 정보 테이블
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS decision_outcomes (
                 outcome_id INT AUTO_INCREMENT PRIMARY KEY,
-                node_id INT NOT NULL,
-                final_revenue DECIMAL(15,2),          -- 최종 매출
-                cumulative_profit DECIMAL(15,2),      -- 누적 순이익
-                final_market_share DECIMAL(5,2),      -- 최종 시장점유율
-                market_position VARCHAR(20),          -- 시장 포지션
-                success_rate DECIMAL(5,2),            -- 성공 확률
-                strategic_fit INT,                    -- 전략 적합도
-                growth_potential INT,                 -- 성장 잠재력
-                competitive_advantage TEXT,           -- 경쟁 우위 요소
-                risk_factors TEXT,                    -- 리스크 요인
-                risk_description TEXT,                -- 리스크 설명
-                implications TEXT,                    -- 전략적 시사점
+                decision_node_id INT NOT NULL,  # 컬럼명 변경
+                final_revenue DECIMAL(15,2),
+                cumulative_profit DECIMAL(15,2),
+                final_market_share DECIMAL(5,2),
+                market_position VARCHAR(20),
+                success_rate DECIMAL(5,2),
+                strategic_fit INT,
+                growth_potential INT,
+                competitive_advantage TEXT,
+                risk_factors TEXT,
+                risk_description TEXT,
+                implications TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (node_id) REFERENCES decision_nodes(node_id)
+                FOREIGN KEY (decision_node_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
+        # 외래 키 체크 다시 활성화
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+        
         conn.commit()
         st.success("✅ 비즈니스 의사결정 트리 테이블이 생성되었습니다!")
         

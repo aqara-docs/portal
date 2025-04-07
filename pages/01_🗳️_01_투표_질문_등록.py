@@ -23,17 +23,17 @@ def connect_to_db():
         collation='utf8mb4_unicode_ci'
     )
 
-def save_question(title, description, multiple_choice, options, created_by):
+def save_question(title, description, multiple_choice, max_choices, options, created_by):
     conn = connect_to_db()
     cursor = conn.cursor()
     
     try:
-        # 문제 저장
+        # 문제 저장 - max_choices 컬럼 추가
         cursor.execute("""
             INSERT INTO vote_questions 
-            (title, description, multiple_choice, created_by)
-            VALUES (%s, %s, %s, %s)
-        """, (title, description, multiple_choice, created_by))
+            (title, description, multiple_choice, max_choices, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (title, description, multiple_choice, max_choices, created_by))
         
         # 방금 삽입한 question_id 가져오기
         question_id = cursor.lastrowid
@@ -69,7 +69,29 @@ def main():
     with st.form("vote_question_form"):
         title = st.text_input("제목", help="투표 문제의 제목을 입력하세요")
         description = st.text_area("설명", help="문제에 대한 자세한 설명을 입력하세요")
-        multiple_choice = st.checkbox("다중 선택 허용", help="참가자가 여러 개의 옵션을 선택할 수 있도록 허용")
+        
+        # 다중 선택 관련 옵션들을 컬럼으로 나누어 배치
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            multiple_choice = st.checkbox("다중 선택 허용", help="참가자가 여러 개의 옵션을 선택할 수 있도록 허용")
+        
+        # 다중 선택이 허용된 경우에만 최대 선택 개수 옵션 표시
+        max_choices = None
+        with col2:
+            if multiple_choice:
+                choice_options = {
+                    "2개까지 선택 가능": 2,
+                    "3개까지 선택 가능": 3,
+                    "4개까지 선택 가능": 4,
+                    "제한 없음": None
+                }
+                selected_option = st.selectbox(
+                    "최대 선택 개수",
+                    options=list(choice_options.keys()),
+                    help="참가자가 선택할 수 있는 최대 옵션 개수"
+                )
+                max_choices = choice_options[selected_option]
+        
         created_by = st.text_input("작성자", help="문제 작성자의 이름을 입력하세요")
         
         st.write("### 선택지 입력")
@@ -99,9 +121,15 @@ def main():
                 st.error("최소 2개의 선택지를 입력해주세요.")
                 return
             
+            # 다중 선택 제한 검증
+            if multiple_choice and max_choices is not None:
+                if max_choices > len(valid_options):
+                    st.error(f"최대 선택 개수({max_choices})가 전체 선택지 개수({len(valid_options)})보다 많을 수 없습니다.")
+                    return
+            
             # 저장 처리
             success, message = save_question(
-                title, description, multiple_choice, valid_options, created_by
+                title, description, multiple_choice, max_choices, valid_options, created_by
             )
             
             if success:
@@ -149,6 +177,9 @@ def main():
                 st.write(f"**설명:** {q['description']}")
                 st.write(f"**작성자:** {q['created_by']}")
                 st.write(f"**다중 선택:** {'예' if q['multiple_choice'] else '아니오'}")
+                if q['multiple_choice']:
+                    max_choices_text = "제한 없음" if q['max_choices'] is None else f"{q['max_choices']}개까지 선택 가능"
+                    st.write(f"**최대 선택 개수:** {max_choices_text}")
                 st.write(f"**선택지 수:** {q['option_count']}")
                 st.write(f"**총 응답 수:** {q['response_count']}")
                 st.write(f"**상태:** {q['status']}")

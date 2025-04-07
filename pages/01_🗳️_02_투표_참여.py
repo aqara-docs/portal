@@ -30,7 +30,15 @@ def get_active_questions():
     
     try:
         cursor.execute("""
-            SELECT * FROM vote_questions 
+            SELECT *, 
+                   CASE 
+                       WHEN multiple_choice = 1 AND max_choices IS NOT NULL 
+                       THEN CONCAT('(최대 ', max_choices, '개 선택 가능)')
+                       WHEN multiple_choice = 1 
+                       THEN '(다중 선택 가능)'
+                       ELSE '(1개만 선택 가능)'
+                   END as choice_info
+            FROM vote_questions 
             WHERE status = 'active' 
             ORDER BY created_at DESC
         """)
@@ -70,6 +78,35 @@ def check_duplicate_vote(question_id, voter_name):
         """, (question_id, voter_name))
         count = cursor.fetchone()[0]
         return count > 0
+    finally:
+        cursor.close()
+        conn.close()
+
+def validate_vote_selections(question_id, selected_options):
+    """투표 선택 검증"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute("""
+            SELECT multiple_choice, max_choices
+            FROM vote_questions
+            WHERE question_id = %s
+        """, (question_id,))
+        question = cursor.fetchone()
+        
+        if not question['multiple_choice']:
+            # 단일 선택만 허용
+            if len(selected_options) > 1:
+                return False, "이 문항은 하나의 선택지만 선택할 수 있습니다."
+        else:
+            # 다중 선택 제한 확인
+            if question['max_choices'] is not None:
+                if len(selected_options) > question['max_choices']:
+                    return False, f"최대 {question['max_choices']}개까지만 선택할 수 있습니다."
+        
+        return True, None
+        
     finally:
         cursor.close()
         conn.close()
@@ -124,6 +161,7 @@ def main():
         st.write("---")
         st.write(f"## {q['title']}")
         st.write(q['description'])
+        st.write(f"### {q['choice_info']}")  # 선택 제한 정보 표시
         
         # 이미 투표 완료된 경우 메시지 표시
         if q['question_id'] in st.session_state.completed_votes:
@@ -166,6 +204,12 @@ def main():
                 if not selected_options:
                     st.error("최소 하나의 선택지를 선택해주세요.")
                 else:
+                    # 선택 검증
+                    is_valid, error_message = validate_vote_selections(q['question_id'], selected_options)
+                    if not is_valid:
+                        st.error(error_message)
+                        continue
+                    
                     success, message = save_vote(
                         q['question_id'], 
                         selected_options,

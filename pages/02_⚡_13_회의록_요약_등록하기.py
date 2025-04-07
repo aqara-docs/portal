@@ -9,6 +9,7 @@ import json
 from dotenv import load_dotenv
 import mysql.connector
 import google.generativeai as genai
+import anthropic  # Anthropic 라이브러리 추가
 
 # .env 파일 로드
 load_dotenv()
@@ -18,6 +19,9 @@ client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 # Gemini 클라이언트 초기화
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+
+# Anthropic 클라이언트 초기화
+anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
 def create_tables():
     """데이터베이스 테이블 생성"""
@@ -326,12 +330,132 @@ def transcribe_large_audio(audio_file):
         st.error(f"음성 변환 중 오류 발생: {str(e)}")
         return None
 
-def summarize_text(text, model_choice=None):
+def summarize_text(text, model_choice=None, reference_notes=None):
     """텍스트 요약 및 Action Items 추출"""
     try:
-        model = model_choice or os.getenv('DEFAULT_AI_MODEL', 'gpt-4o-mini')
+        model = model_choice or os.getenv('DEFAULT_AI_MODEL', 'claude-3-7-sonnet-latest')
         
-        if model == 'gemini':
+        # 참고 사항이 있는 경우 프롬프트에 추가
+        reference_prompt = ""
+        if reference_notes and reference_notes.strip():
+            reference_prompt = f"\n\n중요: 다음 참고 사항을 반드시 고려하여 요약해주세요: {reference_notes}"
+        
+        # Anthropic Claude 모델 사용
+        if model.startswith('claude'):
+            try:
+                # 요약 생성
+                summary_prompt = f"""다음 회의 내용을 요약해주세요.
+                
+{reference_prompt}
+
+회의 내용:
+{text}
+
+요약 시 위의 참고 사항을 반드시 고려하여 작성해주세요. 다음 형식으로 정리해주세요:
+
+1. 회의 요약 (핵심 내용 중심)
+2. 주요 논의 사항 (bullet points)
+3. 결정 사항"""
+
+                summary_response = anthropic_client.messages.create(
+                    model=model,
+                    max_tokens=1000,
+                    messages=[
+                        {"role": "user", "content": summary_prompt}
+                    ]
+                )
+                
+                summary = summary_response.content[0].text
+                
+                # Action Items 추출 - 더 명확한 지시 추가
+                action_items_prompt = f"""다음 회의 내용에서 Action Items를 추출해주세요.
+                
+{reference_prompt}
+
+회의 내용:
+{text}
+
+Action Items 추출 시 위의 참고 사항을 반드시 고려해주세요.
+
+중요: 각 Action Item을 반드시 다음 형식으로 작성해주세요:
+- Action Item 1
+- Action Item 2
+- Action Item 3
+
+각 항목은 반드시 하이픈(-)으로 시작해야 합니다. 번호나 다른 기호를 사용하지 마세요.
+최소 3개 이상의 Action Item을 추출해주세요."""
+
+                action_items_response = anthropic_client.messages.create(
+                    model=model,
+                    max_tokens=500,
+                    messages=[
+                        {"role": "user", "content": action_items_prompt}
+                    ]
+                )
+                
+                action_items_text = action_items_response.content[0].text
+                
+                # 텍스트 파싱 개선
+                action_items = []
+                for line in action_items_text.split('\n'):
+                    line = line.strip()
+                    if line and (line.startswith('-') or line.startswith('•') or line.startswith('*')):
+                        action_items.append(line.lstrip('-•* ').strip())
+                
+                # 파싱된 항목이 없으면 전체 텍스트를 분석하여 추출 시도
+                if not action_items:
+                    st.warning("Action Items 형식 파싱에 실패했습니다. 전체 텍스트에서 추출을 시도합니다.")
+                    
+                    # 전체 텍스트에서 "Action Item" 또는 유사한 키워드가 있는 줄 찾기
+                    lines = action_items_text.split('\n')
+                    for i, line in enumerate(lines):
+                        if "action item" in line.lower() or "액션 아이템" in line.lower() or "조치 사항" in line.lower():
+                            # 해당 줄 이후의 텍스트를 Action Items로 간주
+                            for j in range(i+1, len(lines)):
+                                item_line = lines[j].strip()
+                                if item_line and not item_line.startswith('#') and not item_line.lower().startswith('action'):
+                                    # 번호나 기호 제거
+                                    clean_item = item_line
+                                    for prefix in ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '0.', '-', '*', '•', '○', '·']:
+                                        if clean_item.startswith(prefix):
+                                            clean_item = clean_item[len(prefix):].strip()
+                                            break
+                                    if clean_item:
+                                        action_items.append(clean_item)
+                
+                # 여전히 Action Items가 없으면 GPT-4o-mini로 재시도
+                if not action_items:
+                    st.warning("Claude에서 Action Items 추출에 실패했습니다. GPT-4o-mini로 재시도합니다.")
+                    
+                    action_items_system_prompt = "회의 내용에서 Action Items만 추출하여 리스트로 작성해주세요."
+                    
+                    if reference_notes and reference_notes.strip():
+                        action_items_system_prompt += f"\n\n중요: 다음 참고 사항을 반드시 고려하여 Action Items를 추출해주세요. 이 지침은 최우선으로 따라야 합니다:\n{reference_notes}"
+                    
+                    action_items_response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": action_items_system_prompt},
+                            {"role": "user", "content": text}
+                        ],
+                        max_tokens=500
+                    )
+                    action_items = action_items_response.choices[0].message.content.split('\n')
+                    action_items = [item.strip('- ') for item in action_items if item.strip()]
+                    
+                    st.info("GPT-4o-mini를 사용하여 Action Items를 추출했습니다.")
+                else:
+                    st.success(f"Claude {model} 모델을 사용하여 요약 및 Action Items를 추출했습니다.")
+                
+                return summary, action_items
+                
+            except Exception as e:
+                st.warning(f"Anthropic API 오류: {str(e)}. GPT-4o-mini로 대체합니다.")
+                # Claude 실패 시 GPT-4o-mini로 폴백
+                model = 'gpt-4o-mini'
+        
+        # Gemini 모델 사용
+        elif model == 'gemini':
             try:
                 # Gemini API 초기화 확인
                 if not genai._configured:
@@ -340,8 +464,16 @@ def summarize_text(text, model_choice=None):
                 # 모델 생성 - 간단한 설정으로 시작
                 gemini_model = genai.GenerativeModel('gemini-pro')
                 
-                # 요약 생성 - 간단한 프롬프트로 시작
-                summary_prompt = "다음 회의 내용을 요약해주세요:\n\n" + text
+                # 요약 생성 - 참고 사항 포함 및 강조
+                summary_prompt = f"""다음 회의 내용을 요약해주세요.
+                
+{reference_prompt}
+
+회의 내용:
+{text}
+
+요약 시 위의 참고 사항을 반드시 고려하여 작성해주세요."""
+                
                 summary_response = gemini_model.generate_content(summary_prompt)
                 
                 if hasattr(summary_response, 'text'):
@@ -350,8 +482,16 @@ def summarize_text(text, model_choice=None):
                     # 응답 형식이 다를 경우 대체 처리
                     summary = str(summary_response)
                 
-                # Action Items 추출 - 간단한 프롬프트로 시작
-                action_items_prompt = "다음 회의 내용에서 Action Items를 추출해주세요:\n\n" + text
+                # Action Items 추출 - 참고 사항 포함 및 강조
+                action_items_prompt = f"""다음 회의 내용에서 Action Items를 추출해주세요.
+                
+{reference_prompt}
+
+회의 내용:
+{text}
+
+Action Items 추출 시 위의 참고 사항을 반드시 고려해주세요."""
+                
                 action_items_response = gemini_model.generate_content(action_items_prompt)
                 
                 if hasattr(action_items_response, 'text'):
@@ -374,28 +514,40 @@ def summarize_text(text, model_choice=None):
                 # Gemini 실패 시 GPT-4o-mini로 폴백
                 model = 'gpt-4o-mini'
         
-        # GPT-4o-mini 모델 사용 (Gemini 실패 시 폴백 포함)
+        # GPT-4o-mini 모델 사용 (다른 모델 실패 시 폴백 포함)
         if model == 'gpt-4o-mini':
+            system_prompt = """
+            회의 내용을 분석하여 다음 형식으로 정리해주세요:
+            
+            1. 회의 요약 (핵심 내용 중심)
+            2. 주요 논의 사항 (bullet points)
+            3. 결정 사항
+            """
+            
+            # 참고 사항이 있는 경우 시스템 프롬프트에 추가 및 강조
+            if reference_notes and reference_notes.strip():
+                system_prompt += f"\n\n중요: 다음 참고 사항을 반드시 고려하여 요약해주세요. 이 지침은 최우선으로 따라야 합니다:\n{reference_notes}"
+            
             summary_response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": """
-                    회의 내용을 분석하여 다음 형식으로 정리해주세요:
-                    
-                    1. 회의 요약 (핵심 내용 중심)
-                    2. 주요 논의 사항 (bullet points)
-                    3. 결정 사항
-                    """},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text}
                 ],
                 max_tokens=1000  # 비용 절감을 위한 토큰 제한
             )
             summary = summary_response.choices[0].message.content
             
+            action_items_system_prompt = "회의 내용에서 Action Items만 추출하여 리스트로 작성해주세요."
+            
+            # 참고 사항이 있는 경우 Action Items 프롬프트에도 추가 및 강조
+            if reference_notes and reference_notes.strip():
+                action_items_system_prompt += f"\n\n중요: 다음 참고 사항을 반드시 고려하여 Action Items를 추출해주세요. 이 지침은 최우선으로 따라야 합니다:\n{reference_notes}"
+            
             action_items_response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "회의 내용에서 Action Items만 추출하여 리스트로 작성해주세요."},
+                    {"role": "system", "content": action_items_system_prompt},
                     {"role": "user", "content": text}
                 ],
                 max_tokens=500  # 비용 절감을 위한 토큰 제한
@@ -443,6 +595,29 @@ def generate_markdown(title, date, participants, summary, action_items, full_tex
     
     return "\n".join(sections)
 
+def delete_meeting_record(meeting_id):
+    """회의 기록 삭제"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4',
+            collation='utf8mb4_unicode_ci'
+        )
+        cursor = conn.cursor()
+        
+        query = "DELETE FROM meeting_records WHERE meeting_id = %s"
+        cursor.execute(query, (meeting_id,))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"데이터베이스 삭제 중 오류 발생: {str(e)}")
+        return False
+
 def main():
     st.title("🎙️ 회의록 작성 시스템")
     
@@ -465,9 +640,12 @@ def main():
     # 저장 함수 정의 - 실제 저장 로직을 여기서 처리
     def save_meeting_record_callback():
         if title and participants:
+            # 미팅 형태와 제목 조합
+            formatted_title = f"{meeting_type}-{title}" if meeting_type else title
+            
             # DB에 저장
             if save_meeting_record(
-                title,
+                formatted_title,
                 participants.split(','),
                 temp_path if 'temp_path' in locals() else "",
                 st.session_state.full_transcript,
@@ -481,8 +659,8 @@ def main():
     # AI 모델 선택
     model_choice = st.sidebar.selectbox(
         "AI 모델 선택",
-        ["gpt-4o-mini", "gemini"],
-        index=0 if os.getenv('DEFAULT_AI_MODEL') == 'gpt-4o-mini' else 1
+        ["claude-3-7-sonnet-latest", "gpt-4o-mini", "gemini"],
+        index=0  # Claude를 기본 모델로 설정
     )
     
     # 테이블 생성
@@ -496,7 +674,47 @@ def main():
         
         # 회의 정보 입력
         title = st.text_input("회의 제목")
+        
+        # 참석자 입력
         participants = st.text_area("참석자 (쉼표로 구분)")
+        
+        # 미팅 형태 선택 추가
+        meeting_type = st.selectbox(
+            "미팅 형태",
+            ["사내 미팅", "외부 미팅", "독서 토론"],
+            index=0,
+            key="meeting_type_select"
+        )
+        
+        # 독서 토론 기본 참고 사항
+        reading_discussion_default = """핵심 논점 및 주요 의견: 각 참가자가 제시한 주요 관점과 핵심 논점을 중심으로 요약해 주세요.
+의견 대립점: 토론 중 발생한 의견 차이나 대립되는 시각을 명확히 정리해 주세요.
+새로운 인사이트: 토론을 통해 도출된 새로운 통찰이나 참신한 관점을 중심으로 요약해 주세요.
+질문과 응답: 토론 중 제기된 중요한 질문과 그에 대한 응답을 요약해 주세요.
+책과 현실의 연결점: 책의 내용이 현실 세계나 참가자들의 경험과 어떻게 연결되었는지 중심으로 요약해 주세요.
+결론 및 합의점: 토론 결과 도출된 결론이나 참가자들이 동의한 핵심 포인트를 요약해 주세요.
+후속 논의 주제: 이번 토론에서 완전히 다루지 못했거나 다음 토론에서 더 깊이 다룰 만한 주제를 정리해 주세요."""
+        
+        # 미팅 형태에 따른 참고 사항 기본값 설정
+        if 'previous_meeting_type' not in st.session_state:
+            st.session_state.previous_meeting_type = meeting_type
+            st.session_state.reference_notes_value = reading_discussion_default if meeting_type == "독서 토론" else ""
+        
+        # 미팅 형태가 변경되었을 때 참고 사항 기본값 업데이트
+        if st.session_state.previous_meeting_type != meeting_type:
+            st.session_state.reference_notes_value = reading_discussion_default if meeting_type == "독서 토론" else ""
+            st.session_state.previous_meeting_type = meeting_type
+        
+        # 참고 사항 입력 필드
+        reference_notes = st.text_area(
+            "회의록 요약 시 참고할 사항 (AI가 이 내용을 고려하여 요약합니다)",
+            value=st.session_state.reference_notes_value,
+            placeholder="예: 마케팅 전략에 중점을 두고 요약해주세요. / 신제품 출시 일정에 관한 내용을 중요하게 다뤄주세요.",
+            height=250 if meeting_type == "독서 토론" else 100
+        )
+        
+        # 참고 사항 값 저장
+        st.session_state.reference_notes_value = reference_notes
         
         # 오디오 파일 업로드 - WAV 파일 추가
         uploaded_file = st.file_uploader("회의 녹음 파일 선택 (M4A, WAV)", type=['m4a', 'wav'])
@@ -540,7 +758,8 @@ def main():
                             
                         if text:
                             with st.spinner("텍스트 분석 중..."):
-                                summary, action_items = summarize_text(text, model_choice)
+                                # 참고 사항을 summarize_text 함수에 전달
+                                summary, action_items = summarize_text(text, model_choice, reference_notes)
                                 
                                 if summary:
                                     # 분석 결과를 세션 상태에 저장
@@ -655,12 +874,30 @@ def main():
         # 검색 필터
         search_query = st.text_input("검색어 입력 (제목, 내용, 요약)")
         
+        # 삭제 후 새로고침을 위한 상태 변수
+        if 'refresh_records' not in st.session_state:
+            st.session_state.refresh_records = False
+            
+        # 삭제 콜백 함수
+        def delete_record(meeting_id):
+            if delete_meeting_record(meeting_id):
+                st.session_state.refresh_records = True
+                st.success("회의록이 성공적으로 삭제되었습니다.")
+            else:
+                st.error("회의록 삭제에 실패했습니다.")
+        
+        # 삭제 후 새로고침
+        if st.session_state.refresh_records:
+            st.session_state.refresh_records = False
+            st.rerun()
+        
         # 검색 결과 표시
         records = get_meeting_records(search_query)
         
         if records:
             for record in records:
                 with st.expander(f"📅 {record['created_at'].strftime('%Y-%m-%d %H:%M')} | {record['title']}", expanded=False):
+                    # 회의록 내용 표시
                     st.write("**참석자:**", ", ".join(json.loads(record['participants'])))
                     st.write("**회의 요약:**")
                     st.write(record['summary'])
@@ -724,6 +961,22 @@ def main():
                             )
                         except Exception as e:
                             st.error(f"마크다운 생성 중 오류가 발생했습니다: {str(e)}")
+                    
+                    # 삭제 버튼 추가
+                    st.markdown("### ⚠️ 회의록 관리")
+                    delete_button_key = f"delete_button_{record['meeting_id']}"
+                    
+                    # 삭제 확인을 위한 체크박스
+                    confirm_delete = st.checkbox(f"삭제 확인", key=f"confirm_{record['meeting_id']}")
+                    
+                    if confirm_delete:
+                        if st.button("🗑️ 회의록 삭제", key=delete_button_key, type="primary", use_container_width=True):
+                            delete_record(record['meeting_id'])
+                    else:
+                        st.button("🗑️ 회의록 삭제", key=delete_button_key, disabled=True, use_container_width=True)
+                        st.caption("삭제하려면 먼저 '삭제 확인' 체크박스를 선택하세요.")
+        else:
+            st.info("검색 결과가 없습니다.")
 
 if __name__ == "__main__":
     main() 
