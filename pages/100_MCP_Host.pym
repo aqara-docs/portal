@@ -1,0 +1,375 @@
+import streamlit as st
+import json
+from typing import Dict, Optional, List
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
+import os
+from pathlib import Path
+import subprocess
+import anthropic
+import mysql.connector
+import time
+
+# .env 파일 로드
+env_path = Path(__file__).parent.parent / 'server' / '.env'
+load_dotenv(dotenv_path=env_path)
+
+# Anthropic 클라이언트 설정
+client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+
+class SimpleMCPClient:
+    """MCP Host 및 Client 구현"""
+    
+    def __init__(self, server_url: str, server_type: str):
+        self.server_type = server_type
+        self.smithery_key = "40c9efff-242a-46d9-8a5e-920d93026767"
+        self.npx_path = "/opt/homebrew/bin/npx"
+        
+        # 서버 설정
+        if server_type == "mysql":
+            self.mcp_server = "@f4ww4z/mcp-mysql-server"
+            self.host = "localhost"
+            self.port = 3000
+        elif server_type == "perplexity":
+            self.mcp_server = "mcp-server-perplexity"
+            self.host = "localhost"
+            self.port = 3001
+        
+        # MCP 서버 프로세스
+        self.server_process = None
+        # MCP 클라이언트 프로세스
+        self.client_process = None
+        self._start_mcp()
+    
+    def _start_mcp(self):
+        """MCP 서버 시작 및 클라이언트 연결"""
+        try:
+            # 기본 환경변수 설정
+            env = os.environ.copy()
+            env["SMITHERY_TRANSPORT"] = "stdio"  # stdio 전송 방식 강제 사용
+            
+            # 서버별 설정
+            if self.server_type == "mysql":
+                env.update({
+                    "SQL_HOST": os.getenv('SQL_HOST', 'localhost'),
+                    "SQL_USER": os.getenv('SQL_USER', 'root'),
+                    "SQL_PASSWORD": os.getenv('SQL_PASSWORD', ''),
+                    "SQL_DATABASE": os.getenv('SQL_DATABASE_NEWBIZ', 'newbiz'),
+                    "SQL_PORT": os.getenv('SQL_PORT', '3306')
+                })
+            elif self.server_type == "perplexity":
+                if not os.getenv('PERPLEXITY_API_KEY'):
+                    raise Exception("PERPLEXITY_API_KEY가 설정되지 않았습니다.")
+                env["PERPLEXITY_API_KEY"] = os.getenv('PERPLEXITY_API_KEY')
+            
+            # 1. MCP 서버 시작 (cursor 클라이언트 허용)
+            server_cmd = [
+                self.npx_path, "-y", "@smithery/cli@latest", "start",
+                self.mcp_server,
+                "--host", self.host,
+                "--port", str(self.port),
+                "--key", self.smithery_key,
+                "--client", "cursor"  # cursor 클라이언트 허용
+            ]
+            
+            self.server_process = subprocess.Popen(
+                server_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # 서버 시작 대기
+            time.sleep(2)  # 서버가 시작될 때까지 잠시 대기
+            
+            # 2. 클라이언트로 연결 (cursor 타입으로 연결)
+            client_cmd = [
+                self.npx_path, "-y", "@smithery/cli@latest", "run",
+                self.mcp_server,
+                "--client", "cursor",  # cursor 클라이언트로 연결
+                "--host", self.host,
+                "--port", str(self.port),
+                "--key", self.smithery_key
+            ]
+            
+            self.client_process = subprocess.Popen(
+                client_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # 연결 확인
+            start_time = time.time()
+            while time.time() - start_time < 10:
+                server_line = self.server_process.stderr.readline()
+                client_line = self.client_process.stderr.readline()
+                
+                if server_line and "MCP server running" in server_line:
+                    st.success(f"{self.server_type} MCP 서버가 {self.host}:{self.port}에서 시작되었습니다.")
+                
+                if client_line and "server running on stdio" in client_line:
+                    st.success(f"{self.server_type} MCP 서버에 연결되었습니다.")
+                    return
+                
+                if any("error" in line.lower() or "failed" in line.lower() 
+                      for line in [server_line, client_line] if line):
+                    raise Exception(f"연결 실패: {server_line or client_line}")
+            
+            raise Exception("연결 타임아웃")
+            
+        except Exception as e:
+            self._cleanup()
+            raise Exception(f"MCP 시작 실패: {str(e)}")
+    
+    def _cleanup(self):
+        """프로세스 정리"""
+        for process in [self.server_process, self.client_process]:
+            if process:
+                try:
+                    process.terminate()
+                    process.wait(timeout=3)
+                except:
+                    pass
+        self.server_process = None
+        self.client_process = None
+    
+    def execute_tool(self, tool_name: str, params: Dict) -> Dict:
+        """도구 실행"""
+        try:
+            if not self.client_process or self.client_process.poll() is not None:
+                self._start_mcp()
+            
+            # 요청 전송
+            request = json.dumps({
+                "tool": tool_name,
+                "parameters": params
+            }) + "\n"
+            
+            self.client_process.stdin.write(request)
+            self.client_process.stdin.flush()
+            
+            # 응답 읽기
+            response = ""
+            error = ""
+            
+            while True:
+                line = self.client_process.stdout.readline()
+                if line:
+                    response += line
+                    if line.strip().endswith("}"):
+                        break
+                
+                err_line = self.client_process.stderr.readline()
+                if err_line:
+                    error += err_line
+                
+                if self.client_process.poll() is not None:
+                    if not response and error:
+                        self._start_mcp()
+                        return self.execute_tool(tool_name, params)
+                    break
+            
+            if response:
+                try:
+                    return json.loads(response)
+                except json.JSONDecodeError:
+                    if error:
+                        raise Exception(f"JSON 파싱 실패: {error}")
+                    return {"result": response}
+            raise Exception(f"도구 실행 실패: {error if error else '알 수 없는 오류'}")
+            
+        except Exception as e:
+            raise Exception(f"요청 실패: {str(e)}")
+    
+    def close(self):
+        """연결 종료"""
+        self._cleanup()
+
+def process_with_claude(query: str, mcp_results: Dict) -> str:
+    """Claude를 사용하여 MCP 결과 처리"""
+    try:
+        # Claude에게 결과 해석 요청
+        message = client.messages.create(
+            model="claude-3-opus-20240229",
+            max_tokens=1000,
+            temperature=0,
+            messages=[{
+                "role": "user",
+                "content": f"""다음 MCP 서버 결과를 해석하고 사용자가 이해하기 쉽게 설명해주세요:
+                
+사용자 질문: {query}
+
+MCP 결과:
+{json.dumps(mcp_results, indent=2, ensure_ascii=False)}
+
+결과를 명확하고 구조적으로 설명해주세요."""
+            }]
+        )
+        return message.content
+    except Exception as e:
+        return f"Claude API 오류: {str(e)}"
+
+# Streamlit UI
+st.title("MCP 서버 호스트")
+
+# 세션 상태 초기화
+if 'server_status' not in st.session_state:
+    st.session_state.server_status = {
+        'connected': False,
+        'connect_time': None,
+        'server_type': None,
+        'server_url': None,
+        'client': None,
+        'query_history': []
+    }
+
+# 사이드바 UI
+with st.sidebar:
+    st.header("MCP 서버 연결")
+    
+    server_type = st.selectbox(
+        "서버 유형",
+        ["mysql", "perplexity"],
+        format_func=lambda x: "MySQL MCP 서버" if x == "mysql" else "Perplexity MCP 서버"
+    )
+    
+    server_url = st.text_input(
+        "서버 URL",
+        value="localhost",
+        help="연결할 MCP 서버의 URL을 입력하세요"
+    )
+
+    if server_type == "mysql":
+        with st.expander("MySQL 설정", expanded=True):
+            mysql_host = st.text_input("MySQL 호스트", 
+                value=os.getenv('SQL_HOST', 'localhost'))
+            mysql_user = st.text_input("MySQL 사용자", 
+                value=os.getenv('SQL_USER', 'root'))
+            mysql_password = st.text_input("MySQL 비밀번호", 
+                value=os.getenv('SQL_PASSWORD', ''),
+                type="password")
+            mysql_database = st.text_input("MySQL 데이터베이스",
+                value=os.getenv('SQL_DATABASE_NEWBIZ', 'newbiz'))
+            mysql_port = st.number_input("MySQL 포트", 
+                value=3306, 
+                min_value=1, 
+                max_value=65535)
+
+    if not st.session_state.server_status['connected']:
+        if st.button(f"{server_type.upper()} MCP 서버 연결"):
+            with st.spinner("서버 연결 중..."):
+                try:
+                    # MySQL 설정 업데이트
+                    if server_type == "mysql":
+                        os.environ.update({
+                            "SQL_HOST": mysql_host,
+                            "SQL_PORT": str(mysql_port),
+                            "SQL_USER": mysql_user,
+                            "SQL_PASSWORD": mysql_password,
+                            "SQL_DATABASE": mysql_database
+                        })
+                    
+                    client = SimpleMCPClient(server_url, server_type)
+                    
+                    st.session_state.server_status.update({
+                        'connected': True,
+                        'connect_time': datetime.now(),
+                        'server_type': server_type,
+                        'server_url': server_url,
+                        'client': client
+                    })
+                    st.success(f"{server_type.upper()} MCP 서버에 연결되었습니다.")
+                except Exception as e:
+                    st.error(f"연결 실패: {str(e)}")
+    else:
+        if st.button("서버 연결 해제"):
+            if st.session_state.server_status.get('client'):
+                st.session_state.server_status['client'].close()
+            st.session_state.server_status.update({
+                'connected': False,
+                'connect_time': None,
+                'server_type': None,
+                'server_url': None,
+                'client': None
+            })
+            st.warning("MCP 서버 연결이 해제되었습니다.")
+
+# 메인 영역
+if st.session_state.server_status['connected']:
+    st.header("서버 상태")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("상태", "연결됨")
+        st.metric("서버 유형", server_type.upper())
+    with col2:
+        uptime = datetime.now() - st.session_state.server_status['connect_time']
+        st.metric("연결 시간", f"{uptime.seconds//3600}시간 {(uptime.seconds//60)%60}분")
+        st.metric("쿼리 수행 횟수", len(st.session_state.server_status['query_history']))
+    
+    st.header("질문하기")
+    
+    help_text = """
+    자연어로 질문을 입력하세요. 예시:
+    
+    MySQL MCP:
+    - "Show me all tables in the newbiz database"
+    - "Get the first 5 users from the users table"
+    
+    Perplexity MCP:
+    - "What is quantum computing?"
+    - "Explain the difference between REST and GraphQL"
+    """
+    st.markdown(help_text)
+    
+    query = st.text_area("질문 입력", height=100)
+    
+    if st.button("실행"):
+        if query:
+            with st.spinner("실행 중..."):
+                try:
+                    # MCP 서버에 쿼리 실행 (Claude가 직접 처리)
+                    result = st.session_state.server_status['client'].execute_tool(
+                        "query" if server_type == "mysql" else "search",
+                        {"query": query}
+                    )
+                    
+                    # 결과 표시
+                    st.markdown("### 실행 결과")
+                    st.markdown(result.get('response', '결과가 없습니다.'))
+                    
+                    # 원본 결과 표시
+                    with st.expander("원본 응답", expanded=False):
+                        st.json(result)
+                    
+                    # 쿼리 기록 저장
+                    st.session_state.server_status['query_history'].append({
+                        'query': query,
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'result': "성공",
+                        'response': result.get('response', '')
+                    })
+                except Exception as e:
+                    st.error(f"실행 실패: {str(e)}")
+    
+    # 쿼리 기록 표시
+    if st.session_state.server_status['query_history']:
+        st.header("질문 기록")
+        for idx, query in enumerate(reversed(st.session_state.server_status['query_history'][-5:])):
+            with st.expander(f"질문 #{len(st.session_state.server_status['query_history']) - idx}: ({query['timestamp']})"):
+                st.markdown("**질문:**")
+                st.code(query['query'])
+                st.markdown("**응답:**")
+                st.markdown(query['response'])
+                st.text(f"상태: {query['result']}")
+
+else:
+    st.info("MCP 서버에 연결되어 있지 않습니다. 사이드바에서 서버에 연결해주세요.")

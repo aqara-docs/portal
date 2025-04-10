@@ -18,14 +18,22 @@ load_dotenv()
 # Get API keys
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-# MCP 서버 프로세스 저장
+# Initialize session state variables
 if 'mcp_server_process' not in st.session_state:
-    st.session_state.mcp_server_process = None
-    st.session_state.mcp_server_logs = []
+    st.session_state['mcp_server_process'] = None
+
+if 'mcp_server_logs' not in st.session_state:
+    st.session_state['mcp_server_logs'] = []
+
+if 'mcp_configs' not in st.session_state:
+    st.session_state['mcp_configs'] = {}
+
+if 'chat_history' not in st.session_state:
+    st.session_state['chat_history'] = []
 
 # Function to start the MCP server
 def start_mcp_server(server_type, port):
-    if st.session_state.mcp_server_process is not None:
+    if st.session_state['mcp_server_process'] is not None:
         st.warning("이미 MCP 서버가 실행 중입니다. 새 서버를 시작하기 전에 중지하세요.")
         return False, "MCP server is already running"
     
@@ -35,7 +43,7 @@ def start_mcp_server(server_type, port):
         
         # 서버 유형에 따른 스크립트 선택
         if server_type == "mysql":
-            script_path = os.path.join(os.path.dirname(__file__), "mcp_mysql_server.py")
+            script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "servers", "mcp_mysql_server.py")
             
             # 스크립트가 없으면 생성
             if not os.path.exists(script_path):
@@ -139,335 +147,69 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 def run_server(port):
     server_address = ('', port)
-    httpd = HTTPServer(server_address, MCPHandler)
-    print(f"MySQL MCP server running on port {port}")
-    httpd.serve_forever()
+    try:
+        httpd = HTTPServer(server_address, MCPHandler)
+        print(f"MySQL MCP server running on port {port}")
+        httpd.serve_forever()
+    except OSError as e:
+        if e.errno == 48:  # Address already in use
+            print(f"포트 {port}가 이미 사용 중입니다. MySQL MCP 서버가 이미 실행 중일 수 있습니다.")
+            return
+        raise  # 다른 OSError는 그대로 발생시킴
 
 if __name__ == "__main__":
     port = PORT
     run_server(port)
-""")
-                    
-        elif server_type == "perplexity":
-            script_path = os.path.join(os.path.dirname(__file__), "mcp_perplexity_server.py")
-            
-            # 스크립트가 없으면 생성
-            if not os.path.exists(script_path):
-                with open(script_path, "w") as f:
-                    f.write("""
-import sys
-import json
-import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import requests
-from dotenv import load_dotenv
-
-# 환경 변수 로드
-load_dotenv()
-
-# 기본 포트 설정
-PORT = 3001
-
-# 커맨드 라인에서 포트 받기
-if len(sys.argv) > 1:
-    PORT = int(sys.argv[1])
-
-# API 키 설정
-PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
-
-class MCPHandler(BaseHTTPRequestHandler):
-    def _set_headers(self, content_type="application/json"):
-        self.send_response(200)
-        self.send_header('Content-type', content_type)
-        self.end_headers()
     
-    def _handle_error(self, status, message):
-        self.send_response(status)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": message}).encode())
+    # 서버 프로세스 시작
+    process = subprocess.Popen(
+        [python_executable, script_path, str(port)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
     
-    def do_GET(self):
-        if self.path == "/status":
-            self._set_headers()
-            status = {
-                "status": "running",
-                "type": "perplexity",
-                "tools": ["search"]
-            }
-            self.wfile.write(json.dumps(status).encode())
-        else:
-            self._handle_error(404, "Not found")
+    st.session_state['mcp_server_process'] = process
     
-    def do_POST(self):
-        if self.path == "/execute":
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            request = json.loads(post_data.decode())
-            
-            if "tool" not in request or "parameters" not in request:
-                return self._handle_error(400, "Missing tool or parameters")
-            
-            tool = request["tool"]
-            params = request["parameters"]
-            
-            if tool == "search":
-                return self.execute_perplexity_search(params)
+    # 로그 캡처 스레드 시작
+    def capture_logs():
+        while st.session_state['mcp_server_process']:
+            line = process.stdout.readline()
+            if line:
+                st.session_state['mcp_server_logs'].append(line.strip())
+                if len(st.session_state['mcp_server_logs']) > 100:
+                    st.session_state['mcp_server_logs'].pop(0)
             else:
-                return self._handle_error(400, f"Unknown tool: {tool}")
-        else:
-            self._handle_error(404, "Not found")
+                time.sleep(0.1)
     
-    def execute_perplexity_search(self, params):
-        if "query" not in params:
-            return self._handle_error(400, "Missing query parameter")
-        
-        if not PERPLEXITY_API_KEY:
-            return self._handle_error(500, "PERPLEXITY_API_KEY not set in environment")
-        
-        query = params["query"]
-        
+    log_thread = threading.Thread(target=capture_logs)
+    log_thread.daemon = True
+    log_thread.start()
+    
+    # 서버 시작 대기
+    for i in range(5):  # 최대 5초 대기
         try:
-            # Perplexity API 호출
-            headers = {
-                "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "model": "llama-3.1-sonar-small-128k-online",
-                "messages": [{"role": "user", "content": query}]
-            }
-            
-            response = requests.post(
-                "https://api.perplexity.ai/chat/completions",
-                headers=headers,
-                json=data
-            )
-            
-            if response.status_code != 200:
-                return self._handle_error(response.status_code, f"Perplexity API error: {response.text}")
-            
-            self._set_headers()
-            self.wfile.write(json.dumps({"results": response.json()}).encode())
-        except Exception as e:
-            self._handle_error(500, str(e))
-
-def run_server(port):
-    server_address = ('', port)
-    httpd = HTTPServer(server_address, MCPHandler)
-    print(f"Perplexity MCP server running on port {port}")
-    httpd.serve_forever()
-
-if __name__ == "__main__":
-    port = PORT
-    run_server(port)
-""")
-        elif server_type == "firecrawl":
-            script_path = os.path.join(os.path.dirname(__file__), "mcp_firecrawl_server.py")
-            
-            # 스크립트가 없으면 생성
-            if not os.path.exists(script_path):
-                with open(script_path, "w") as f:
-                    f.write("""
-import sys
-import json
-import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import requests
-from dotenv import load_dotenv
-
-# 환경 변수 로드
-load_dotenv()
-
-# 기본 포트 설정
-PORT = 3002
-
-# 커맨드 라인에서 포트 받기
-if len(sys.argv) > 1:
-    PORT = int(sys.argv[1])
-
-# API 키 설정
-FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
-
-class MCPHandler(BaseHTTPRequestHandler):
-    def _set_headers(self, content_type="application/json"):
-        self.send_response(200)
-        self.send_header('Content-type', content_type)
-        self.end_headers()
+            # 서버 상태 확인
+            response = requests.get(f"http://localhost:{port}/status", timeout=1)
+            if response.status_code == 200:
+                return True, f"{server_type.upper()} MCP 서버가 포트 {port}에서 시작되었습니다."
+        except:
+            pass
+        time.sleep(1)
     
-    def _handle_error(self, status, message):
-        self.send_response(status)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": message}).encode())
+    return True, f"{server_type.upper()} MCP 서버 시작 중입니다. 잠시 후 연결을 시도하세요."
     
-    def do_GET(self):
-        if self.path == "/status":
-            self._set_headers()
-            status = {
-                "status": "running",
-                "type": "firecrawl",
-                "tools": ["search", "crawl"]
-            }
-            self.wfile.write(json.dumps(status).encode())
-        else:
-            self._handle_error(404, "Not found")
-    
-    def do_POST(self):
-        if self.path == "/execute":
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            request = json.loads(post_data.decode())
-            
-            if "tool" not in request or "parameters" not in request:
-                return self._handle_error(400, "Missing tool or parameters")
-            
-            tool = request["tool"]
-            params = request["parameters"]
-            
-            if tool == "search":
-                return self.execute_firecrawl_search(params)
-            elif tool == "crawl":
-                return self.execute_firecrawl_crawl(params)
-            else:
-                return self._handle_error(400, f"Unknown tool: {tool}")
-        else:
-            self._handle_error(404, "Not found")
-    
-    def execute_firecrawl_search(self, params):
-        if "query" not in params:
-            return self._handle_error(400, "Missing query parameter")
-        
-        if not FIRECRAWL_API_KEY:
-            return self._handle_error(500, "FIRECRAWL_API_KEY not set in environment")
-        
-        query = params["query"]
-        
-        try:
-            # FireCrawl API 호출
-            headers = {
-                "x-api-key": FIRECRAWL_API_KEY,
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "query": query,
-                "max_results": params.get("max_results", 10)
-            }
-            
-            response = requests.post(
-                "https://api.firecrawl.dev/search",
-                headers=headers,
-                json=data
-            )
-            
-            if response.status_code != 200:
-                return self._handle_error(response.status_code, f"FireCrawl API error: {response.text}")
-            
-            self._set_headers()
-            self.wfile.write(json.dumps({"results": response.json()}).encode())
-        except Exception as e:
-            self._handle_error(500, str(e))
-
-    def execute_firecrawl_crawl(self, params):
-        if "url" not in params:
-            return self._handle_error(400, "Missing url parameter")
-        
-        if not FIRECRAWL_API_KEY:
-            return self._handle_error(500, "FIRECRAWL_API_KEY not set in environment")
-        
-        url = params["url"]
-        
-        try:
-            # FireCrawl API 호출
-            headers = {
-                "x-api-key": FIRECRAWL_API_KEY,
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "url": url,
-                "include_links": params.get("include_links", False),
-                "include_images": params.get("include_images", False)
-            }
-            
-            response = requests.post(
-                "https://api.firecrawl.dev/crawl",
-                headers=headers,
-                json=data
-            )
-            
-            if response.status_code != 200:
-                return self._handle_error(response.status_code, f"FireCrawl API error: {response.text}")
-            
-            self._set_headers()
-            self.wfile.write(json.dumps({"results": response.json()}).encode())
-        except Exception as e:
-            self._handle_error(500, str(e))
-
-def run_server(port):
-    server_address = ('', port)
-    httpd = HTTPServer(server_address, MCPHandler)
-    print(f"FireCrawl MCP server running on port {port}")
-    httpd.serve_forever()
-
-if __name__ == "__main__":
-    port = PORT
-    run_server(port)
-""")
-        else:
-            return False, f"Unsupported server type: {server_type}"
-        
-        # 서버 프로세스 시작
-        process = subprocess.Popen(
-            [python_executable, script_path, str(port)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        st.session_state.mcp_server_process = process
-        
-        # 로그 캡처 스레드 시작
-        def capture_logs():
-            while st.session_state.mcp_server_process:
-                line = process.stdout.readline()
-                if line:
-                    st.session_state.mcp_server_logs.append(line.strip())
-                    if len(st.session_state.mcp_server_logs) > 100:
-                        st.session_state.mcp_server_logs.pop(0)
-                else:
-                    time.sleep(0.1)
-        
-        log_thread = threading.Thread(target=capture_logs)
-        log_thread.daemon = True
-        log_thread.start()
-        
-        # 서버 시작 대기
-        for i in range(5):  # 최대 5초 대기
-            try:
-                # 서버 상태 확인
-                response = requests.get(f"http://localhost:{port}/status", timeout=1)
-                if response.status_code == 200:
-                    return True, f"{server_type.upper()} MCP 서버가 포트 {port}에서 시작되었습니다."
-            except:
-                pass
-            time.sleep(1)
-        
-        return True, f"{server_type.upper()} MCP 서버 시작 중입니다. 잠시 후 연결을 시도하세요."
-        
-    except Exception as e:
-        return False, f"MCP 서버 시작 오류: {str(e)}"
+except Exception as e:
+    return False, f"MCP 서버 시작 오류: {str(e)}"
 
 # Function to stop the MCP server
 def stop_mcp_server():
-    if st.session_state.mcp_server_process is None:
+    if st.session_state['mcp_server_process'] is None:
         return False, "MCP 서버가 실행 중이 아닙니다."
     
     try:
-        st.session_state.mcp_server_process.terminate()
-        st.session_state.mcp_server_process = None
+        st.session_state['mcp_server_process'].terminate()
+        st.session_state['mcp_server_process'] = None
         return True, "MCP 서버가 중지되었습니다."
     except Exception as e:
         return False, f"MCP 서버 중지 오류: {str(e)}"
@@ -560,37 +302,53 @@ class SimpleMCPClient:
             print(f"헤더: {headers}")
             print(f"요청 데이터: tool={tool_name}, params={params}")
                 
-            response = requests.post(
-                f"{self.server_url}/execute",
-                headers=headers,
-                json={
-                    "tool": tool_name,
-                    "parameters": params
-                },
-                timeout=30  # 30초 타임아웃 설정
-            )
-            
-            # 응답 디버그 정보
-            print(f"응답 코드: {response.status_code}")
-            if response.status_code != 200:
+            try:
+                response = requests.post(
+                    f"{self.server_url}/execute",
+                    headers=headers,
+                    json={
+                        "tool": tool_name,
+                        "parameters": params
+                    },
+                    timeout=30  # 30초 타임아웃 설정
+                )
+                
+                # 응답 디버그 정보
+                print(f"응답 코드: {response.status_code}")
+                print(f"응답 헤더: {response.headers}")
                 print(f"응답 내용: {response.text}")
                 
-            if response.status_code == 200:
-                return response.json()
-            raise Exception(f"도구 실행 실패: {response.status_code}, {response.text}")
-        except requests.exceptions.RequestException as e:
+                if response.status_code == 200:
+                    try:
+                        return response.json()
+                    except json.JSONDecodeError as e:
+                        print(f"JSON 파싱 오류: {str(e)}")
+                        if response.text:
+                            return {"results": response.text}
+                        raise Exception("서버가 빈 응답을 반환했습니다.")
+                else:
+                    error_message = f"도구 실행 실패: HTTP {response.status_code}"
+                    try:
+                        error_data = response.json()
+                        if isinstance(error_data, dict) and "error" in error_data:
+                            error_message += f" - {error_data['error']}"
+                    except:
+                        if response.text:
+                            error_message += f" - {response.text}"
+                    raise Exception(error_message)
+                    
+            except requests.exceptions.Timeout:
+                raise Exception("서버 요청 시간 초과")
+            except requests.exceptions.ConnectionError:
+                raise Exception("서버 연결 실패")
+            
+        except Exception as e:
+            print(f"오류 발생: {str(e)}")
             raise Exception(f"서버 요청 실패: {str(e)}")
     
     def close(self):
         """연결 종료"""
         pass  # HTTP 기반이므로 특별한 정리가 필요 없음
-
-# Initialize session state for storing MCP configs
-if 'mcp_configs' not in st.session_state:
-    st.session_state.mcp_configs = {}
-
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
 
 # Function to call Claude API
 def call_claude_api(user_input, model="claude-3-5-sonnet-20240620"):
@@ -856,12 +614,11 @@ def communicate_with_mcp_server(client, tool_name, params):
 def natural_language_to_sql(query: str, model="claude-3-5-sonnet-20240620") -> str:
     API_URL = "https://api.anthropic.com/v1/messages"
     
-    system_prompt = """You are an expert SQL translator. 
-    Your task is to translate natural language queries into correct SQL statements.
-    Only return the SQL statement, nothing else. Do not include any explanations or markdown formatting.
-    If the query doesn't seem to be asking for a SQL statement, return the original query.
-    Always make sure the SQL statements are properly formatted and valid.
-    """
+    system_prompt = '''You are an expert SQL translator. 
+Your task is to translate natural language queries into correct SQL statements.
+Only return the SQL statement, nothing else. Do not include any explanations or markdown formatting.
+If the query does not seem to be asking for a SQL statement, return the original query.
+Always make sure the SQL statements are properly formatted and valid.'''
     
     headers = {
         "Content-Type": "application/json",
@@ -919,17 +676,17 @@ with st.sidebar:
     
     # 서버 상태 표시
     server_status = "정지됨"
-    if st.session_state.mcp_server_process is not None:
-        if st.session_state.mcp_server_process.poll() is None:
+    if st.session_state['mcp_server_process'] is not None:
+        if st.session_state['mcp_server_process'].poll() is None:
             server_status = "실행 중"
         else:
             server_status = "비정상 종료됨"
-            st.session_state.mcp_server_process = None
+            st.session_state['mcp_server_process'] = None
     
     st.metric("서버 상태", server_status)
     
     # 시작/중지 버튼
-    if st.session_state.mcp_server_process is None:
+    if st.session_state['mcp_server_process'] is None:
         if st.button("MCP 서버 시작"):
             success, message = start_mcp_server(local_server_type, local_server_port)
             if success:
@@ -945,9 +702,9 @@ with st.sidebar:
                 st.error(message)
     
     # 서버 로그 표시
-    if st.session_state.mcp_server_process is not None:
+    if st.session_state['mcp_server_process'] is not None:
         with st.expander("서버 로그", expanded=False):
-            log_text = "\n".join(st.session_state.mcp_server_logs)
+            log_text = "\n".join(st.session_state['mcp_server_logs'])
             st.code(log_text)
         
         # 연결 정보 자동 설정
@@ -981,7 +738,7 @@ with st.sidebar:
                 client, message = initialize_mcp_server(config_data)
                 
                 if client:
-                    st.session_state.mcp_configs[config_name] = {
+                    st.session_state['mcp_configs'][config_name] = {
                         "client": client,
                         "config": config_data,
                         "added_time": datetime.now()
@@ -1083,7 +840,7 @@ with st.sidebar:
                         client, message = initialize_mcp_server(config_data)
                         
                         if client:
-                            st.session_state.mcp_configs[config_name] = {
+                            st.session_state['mcp_configs'][config_name] = {
                                 "client": client,
                                 "config": config_data,
                                 "added_time": datetime.now()
@@ -1167,7 +924,7 @@ with st.sidebar:
                             client, message = initialize_mcp_server(json_config_data)
                             
                             if client:
-                                st.session_state.mcp_configs[json_config_name] = {
+                                st.session_state['mcp_configs'][json_config_name] = {
                                     "client": client,
                                     "config": json_config_data,
                                     "added_time": datetime.now()
@@ -1254,7 +1011,7 @@ with st.sidebar:
                 client, message = initialize_mcp_server(config_data)
                 
                 if client:
-                    st.session_state.mcp_configs[config_name] = {
+                    st.session_state['mcp_configs'][config_name] = {
                         "client": client,
                         "config": config_data,
                         "added_time": datetime.now()
@@ -1369,7 +1126,7 @@ with st.sidebar:
                     client, message = initialize_mcp_server(config_data)
                     
                     if client:
-                        st.session_state.mcp_configs[config_name] = {
+                        st.session_state['mcp_configs'][config_name] = {
                             "client": client,
                             "config": config_data,
                             "added_time": datetime.now()
@@ -1381,9 +1138,9 @@ with st.sidebar:
                         st.error(message)
 
     # Display added configurations
-    if st.session_state.mcp_configs:
+    if st.session_state['mcp_configs']:
         st.subheader("Added MCP Servers")
-        for config_name in st.session_state.mcp_configs:
+        for config_name in st.session_state['mcp_configs']:
             st.write(f"- {config_name}")
 
 # Main interface
@@ -1394,7 +1151,7 @@ with tab1:
     st.header("Chat with Claude")
     
     # Display chat history
-    for message in st.session_state.chat_history:
+    for message in st.session_state['chat_history']:
         if message["role"] == "user":
             st.write(f"You: {message['content']}")
         else:
@@ -1406,14 +1163,14 @@ with tab1:
     if st.button("Send to Claude"):
         if user_input:
             # Add user message to history
-            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            st.session_state['chat_history'].append({"role": "user", "content": user_input})
             
             # Call Claude API
             response, error = call_claude_api(user_input, model=claude_model)
             
             if response:
                 # Add Claude response to history
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
+                st.session_state['chat_history'].append({"role": "assistant", "content": response})
                 st.rerun()
             else:
                 st.error(error)
@@ -1422,17 +1179,17 @@ with tab1:
 with tab2:
     st.header("MCP Tools")
     
-    if not st.session_state.mcp_configs:
+    if not st.session_state['mcp_configs']:
         st.info("Please add an MCP server configuration in the sidebar first.")
     else:
         # Select MCP configuration
         selected_config = st.selectbox(
             "Select MCP Server Configuration",
-            list(st.session_state.mcp_configs.keys())
+            list(st.session_state['mcp_configs'].keys())
         )
         
         if selected_config:
-            client = st.session_state.mcp_configs[selected_config]["client"]
+            client = st.session_state['mcp_configs'][selected_config]["client"]
             server_type = client.server_type
             
             # 서버 정보 표시
@@ -1751,294 +1508,263 @@ def get_db_config():
     
     return config
 
-def save_mcp_server_config(config_data):
-    """Save MCP server configuration to database"""
+def save_mcp_server_config(server_name, server_type, server_url, config_json):
+    """MCP 서버 설정을 DB에 저장"""
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
         cursor = conn.cursor()
-        
-        # Check if tables exist, create if not
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS mcp_server_configs (
-                config_id INT AUTO_INCREMENT PRIMARY KEY,
-                config_name VARCHAR(100) NOT NULL UNIQUE,
-                server_type VARCHAR(50) NOT NULL,
-                server_url VARCHAR(255) NOT NULL,
-                api_key VARCHAR(255),
-                is_active BOOLEAN DEFAULT TRUE,
-                config_data JSON,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS mcp_mysql_connections (
-                connection_id INT AUTO_INCREMENT PRIMARY KEY,
-                config_id INT NOT NULL,
-                host VARCHAR(255) NOT NULL DEFAULT 'localhost',
-                port INT NOT NULL DEFAULT 3306,
-                username VARCHAR(100) NOT NULL DEFAULT 'root',
-                password VARCHAR(255),
-                database_name VARCHAR(100),
-                FOREIGN KEY (config_id) REFERENCES mcp_server_configs(config_id) ON DELETE CASCADE
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
-        
-        # Insert or update the configuration
-        server_type = config_data.get('server_type', '')
-        server_url = config_data.get('server_url', '')
-        api_key = config_data.get('api_key', '')
-        config_name = config_data.get('config_name', f"{server_type} - {server_url}")
-        
-        # Convert config_data to JSON
-        import json
-        config_json = json.dumps(config_data)
-        
-        # Check if configuration with this name exists
-        cursor.execute("SELECT config_id FROM mcp_server_configs WHERE config_name = %s", (config_name,))
-        result = cursor.fetchone()
-        
-        if result:
-            config_id = result[0]
-            # Update existing configuration
+
+        # 기존 설정이 있는지 확인
+        cursor.execute(
+            "SELECT config_id FROM mcp_server_configs WHERE server_name = %s",
+            (server_name,)
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            # 기존 설정 업데이트
             cursor.execute("""
                 UPDATE mcp_server_configs 
-                SET server_type = %s, server_url = %s, api_key = %s, config_data = %s, is_active = TRUE
-                WHERE config_id = %s
-            """, (server_type, server_url, api_key, config_json, config_id))
+                SET server_type = %s, server_url = %s, config_json = %s, updated_at = NOW()
+                WHERE server_name = %s
+            """, (server_type, server_url, config_json, server_name))
         else:
-            # Insert new configuration
+            # 새 설정 저장
             cursor.execute("""
-                INSERT INTO mcp_server_configs (config_name, server_type, server_url, api_key, config_data)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (config_name, server_type, server_url, api_key, config_json))
-            
-            config_id = cursor.lastrowid
-            
-        # If MySQL server type, save MySQL connection info
-        if server_type == 'MySQL' and 'mysql_settings' in config_data:
-            mysql_settings = config_data['mysql_settings']
-            
-            # Check if MySQL connection exists for this config
-            cursor.execute("SELECT connection_id FROM mcp_mysql_connections WHERE config_id = %s", (config_id,))
-            mysql_result = cursor.fetchone()
-            
-            if mysql_result:
-                # Update existing MySQL connection
-                cursor.execute("""
-                    UPDATE mcp_mysql_connections
-                    SET host = %s, port = %s, username = %s, password = %s, database_name = %s
-                    WHERE config_id = %s
-                """, (
-                    mysql_settings.get('host', 'localhost'),
-                    mysql_settings.get('port', 3306),
-                    mysql_settings.get('username', 'root'),
-                    mysql_settings.get('password', ''),
-                    mysql_settings.get('database', ''),
-                    config_id
-                ))
-            else:
-                # Insert new MySQL connection
-                cursor.execute("""
-                    INSERT INTO mcp_mysql_connections (config_id, host, port, username, password, database_name)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (
-                    config_id,
-                    mysql_settings.get('host', 'localhost'),
-                    mysql_settings.get('port', 3306),
-                    mysql_settings.get('username', 'root'),
-                    mysql_settings.get('password', ''),
-                    mysql_settings.get('database', '')
-                ))
-        
-        conn.commit()
-        return True, f"설정 '{config_name}'이(가) 저장되었습니다."
-        
-    except Error as e:
-        return False, f"데이터베이스 오류: {str(e)}"
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+                INSERT INTO mcp_server_configs 
+                (server_name, server_type, server_url, config_json)
+                VALUES (%s, %s, %s, %s)
+            """, (server_name, server_type, server_url, config_json))
 
-def get_saved_mcp_configs():
-    """Retrieve saved MCP server configurations from database"""
-    configs = []
+        conn.commit()
+        return True, "설정이 저장되었습니다."
+
+    except Exception as e:
+        return False, f"설정 저장 중 오류 발생: {str(e)}"
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_mcp_server_configs():
+    """저장된 MCP 서버 설정 목록 조회"""
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
         cursor = conn.cursor(dictionary=True)
-        
-        # Get all active configurations
+
         cursor.execute("""
-            SELECT config_id, config_name, server_type, server_url, api_key, config_data
-            FROM mcp_server_configs
-            WHERE is_active = TRUE
-            ORDER BY server_type, config_name
+            SELECT * FROM mcp_server_configs 
+            WHERE is_active = TRUE 
+            ORDER BY created_at DESC
         """)
         
-        configs = cursor.fetchall()
-        
-        # Process each config to include MySQL settings if applicable
-        for config in configs:
-            if config['server_type'] == 'MySQL':
-                cursor.execute("""
-                    SELECT host, port, username, password, database_name
-                    FROM mcp_mysql_connections
-                    WHERE config_id = %s
-                """, (config['config_id'],))
-                
-                mysql_conn = cursor.fetchone()
-                if mysql_conn:
-                    if config['config_data']:
-                        config_data = json.loads(config['config_data'])
-                    else:
-                        config_data = {}
-                        
-                    config_data['mysql_settings'] = {
-                        'host': mysql_conn['host'],
-                        'port': mysql_conn['port'],
-                        'username': mysql_conn['username'],
-                        'password': mysql_conn['password'],
-                        'database': mysql_conn['database_name']
-                    }
-                    config['config_data'] = json.dumps(config_data)
-        
-        return configs
-    
-    except Error as e:
-        st.error(f"데이터베이스 오류: {str(e)}")
+        return cursor.fetchall()
+
+    except Exception as e:
+        st.error(f"설정 조회 중 오류 발생: {str(e)}")
         return []
     finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+        cursor.close()
+        conn.close()
 
-def delete_mcp_config(config_id):
-    """Delete an MCP server configuration (mark as inactive)"""
+def get_mcp_server_config(server_name):
+    """특정 MCP 서버 설정 조회"""
     try:
-        conn = mysql.connector.connect(**get_db_config())
-        cursor = conn.cursor()
-        
-        # Soft delete - mark as inactive
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor(dictionary=True)
+
         cursor.execute("""
-            UPDATE mcp_server_configs
-            SET is_active = FALSE
-            WHERE config_id = %s
-        """, (config_id,))
+            SELECT * FROM mcp_server_configs 
+            WHERE server_name = %s AND is_active = TRUE
+        """, (server_name,))
         
+        return cursor.fetchone()
+
+    except Exception as e:
+        st.error(f"설정 조회 중 오류 발생: {str(e)}")
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+def delete_mcp_config(server_name):
+    """MCP 서버 설정 삭제 (soft delete)"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE mcp_server_configs 
+            SET is_active = FALSE 
+            WHERE server_name = %s
+        """, (server_name,))
+
         conn.commit()
         return True, "설정이 삭제되었습니다."
-        
-    except Error as e:
-        return False, f"데이터베이스 오류: {str(e)}"
+
+    except Exception as e:
+        return False, f"설정 삭제 중 오류 발생: {str(e)}"
     finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+        cursor.close()
+        conn.close()
 
 # Update the sidebar to include saved configurations
 def show_sidebar():
     st.sidebar.title("MCP 서버 설정")
     
-    # Initialize session state for configurations
-    if 'mcp_configs' not in st.session_state:
-        st.session_state.mcp_configs = {}
+    # 저장된 설정 목록 불러오기
+    saved_configs = get_mcp_server_configs()
     
-    # Tab for selecting saved configurations
-    saved_configs_tab, new_config_tab = st.sidebar.tabs(["저장된 설정", "새 설정"])
+    # 새로운 설정 추가 또는 저장된 설정 선택
+    config_option = st.sidebar.radio(
+        "설정 선택",
+        ["저장된 설정 사용", "새로운 설정"]
+    )
     
-    with saved_configs_tab:
-        st.subheader("저장된 MCP 서버 설정")
-        
-        # Get saved configurations
-        saved_configs = get_saved_mcp_configs()
-        
+    if config_option == "저장된 설정 사용":
         if saved_configs:
-            config_options = ["선택하세요..."] + [f"{config['config_name']} ({config['server_type']})" for config in saved_configs]
-            selected_config = st.selectbox("저장된 설정에서 선택", config_options)
+            st.sidebar.subheader("저장된 설정 목록")
+            selected_config = st.sidebar.selectbox(
+                "설정을 선택하세요",
+                options=saved_configs,
+                format_func=lambda x: f"{x['server_name']} ({x['server_type']})"
+            )
             
-            if selected_config != "선택하세요...":
-                selected_index = config_options.index(selected_config) - 1  # -1 because of the "선택하세요..." option
-                config = saved_configs[selected_index]
+            if selected_config:
+                st.sidebar.subheader("선택된 설정 정보")
+                st.sidebar.write(f"서버 유형: {selected_config['server_type']}")
+                st.sidebar.write(f"서버 URL: {selected_config['server_url']}")
                 
-                st.write(f"서버 타입: {config['server_type']}")
-                st.write(f"서버 URL: {config['server_url']}")
+                with st.sidebar.expander("설정 상세 정보"):
+                    st.json(selected_config['config_json'])
                 
-                if st.button("이 설정으로 연결"):
-                    # Load the selected config
-                    config_data = json.loads(config['config_data']) if config['config_data'] else {}
-                    config_data['server_type'] = config['server_type']
-                    config_data['server_url'] = config['server_url']
-                    config_data['api_key'] = config['api_key']
-                    config_data['config_name'] = config['config_name']
-                    
-                    # Initialize the server with this config
-                    success, message = initialize_mcp_server(config_data)
-                    
-                    if success:
-                        st.sidebar.success(message)
-                    else:
-                        st.sidebar.error(message)
-                
-                if st.button("설정 삭제", key=f"delete_{config['config_id']}"):
-                    success, message = delete_mcp_config(config['config_id'])
-                    if success:
-                        st.sidebar.success(message)
-                        st.experimental_rerun()
-                    else:
-                        st.sidebar.error(message)
-        else:
-            st.write("저장된 MCP 서버 설정이 없습니다.")
-    
-    with new_config_tab:
-        st.subheader("새 MCP 서버 설정")
-        
-        # ... existing server selection code ...
-        
-        st.subheader("연결 정보")
-        
-        # ... existing connection info code ...
-        
-        # Add option to save this configuration
-        if 'server_type' in st.session_state and st.session_state.server_type:
-            save_config = st.checkbox("이 설정을 저장")
-            
-            if save_config:
-                config_name = st.text_input("설정 이름", 
-                                          value=f"{st.session_state.server_type} - {st.session_state.server_url if 'server_url' in st.session_state else ''}")
-                
-                # Save configuration when connecting
-                if st.session_state.get('server_url') and st.button("이 설정으로 연결 및 저장"):
-                    config_data = {
-                        'config_name': config_name,
-                        'server_type': st.session_state.server_type,
-                        'server_url': st.session_state.server_url,
-                        'api_key': st.session_state.get('api_key', '')
-                    }
-                    
-                    # Add MySQL settings if applicable
-                    if st.session_state.server_type == 'MySQL' and 'mysql_settings' in st.session_state:
-                        config_data['mysql_settings'] = st.session_state.mysql_settings
-                    
-                    # Save to DB
-                    success, save_message = save_mcp_server_config(config_data)
-                    
-                    if success:
-                        st.sidebar.success(save_message)
-                        
-                        # Initialize the server with this config
-                        init_success, init_message = initialize_mcp_server(config_data)
-                        
-                        if init_success:
-                            st.sidebar.success(init_message)
+                col1, col2 = st.sidebar.columns(2)
+                with col1:
+                    if st.button("설정 사용"):
+                        return json.loads(selected_config['config_json'])
+                with col2:
+                    if st.button("설정 삭제"):
+                        success, message = delete_mcp_config(selected_config['server_name'])
+                        if success:
+                            st.sidebar.success(message)
+                            st.rerun()
                         else:
-                            st.sidebar.error(init_message)
+                            st.sidebar.error(message)
+        else:
+            st.sidebar.warning("저장된 설정이 없습니다.")
+    
+    else:  # 새로운 설정
+        st.sidebar.subheader("새 서버 설정")
+        server_type = st.sidebar.selectbox(
+            "서버 유형", 
+            ["MySQL", "Perplexity", "Claude"],
+            key="new_server_type"
+        )
+        server_url = st.sidebar.text_input(
+            "서버 URL", 
+            "http://localhost:8000",
+            key="new_server_url"
+        )
+        
+        # 서버 유형에 따른 JSON 템플릿 제공
+        template = {
+            "MySQL": {
+                "server_type": "MySQL",
+                "server_url": server_url,
+                "mysql_settings": {
+                    "host": "localhost",
+                    "port": 3306,
+                    "username": "iotuser",
+                    "password": "iot12345",
+                    "database": "newbiz"
+                }
+            },
+            "Perplexity": {
+                "server_type": "Perplexity",
+                "server_url": server_url,
+                "api_key": "your_api_key_here"
+            },
+            "Claude": {
+                "server_type": "Claude",
+                "server_url": server_url,
+                "api_key": "your_api_key_here",
+                "model": "claude-3-sonnet"
+            }
+        }
+        
+        st.sidebar.subheader("JSON 설정")
+        with st.sidebar.expander("설정 템플릿 보기"):
+            st.code(json.dumps(template[server_type], indent=2))
+        
+        config_json = st.sidebar.text_area(
+            "설정을 JSON 형식으로 입력하세요",
+            value=json.dumps(template[server_type], indent=2),
+            height=300,
+            key="new_config_json"
+        )
+        
+        try:
+            config_data = json.loads(config_json)
+            server_name = st.sidebar.text_input(
+                "설정 이름",
+                value=f"{server_type} Server",
+                key="new_server_name"
+            )
+            
+            if st.sidebar.button("설정 저장", key="save_config"):
+                if server_name:
+                    success, message = save_mcp_server_config(
+                        server_name,
+                        server_type,
+                        server_url,
+                        config_json
+                    )
+                    if success:
+                        st.sidebar.success(message)
+                        st.rerun()
                     else:
-                        st.sidebar.error(save_message)
-            else:
-                # ... existing connect button ...
-                pass
+                        st.sidebar.error(message)
+            
+            return config_data
+                
+        except json.JSONDecodeError as e:
+            st.sidebar.error(f"잘못된 JSON 형식입니다: {str(e)}")
+            return None
+    
+    return None
+
+def main():
+    st.title("MCP 서버 관리")
+    
+    # 사이드바 표시 및 설정 가져오기
+    config = show_sidebar()
+    
+    if config:
+        st.success("MCP 서버 설정이 로드되었습니다.")
+        st.json(config)
+
+if __name__ == "__main__":
+    main()

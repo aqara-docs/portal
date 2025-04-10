@@ -1437,6 +1437,37 @@ def create_decision_making_tables():
         cursor.close()
         conn.close()
 
+def create_mcp_server_tables():
+    """MCP 서버 설정 테이블 생성"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    
+    try:
+        # MCP 서버 설정 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mcp_server_configs (
+                config_id INT AUTO_INCREMENT PRIMARY KEY,
+                server_name VARCHAR(100) NOT NULL,
+                server_type VARCHAR(50) NOT NULL,
+                server_url VARCHAR(255),
+                config_json TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_server_name (server_name)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        conn.commit()
+        st.success("✅ MCP 서버 설정 테이블이 생성되었습니다!")
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("DB 테이블 생성/수정/삭제 시스템")
 
@@ -1447,7 +1478,7 @@ def main():
          "분야별 전문성 테이블 생성", "사업 전략 테이블 생성", "의사결정 트리 테이블 생성", "의사결정 트리 테이블 삭제",
          "전략 프레임워크 테이블 생성", "Business Model Canvas 테이블 생성", "SWOT 분석 테이블 생성", "4P/7P 분석 테이블 생성",
          "PESTEL 분석 테이블 생성", "5 Forces 분석 테이블 생성", "Value Chain 분석 테이블 생성", "GAP 분석 테이블 생성", "Blue Ocean 분석 테이블 생성",
-         "Innovator's Dilemma 분석 테이블 생성", "Portfolio 분석 테이블 생성", "TOC 분석 테이블 생성", "의사결정 지원 시스템 테이블 생성"]  # TOC 분석 옵션 추가
+         "Innovator's Dilemma 분석 테이블 생성", "Portfolio 분석 테이블 생성", "TOC 분석 테이블 생성", "의사결정 지원 시스템 테이블 생성", "MCP 서버 설정 테이블 생성"]
     )
 
     # 기존 테이블 목록 표시
@@ -1579,6 +1610,10 @@ def main():
     elif operation == "의사결정 지원 시스템 테이블 생성":
         if st.button("테이블 생성 및 초기 데이터 입력"):
             create_decision_making_tables()
+
+    elif operation == "MCP 서버 설정 테이블 생성":
+        if st.button("테이블 생성"):
+            create_mcp_server_tables()
 
     else:  # 테이블 생성/수정
         # 테이블 이름 입력

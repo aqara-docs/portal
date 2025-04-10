@@ -250,9 +250,15 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 def run_server(port):
     server_address = ('', port)
-    httpd = HTTPServer(server_address, MCPHandler)
-    print(f"FireCrawl MCP server running on port {port}")
-    httpd.serve_forever()
+    try:
+        httpd = HTTPServer(server_address, MCPHandler)
+        print(f"Firecrawl MCP server running on port {port}")
+        httpd.serve_forever()
+    except OSError as e:
+        if e.errno == 48:  # Address already in use
+            print(f"포트 {port}가 이미 사용 중입니다. Firecrawl MCP 서버가 이미 실행 중일 수 있습니다.")
+            return
+        raise  # 다른 OSError는 그대로 발생시킴
 
 if __name__ == "__main__":
     port = PORT

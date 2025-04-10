@@ -1,9 +1,15 @@
-
 import sys
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import mysql.connector
 from mysql.connector import Error
+from datetime import datetime, date
+
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
 
 # 기본 포트 설정
 PORT = 3000
@@ -30,7 +36,7 @@ class MCPHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-type', 'application/json')
         self.end_headers()
-        self.wfile.write(json.dumps({"error": message}).encode())
+        self.wfile.write(json.dumps({"error": message}, cls=DateTimeEncoder).encode())
     
     def do_GET(self):
         if self.path == "/status":
@@ -40,7 +46,7 @@ class MCPHandler(BaseHTTPRequestHandler):
                 "type": "mysql",
                 "tools": ["mysql_query"]
             }
-            self.wfile.write(json.dumps(status).encode())
+            self.wfile.write(json.dumps(status, cls=DateTimeEncoder).encode())
         else:
             self._handle_error(404, "Not found")
     
@@ -91,15 +97,21 @@ class MCPHandler(BaseHTTPRequestHandler):
             conn.close()
             
             self._set_headers()
-            self.wfile.write(json.dumps({"results": results}).encode())
+            self.wfile.write(json.dumps({"results": results}, cls=DateTimeEncoder).encode())
         except Error as e:
             self._handle_error(500, str(e))
 
 def run_server(port):
     server_address = ('', port)
-    httpd = HTTPServer(server_address, MCPHandler)
-    print(f"MySQL MCP server running on port {port}")
-    httpd.serve_forever()
+    try:
+        httpd = HTTPServer(server_address, MCPHandler)
+        print(f"MySQL MCP server running on port {port}")
+        httpd.serve_forever()
+    except OSError as e:
+        if e.errno == 48:  # Address already in use
+            print(f"포트 {port}가 이미 사용 중입니다. MySQL MCP 서버가 이미 실행 중일 수 있습니다.")
+            return
+        raise  # 다른 OSError는 그대로 발생시킴
 
 if __name__ == "__main__":
     port = PORT

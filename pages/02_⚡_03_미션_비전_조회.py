@@ -3,6 +3,8 @@ import pandas as pd
 import mysql.connector
 import os
 from dotenv import load_dotenv
+import time
+import random
 
 load_dotenv()
 
@@ -237,6 +239,195 @@ def highlight_text(text, keyword):
     highlighted_text = text.replace(keyword, f"<mark>{keyword}</mark>")
     return highlighted_text
 
+def display_rotating_values():
+    """미션/비전/가치를 순환 표시하는 함수"""
+    # 컨테이너 생성
+    container = st.empty()
+    
+    # 세션 상태 초기화
+    if 'values_state' not in st.session_state:
+        st.session_state.values_state = {
+            'category': 'mission',
+            'index': 0,
+            'last_update': time.time(),
+            'data': get_mission_vision_data()
+        }
+    
+    current_time = time.time()
+    state = st.session_state.values_state
+    
+    # 카테고리 변경 (10초마다)
+    if current_time - state['last_update'] >= 10:
+        if state['category'] == 'mission':
+            state['category'] = 'values'
+            state['data'] = get_core_values_data()
+        elif state['category'] == 'values':
+            state['category'] = 'objectives'
+            state['data'] = get_key_objectives_data()
+        else:
+            state['category'] = 'mission'
+            state['data'] = get_mission_vision_data()
+        
+        state['index'] = 0
+        state['last_update'] = current_time
+    
+    # 같은 카테고리 내에서 항목 순환 (3초마다)
+    elif current_time - state['last_update'] >= 3 and state['data']:
+        state['index'] = (state['index'] + 1) % len(state['data'])
+        state['last_update'] = current_time
+    
+    # 데이터 표시
+    if state['data']:
+        category_names = {'mission': '미션/비전', 'values': '핵심 가치', 'objectives': '핵심 목표'}
+        current_item = state['data'][state['index']]
+        
+        container.markdown(f"""
+        <div style="
+            background: linear-gradient(145deg, #ffffff, #f0f0f0);
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 3px 3px 6px #d9d9d9, -3px -3px 6px #ffffff;
+            margin: 10px 0;
+            font-size: 16px;
+            color: #1f1f1f;
+            text-align: center;
+        ">
+            {current_item}
+            <div style="font-size: 12px; color: #666; margin-top: 10px;">
+                {category_names[state['category']]} 
+                ({state['index'] + 1} / {len(state['data'])})
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # 자동 업데이트
+    time.sleep(1)
+    st.rerun()
+
+def generate_roulette_animation():
+    """더 드라마틱한 룰렛 애니메이션 생성"""
+    placeholder = st.empty()
+    progress_bar = st.progress(0)
+    
+    # 효과음 JavaScript 추가
+    st.markdown("""
+    <script>
+    const playDrumroll = () => {
+        const audio = new Audio('data:audio/mp3;base64,SUQz...');  # 드럼롤 효과음
+        audio.play();
+    }
+    </script>
+    """, unsafe_allow_html=True)
+    
+    participants = list(CHARACTERS.keys())
+    total_frames = 50  # 총 프레임 수 증가
+    
+    for i in range(total_frames):
+        # 속도 조절 (점점 느려지는 효과)
+        delay = 0.05 + (i / total_frames) * 0.2
+        
+        # 참가자 섞기
+        random.shuffle(participants)
+        
+        # 시각적 효과 추가
+        display_text = ""
+        for idx, p in enumerate(participants[:5]):
+            if idx == 2:  # 중앙에 위치한 항목 강조
+                display_text += f"""
+                <div style="
+                    background: linear-gradient(45deg, #FFD700, #FFA500);
+                    padding: 20px;
+                    border-radius: 15px;
+                    margin: 10px 0;
+                    text-align: center;
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: white;
+                    box-shadow: 0 4px 15px rgba(255, 215, 0, 0.3);
+                    transform: scale(1.1);
+                    transition: all 0.3s ease;
+                ">
+                    {CHARACTERS[p]} - {p}
+                </div>
+                """
+            else:
+                display_text += f"""
+                <div style="
+                    background: linear-gradient(145deg, #ffffff, #f0f0f0);
+                    padding: 15px;
+                    border-radius: 10px;
+                    margin: 5px 0;
+                    text-align: center;
+                    opacity: 0.7;
+                ">
+                    {CHARACTERS[p]} - {p}
+                </div>
+                """
+        
+        placeholder.markdown(display_text, unsafe_allow_html=True)
+        progress_bar.progress((i + 1) / total_frames)
+        
+        # 마지막 5프레임에서 특별 효과
+        if i >= total_frames - 5:
+            st.markdown(f"""
+            <style>
+            @keyframes pulse{i} {{
+                0% {{ transform: scale(1); }}
+                50% {{ transform: scale(1.05); }}
+                100% {{ transform: scale(1); }}
+            }}
+            .final-selection {{
+                animation: pulse{i} 0.5s infinite;
+            }}
+            </style>
+            """, unsafe_allow_html=True)
+        
+        time.sleep(delay)
+    
+    # 최종 선택 표시
+    final_order = participants
+    progress_bar.empty()
+    
+    # 최종 결과 표시 (화려한 효과와 함께)
+    st.markdown("""
+    <style>
+    @keyframes slideIn {
+        from { transform: translateX(-100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    .final-result {
+        animation: slideIn 0.5s ease-out forwards;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    for i, person in enumerate(final_order, 1):
+        st.markdown(f"""
+        <div class="final-result" style="
+            background: linear-gradient(145deg, #ffffff, #f0f0f0);
+            padding: 15px;
+            border-radius: 10px;
+            margin: 10px 0;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            animation-delay: {i * 0.2}s;
+        ">
+            <span style="font-size: 24px; font-weight: bold; color: #0066cc;">
+                {i}. {person}
+            </span>
+            <br>
+            <span style="font-size: 18px; color: #666;">
+                {CHARACTERS[person]}
+            </span>
+            <br>
+            <span style="font-size: 16px; color: #ff4b4b;">
+                {st.session_state.effects[person]}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    return final_order
+
 # 메인 헤더
 st.markdown('<h1 class="main-header">아카라라이프 신사업실 미션 & 비전</h1>', unsafe_allow_html=True)
 
@@ -375,4 +566,20 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("핵심 가치 데이터가 없습니다. 관리자 페이지에서 데이터를 추가해주세요.") 
+            st.info("핵심 가치 데이터가 없습니다. 관리자 페이지에서 데이터를 추가해주세요.")
+
+# 미션/비전/가치 표시 (타이머와 독립적으로 실행)
+st.markdown("---")
+st.markdown('<h3 style="color: black; font-size: 20px;">💫 우리의 미션과 가치</h3>', unsafe_allow_html=True)
+display_rotating_values()
+
+with col2:
+    st.markdown('<h2 style="color: black; font-size: 24px; margin-bottom: 20px;">⏱️ 토론 타이머</h2>', unsafe_allow_html=True)
+    init_timer_state()
+    
+    # ... (기존 타이머 코드) ...
+    
+    # 미션/비전/가치 표시 (타이머와 독립적으로 실행)
+    st.markdown("---")
+    st.markdown('<h3 style="color: black; font-size: 20px;">💫 우리의 미션과 가치</h3>', unsafe_allow_html=True)
+    display_rotating_values() 

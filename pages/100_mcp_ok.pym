@@ -1,0 +1,1881 @@
+import streamlit as st
+import requests
+import asyncio
+import json
+import os
+import sys
+import subprocess
+import time
+from datetime import datetime
+import threading
+from dotenv import load_dotenv
+import mysql.connector
+from mysql.connector import Error
+
+# Load environment variables
+load_dotenv()
+
+# Get API keys
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+# Initialize session state variables
+if 'mcp_server_process' not in st.session_state:
+    st.session_state['mcp_server_process'] = None
+
+if 'mcp_server_logs' not in st.session_state:
+    st.session_state['mcp_server_logs'] = []
+
+if 'mcp_configs' not in st.session_state:
+    st.session_state['mcp_configs'] = {}
+
+if 'chat_history' not in st.session_state:
+    st.session_state['chat_history'] = []
+
+# Database initialization function
+def init_database():
+    """데이터베이스 초기화 및 테이블 생성"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor()
+
+        # 테이블 존재 여부 확인
+        cursor.execute("SHOW TABLES LIKE 'mcp_server_configs'")
+        mcp_server_configs_exists = cursor.fetchone() is not None
+
+        cursor.execute("SHOW TABLES LIKE 'mcp_query_history'")
+        mcp_query_history_exists = cursor.fetchone() is not None
+
+        if not mcp_server_configs_exists:
+            # MCP 서버 설정 테이블 생성
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS mcp_server_configs (
+                    config_id INT AUTO_INCREMENT PRIMARY KEY,
+                    server_name VARCHAR(255) NOT NULL,
+                    server_type VARCHAR(50) NOT NULL,
+                    server_url TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY unique_server_name (server_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+
+        if not mcp_query_history_exists:
+            # 쿼리 히스토리 테이블 생성
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS mcp_query_history (
+                    query_id INT AUTO_INCREMENT PRIMARY KEY,
+                    server_name VARCHAR(255) NOT NULL,
+                    original_query TEXT NOT NULL,
+                    executed_query TEXT NOT NULL,
+                    success BOOLEAN NOT NULL,
+                    error_message TEXT,
+                    execution_time FLOAT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (server_name) REFERENCES mcp_server_configs(server_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+
+        conn.commit()
+        return True, "데이터베이스 초기화 완료"
+    except mysql.connector.Error as e:
+        return False, f"데이터베이스 초기화 오류: {str(e)}"
+    finally:
+        cursor.close()
+        conn.close()
+
+def save_query_history(server_name, original_query, executed_query, success, error_message=None, execution_time=None):
+    """쿼리 실행 히스토리 저장"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO mcp_query_history 
+            (server_name, original_query, executed_query, success, error_message, execution_time)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (server_name, original_query, executed_query, success, error_message, execution_time))
+
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"쿼리 히스토리 저장 실패: {str(e)}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_query_history(server_name=None, limit=100):
+    """쿼리 실행 히스토리 조회"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor(dictionary=True)
+
+        if server_name:
+            cursor.execute("""
+                SELECT * FROM mcp_query_history 
+                WHERE server_name = %s
+                ORDER BY created_at DESC 
+                LIMIT %s
+            """, (server_name, limit))
+        else:
+            cursor.execute("""
+                SELECT * FROM mcp_query_history 
+                ORDER BY created_at DESC 
+                LIMIT %s
+            """, (limit,))
+
+        return cursor.fetchall()
+    except Exception as e:
+        st.error(f"쿼리 히스토리 조회 실패: {str(e)}")
+        return []
+    finally:
+        cursor.close()
+        conn.close()
+
+# Initialize database on startup
+success, message = init_database()
+if not success:
+    st.error(message)
+
+# Function to start the MCP server
+def start_mcp_server(server_type, port):
+    if st.session_state['mcp_server_process'] is not None:
+        st.warning("이미 MCP 서버가 실행 중입니다. 새 서버를 시작하기 전에 중지하세요.")
+        return False, "MCP server is already running"
+    
+    try:
+        # Python 실행 경로
+        python_executable = sys.executable
+        
+        # 서버 유형에 따른 스크립트 선택
+        if server_type == "mysql":
+            script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "servers", "mcp_mysql_server.py")
+            
+            # 스크립트가 없으면 생성
+            if not os.path.exists(script_path):
+                os.makedirs(os.path.dirname(script_path), exist_ok=True)
+                with open(script_path, "w") as f:
+                    f.write("""
+import sys
+import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import mysql.connector
+from mysql.connector import Error
+
+# 기본 포트 설정
+PORT = 3000
+
+# 커맨드 라인에서 포트 받기
+if len(sys.argv) > 1:
+    PORT = int(sys.argv[1])
+
+class MCPHandler(BaseHTTPRequestHandler):
+    def _set_headers(self, content_type="application/json"):
+        self.send_response(200)
+        self.send_header('Content-type', content_type)
+        self.end_headers()
+    
+    def _handle_error(self, status, message):
+        self.send_response(status)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": message}).encode())
+    
+    def do_GET(self):
+        if self.path == "/status":
+            self._set_headers()
+            status = {
+                "status": "running",
+                "type": "mysql",
+                "tools": ["mysql_query"]
+            }
+            self.wfile.write(json.dumps(status).encode())
+        else:
+            self._handle_error(404, "Not found")
+    
+    def do_POST(self):
+        if self.path == "/execute":
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            request = json.loads(post_data.decode())
+            
+            if "tool" not in request or "parameters" not in request:
+                return self._handle_error(400, "Missing tool or parameters")
+            
+            tool = request["tool"]
+            params = request["parameters"]
+            
+            if tool == "mysql_query":
+                return self.execute_mysql_query(params)
+            else:
+                return self._handle_error(400, f"Unknown tool: {tool}")
+    
+    def execute_mysql_query(self, params):
+        if "query" not in params:
+            return self._handle_error(400, "Missing query parameter")
+        
+        query = params["query"]
+        
+        # db_config가 없는 경우 에러 반환
+        if "db_config" not in params:
+            return self._handle_error(400, "Missing db_config parameter")
+        
+        db_config = params["db_config"]
+        
+        try:
+            conn = mysql.connector.connect(**db_config)
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(query)
+            
+            try:
+                # SELECT 쿼리 결과 가져오기
+                results = cursor.fetchall()
+                # 결과 리스트가 비어있으면 다른 유형의 쿼리로 간주
+                if not results:
+                    conn.commit()
+                    results = {"affectedRows": cursor.rowcount}
+            except Error:
+                # SELECT가 아닌 쿼리 (INSERT, UPDATE 등) 처리
+                conn.commit()
+                results = {"affectedRows": cursor.rowcount}
+            
+            cursor.close()
+            conn.close()
+            
+            self._set_headers()
+            self.wfile.write(json.dumps({"results": results}).encode())
+        except Error as e:
+            self._handle_error(500, str(e))
+
+def run_server(port):
+    server_address = ('', port)
+    try:
+        httpd = HTTPServer(server_address, MCPHandler)
+        print(f"MySQL MCP server running on port {port}")
+        httpd.serve_forever()
+    except OSError as e:
+        if e.errno == 48:  # Address already in use
+            print(f"포트 {port}가 이미 사용 중입니다. MySQL MCP 서버가 이미 실행 중일 수 있습니다.")
+            return
+        raise  # 다른 OSError는 그대로 발생시킴
+
+if __name__ == "__main__":
+    port = PORT
+    run_server(port)
+""")
+            
+            # 서버 프로세스 시작
+            process = subprocess.Popen(
+                [python_executable, script_path, str(port)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            st.session_state['mcp_server_process'] = process
+            
+            # 로그 캡처 스레드 시작
+            def capture_logs():
+                while st.session_state['mcp_server_process']:
+                    line = process.stdout.readline()
+                    if line:
+                        st.session_state['mcp_server_logs'].append(line.strip())
+                        if len(st.session_state['mcp_server_logs']) > 100:
+                            st.session_state['mcp_server_logs'].pop(0)
+                    else:
+                        time.sleep(0.1)
+            
+            log_thread = threading.Thread(target=capture_logs)
+            log_thread.daemon = True
+            log_thread.start()
+            
+            # 서버 시작 대기
+            for i in range(5):  # 최대 5초 대기
+                try:
+                    # 서버 상태 확인
+                    response = requests.get(f"http://localhost:{port}/status", timeout=1)
+                    if response.status_code == 200:
+                        return True, f"{server_type.upper()} MCP 서버가 포트 {port}에서 시작되었습니다."
+                except:
+                    pass
+                time.sleep(1)
+            
+            return True, f"{server_type.upper()} MCP 서버 시작 중입니다. 잠시 후 연결을 시도하세요."
+            
+    except Exception as e:
+        return False, f"MCP 서버 시작 오류: {str(e)}" 
+
+# Function to stop the MCP server
+def stop_mcp_server():
+    if st.session_state['mcp_server_process'] is None:
+        return False, "MCP 서버가 실행 중이 아닙니다."
+    
+    try:
+        st.session_state['mcp_server_process'].terminate()
+        st.session_state['mcp_server_process'] = None
+        return True, "MCP 서버가 중지되었습니다."
+    except Exception as e:
+        return False, f"MCP 서버 중지 오류: {str(e)}"
+
+class SimpleMCPClient:
+    """간단한 MCP 클라이언트 구현"""
+    
+    def __init__(self, server_url: str, server_type: str, db_config=None):
+        # MCP 서버 기본 포트 설정
+        if ":" not in server_url:
+            if server_type == "mysql":
+                server_url = f"{server_url}:3000"  # MySQL MCP 서버 기본 포트
+            elif server_type == "perplexity":
+                server_url = f"{server_url}:3001"  # Perplexity MCP 서버 기본 포트
+            else:
+                server_url = f"{server_url}:3002"  # FireCrawl MCP 서버 기본 포트
+        
+        self.server_url = server_url if server_url.startswith(("http://", "https://")) else f"http://{server_url}"
+        self.server_type = server_type
+        self.is_mcp_server = False
+        self.mcp_server_command = None
+        self.mcp_server_args = None
+        self.mcp_server_type = None
+        self.api_key = None
+        self.db_config = db_config
+    
+    def get_server_info(self):
+        """서버 정보 조회"""
+        try:
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+                
+            response = requests.get(
+                f"{self.server_url}/status",
+                headers=headers,
+                timeout=5  # 5초 타임아웃 설정
+            )
+            if response.status_code == 200:
+                server_info = response.json()
+                # 서버에서 반환한 유형 정보가 있으면 업데이트
+                if "type" in server_info:
+                    self.server_type = server_info["type"]
+                
+                if self.server_type == "mysql" and self.db_config:
+                    server_info["db_config"] = {
+                        "host": self.db_config.get("host"),
+                        "port": self.db_config.get("port"),
+                        "user": self.db_config.get("user")
+                    }
+                return server_info
+            raise Exception(f"서버 상태 조회 실패: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"서버 연결 실패: {str(e)}")
+    
+    def execute_tool(self, tool_name: str, params: dict):
+        """도구 실행"""
+        if self.server_type == "mysql":
+            if not self.db_config:
+                raise Exception("MySQL 연결 설정이 없습니다. db_config를 설정해주세요.")
+            # MySQL 설정 추가
+            params["db_config"] = self.db_config
+        
+        try:
+            headers = {"Content-Type": "application/json"}
+            
+            # 서버 유형에 따라 적절한 인증 헤더 설정
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            # 디버그 정보 출력
+            print(f"서버 요청: {self.server_url}/execute")
+            print(f"헤더: {headers}")
+            print(f"요청 데이터: tool={tool_name}, params={params}")
+                
+            try:
+                response = requests.post(
+                    f"{self.server_url}/execute",
+                    headers=headers,
+                    json={
+                        "tool": tool_name,
+                        "parameters": params
+                    },
+                    timeout=30  # 30초 타임아웃 설정
+                )
+                
+                # 응답 디버그 정보
+                print(f"응답 코드: {response.status_code}")
+                print(f"응답 헤더: {response.headers}")
+                print(f"응답 내용: {response.text}")
+                
+                if response.status_code == 200:
+                    try:
+                        return response.json()
+                    except json.JSONDecodeError as e:
+                        print(f"JSON 파싱 오류: {str(e)}")
+                        if response.text:
+                            return {"results": response.text}
+                        raise Exception("서버가 빈 응답을 반환했습니다.")
+                else:
+                    error_message = f"도구 실행 실패: HTTP {response.status_code}"
+                    try:
+                        error_data = response.json()
+                        if isinstance(error_data, dict) and "error" in error_data:
+                            error_message += f" - {error_data['error']}"
+                    except:
+                        if response.text:
+                            error_message += f" - {response.text}"
+                    raise Exception(error_message)
+                    
+            except requests.exceptions.Timeout:
+                raise Exception("서버 요청 시간 초과")
+            except requests.exceptions.ConnectionError:
+                raise Exception("서버 연결 실패")
+            
+        except Exception as e:
+            print(f"오류 발생: {str(e)}")
+            raise Exception(f"서버 요청 실패: {str(e)}")
+    
+    def close(self):
+        """연결 종료"""
+        pass  # HTTP 기반이므로 특별한 정리가 필요 없음
+
+# Function to call Claude API
+def call_claude_api(user_input, model="claude-3-5-sonnet-20240620"):
+    API_URL = "https://api.anthropic.com/v1/messages"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01"
+    }
+    
+    payload = {
+        "model": model,
+        "max_tokens": 1000,
+        "messages": [{"role": "user", "content": user_input}]
+    }
+    
+    try:
+        response = requests.post(API_URL, json=payload, headers=headers)
+        response.raise_for_status()
+        sql_query = response.json()["content"][0]["text"].strip()
+        return sql_query
+    except Exception as e:
+        return None, f"Error calling Claude API: {str(e)}"
+
+# Function to initialize MCP server from configuration
+def initialize_mcp_server(config_data):
+    try:
+        # 디버깅: 설정 데이터 출력
+        st.write("**설정 데이터 구조:**")
+        st.json(config_data)
+        
+        # 연결 테스트 건너뛰기 옵션
+        skip_connection_test = config_data.get("skipConnectionTest", False)
+        
+        # API 키 설정
+        api_key = config_data.get("apiKey", None)
+        
+        # MySQL 설정 가져오기
+        db_config = config_data.get("db_config", None)
+        
+        # MySQL 설정이 없고 서버 타입이 mysql인 경우 기본값 설정
+        if not db_config and isinstance(config_data, dict):
+            server_type = config_data.get("serverType", "")
+            if server_type == "mysql":
+                db_config = {
+                    "host": "localhost",
+                    "port": 3306,
+                    "user": os.getenv('SQL_USER', ''),
+                    "password": os.getenv('SQL_PASSWORD', ''),
+                    "database": os.getenv('SQL_DATABASE_NEWBIZ', '')
+                }
+                config_data["db_config"] = db_config
+                st.info("MySQL 기본 설정이 적용되었습니다.")
+                st.json(db_config)
+        
+        # MCP 서버 정보 추출
+        is_mcp_server_config = False
+        mcp_server_command = None
+        mcp_server_args = None
+        mcp_server_type = None
+        
+        # mcpServers 객체 감지 및 정보 추출
+        if isinstance(config_data, dict) and "mcpServers" in config_data and config_data["mcpServers"]:
+            is_mcp_server_config = True
+            server_name = list(config_data["mcpServers"].keys())[0]
+            server_config = config_data["mcpServers"][server_name]
+            
+            if "command" in server_config and "args" in server_config:
+                mcp_server_command = server_config["command"]
+                mcp_server_args = server_config["args"]
+                
+                # 인자에서 서버 유형 감지
+                args_str = " ".join(str(arg) for arg in mcp_server_args)
+                if "mcp-mysql-server" in args_str or "mysql" in args_str.lower():
+                    mcp_server_type = "mysql"
+                elif "mcp-perplexity-server" in args_str or "perplexity" in args_str.lower():
+                    mcp_server_type = "perplexity"
+                elif "mcp-firecrawl-server" in args_str or "firecrawl" in args_str.lower():
+                    mcp_server_type = "firecrawl"
+                
+                # MCP 서버 관련 정보 표시
+                st.info(f"### MCP 서버 설정 감지됨 (유형: {mcp_server_type or '감지 실패'})")
+                st.code(f"서버 이름: {server_name}\n명령어: {mcp_server_command}\n인자: {' '.join(str(arg) for arg in mcp_server_args)}")
+        
+        # Extract server parameters from config
+        server_url = None
+        server_type = None
+        
+        # 다양한 설정 형식 처리
+        if isinstance(config_data, str):
+            # 문자열인 경우 URL로 간주
+            server_url = config_data
+            server_type = "mysql"  # 기본값
+            st.info(f"설정이 문자열로 제공되었습니다. URL: {server_url}")
+        elif isinstance(config_data, dict):
+            # 딕셔너리 형태로 제공된 경우
+            if "serverUrl" in config_data:
+                server_url = config_data["serverUrl"]
+                server_type = config_data.get("serverType", "mysql")  # 기본값은 mysql
+                st.info(f"serverUrl 형식 발견: {server_url}")
+            elif "url" in config_data:
+                server_url = config_data["url"]
+                server_type = config_data.get("type", "mysql")  # 기본값은 mysql
+                st.info(f"url 형식 발견: {server_url}")
+            elif "mcpServers" in config_data and config_data["mcpServers"]:
+                # mcpServers에서 URL을 추출해야 함
+                # 기본 포트 설정
+                if mcp_server_type == "mysql":
+                    server_url = "localhost:3000"
+                elif mcp_server_type == "perplexity":
+                    server_url = "localhost:3001"
+                elif mcp_server_type == "firecrawl":
+                    server_url = "localhost:3002"
+                else:
+                    server_url = "localhost:3000"  # 기본값
+                
+                # 서버 유형 설정 - mcp_server_type이 있으면 사용, 없으면 기본값
+                server_type = mcp_server_type or "mysql"
+                
+                st.info(f"mcpServers 형식 발견: 기본 URL {server_url}로 설정됨, 서버 유형: {server_type}")
+            elif "command" in config_data and "args" in config_data:
+                # 스미서리 커맨드 형식
+                st.info("command/args 형식 발견")
+                
+                # 인자에서 서버 유형 감지
+                args_str = " ".join(str(arg) for arg in config_data.get("args", []))
+                if "mcp-mysql-server" in args_str or "mysql" in args_str.lower():
+                    server_type = "mysql"
+                elif "mcp-perplexity-server" in args_str or "perplexity" in args_str.lower():
+                    server_type = "perplexity"
+                elif "mcp-firecrawl-server" in args_str or "firecrawl" in args_str.lower():
+                    server_type = "firecrawl"
+                else:
+                    server_type = "mysql"  # 기본값
+                
+                server_url = f"localhost:{3000 if server_type=='mysql' else 3001 if server_type=='perplexity' else 3002}"
+                
+                # args에서 호스트/포트 추출 시도
+                try:
+                    args = config_data.get("args", [])
+                    for arg in args:
+                        if arg.startswith("--host="):
+                            host = arg.split("=")[1]
+                            server_url = f"{host}:{3000 if server_type=='mysql' else 3001 if server_type=='perplexity' else 3002}"
+                        elif arg.startswith("--port="):
+                            port = arg.split("=")[1]
+                            if ":" in server_url:
+                                host = server_url.split(":")[0]
+                                server_url = f"{host}:{port}"
+                            else:
+                                server_url = f"{server_url}:{port}"
+                    st.info(f"command/args에서 추출된 URL: {server_url}, 서버 유형: {server_type}")
+                except Exception as e:
+                    st.error(f"command/args 처리 중 오류: {str(e)}")
+            else:
+                st.warning("알려진 설정 형식을 찾을 수 없습니다. 설정 키:")
+                st.write(list(config_data.keys()))
+        else:
+            st.error(f"지원되지 않는 설정 데이터 타입: {type(config_data)}")
+        
+        # 설정이 없는 경우, 기본값 사용
+        if not server_url:
+            st.warning("서버 URL을 찾을 수 없습니다. 기본값을 사용합니다.")
+            server_url = "localhost:3000"
+            server_type = "mysql"
+        
+        # URL 형식 확인 및 수정
+        if not server_url.startswith(("http://", "https://")):
+            # HTTP 프로토콜 추가
+            if ":" in server_url:
+                # 포트가 있는 경우
+                host, port = server_url.split(":", 1)
+                server_url = f"http://{host}:{port}"
+            else:
+                # 포트가 없는 경우
+                if server_type == "mysql":
+                    server_url = f"http://{server_url}:3000"
+                elif server_type == "perplexity":
+                    server_url = f"http://{server_url}:3001"
+                elif server_type == "firecrawl":
+                    server_url = f"http://{server_url}:3002"
+            
+            st.info(f"URL 형식 수정: {server_url}")
+        
+        # 클라이언트 생성
+        st.info(f"서버에 연결 시도: {server_url}, 타입: {server_type}")
+        
+        # MySQL 서버인 경우 db_config 확인
+        if server_type == "mysql" and not db_config:
+            return None, "MySQL 연결 설정이 필요합니다. db_config를 설정해주세요."
+        
+        client = SimpleMCPClient(server_url, server_type, db_config)
+        
+        # API 키가 있으면 설정
+        if api_key:
+            client.api_key = api_key
+        
+        # MCP 서버 설정 정보 저장
+        if is_mcp_server_config:
+            client.is_mcp_server = True
+            client.mcp_server_command = mcp_server_command
+            client.mcp_server_args = mcp_server_args
+            client.mcp_server_type = mcp_server_type
+        else:
+            client.is_mcp_server = False
+        
+        # 연결 테스트 건너뛰기가 설정된 경우
+        if skip_connection_test:
+            st.warning("연결 테스트를 건너뛰고 설정만 저장합니다.")
+            return client, f"Connection test skipped. Configuration saved for {server_url}"
+        
+        try:
+            # 연결성 테스트 (타임아웃 3초)
+            response = requests.get(f"{server_url}/status", timeout=3)
+            st.success(f"서버 응답: HTTP {response.status_code}")
+            
+            # 정상 응답이 아닌 경우
+            if response.status_code != 200:
+                st.warning(f"서버가 비정상 응답을 반환했습니다: HTTP {response.status_code}")
+                if st.button("그래도 계속하기"):
+                    return client, f"서버가 비정상 응답을 반환했지만, 설정을 저장했습니다. ({server_url})"
+                else:
+                    raise Exception(f"서버가 비정상 응답을 반환했습니다: HTTP {response.status_code}")
+            
+            # 서버 정보 가져오기
+            server_info = client.get_server_info()
+            
+            # 도구 목록 확인
+            tools = []
+            if "tools" in server_info:
+                tools = server_info["tools"]
+                st.success(f"사용 가능한 도구: {tools}")
+            
+            return client, f"Successfully connected to {server_url}. Server type: {server_type}"
+        except requests.exceptions.ConnectTimeout:
+            st.error(f"서버 연결 시간이 초과되었습니다: {server_url}")
+            # 사용자에게 연결 테스트를 건너뛰고 계속할 수 있는 옵션 제공
+            if st.button("연결 문제가 있지만 계속하기"):
+                return client, f"서버 연결 테스트에 실패했지만, 설정을 저장했습니다. ({server_url})"
+            raise
+        except requests.exceptions.ConnectionError as e:
+            st.error(f"서버 연결 오류: {str(e)}")
+            
+            # 연결 에러 해결 제안
+            st.markdown("""
+            ### 연결 오류 해결 방법
+            
+            1. **서버가 실행 중인지 확인하세요**
+            2. **포트 번호가 올바른지 확인하세요**
+            3. **'localhost' 대신 '127.0.0.1'을 시도해보세요**
+            4. **다른 포트로 연결을 시도해보세요**
+            5. **방화벽 설정을 확인하세요**
+            """)
+            
+            # 사용자에게 연결 테스트를 건너뛰고 계속할 수 있는 옵션 제공
+            if st.button("연결 문제가 있지만 계속하기"):
+                return client, f"서버 연결 테스트에 실패했지만, 설정을 저장했습니다. ({server_url})"
+            
+            raise
+        except Exception as e:
+            st.error(f"서버 연결 테스트 실패: {str(e)}")
+            
+            # 사용자에게 연결 테스트를 건너뛰고 계속할 수 있는 옵션 제공
+            if st.button("오류가 발생했지만 계속하기"):
+                return client, f"서버 연결 테스트 중 오류가 발생했지만, 설정을 저장했습니다. ({server_url})"
+            
+            raise
+        
+    except Exception as e:
+        return None, f"Error initializing MCP server: {str(e)}"
+
+# Function to communicate with MCP server
+def communicate_with_mcp_server(client, tool_name, params):
+    try:
+        # Call the tool
+        result = client.execute_tool(tool_name, params)
+        return result, None
+    except Exception as e:
+        return None, f"Error communicating with MCP server: {str(e)}"
+
+# Function to convert natural language to SQL using Claude API
+def natural_language_to_sql(query: str, model="claude-3-5-sonnet-20240620") -> str:
+    API_URL = "https://api.anthropic.com/v1/messages"
+    
+    system_prompt = '''You are an expert SQL translator. 
+Your task is to translate natural language queries into correct SQL statements.
+Only return the SQL statement, nothing else. Do not include any explanations or markdown formatting.
+If the query does not seem to be asking for a SQL statement, return the original query.
+Always make sure the SQL statements are properly formatted and valid.'''
+    
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01"
+    }
+    
+    payload = {
+        "model": model,
+        "max_tokens": 1000,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": f"Convert this natural language query to SQL: {query}"}]
+    }
+    
+    try:
+        response = requests.post(API_URL, json=payload, headers=headers)
+        response.raise_for_status()
+        sql_query = response.json()["content"][0]["text"].strip()
+        return sql_query
+    except Exception as e:
+        return None, f"Error converting to SQL: {str(e)}"
+
+def get_db_config():
+    """Get database configuration from session state or environment variables"""
+    # Default configuration
+    config = {
+        'host': 'localhost',
+        'user': 'root',
+        'password': '',
+        'database': 'smithery',
+        'raise_on_warnings': True
+    }
+    
+    # Override with session state values if available
+    if 'db_config' in st.session_state:
+        for key in st.session_state.db_config:
+            if key in config and st.session_state.db_config[key]:
+                config[key] = st.session_state.db_config[key]
+    
+    return config
+
+def save_mcp_server_config(server_name, server_type, server_url, config_json):
+    """MCP 서버 설정을 DB에 저장"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor()
+
+        # 기존 설정이 있는지 확인
+        cursor.execute(
+            "SELECT config_id FROM mcp_server_configs WHERE server_name = %s",
+            (server_name,)
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            # 기존 설정 업데이트
+            cursor.execute("""
+                UPDATE mcp_server_configs 
+                SET server_type = %s, server_url = %s, config_json = %s, updated_at = NOW()
+                WHERE server_name = %s
+            """, (server_type, server_url, config_json, server_name))
+        else:
+            # 새 설정 저장
+            cursor.execute("""
+                INSERT INTO mcp_server_configs 
+                (server_name, server_type, server_url, config_json)
+                VALUES (%s, %s, %s, %s)
+            """, (server_name, server_type, server_url, config_json))
+
+        conn.commit()
+        return True, "설정이 저장되었습니다."
+
+    except Exception as e:
+        return False, f"설정 저장 중 오류 발생: {str(e)}"
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_mcp_server_configs():
+    """저장된 MCP 서버 설정 목록 조회"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT * FROM mcp_server_configs 
+            WHERE is_active = TRUE 
+            ORDER BY created_at DESC
+        """)
+        
+        return cursor.fetchall()
+
+    except Exception as e:
+        st.error(f"설정 조회 중 오류 발생: {str(e)}")
+        return []
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_mcp_server_config(server_name):
+    """특정 MCP 서버 설정 조회"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT * FROM mcp_server_configs 
+            WHERE server_name = %s AND is_active = TRUE
+        """, (server_name,))
+        
+        return cursor.fetchone()
+
+    except Exception as e:
+        st.error(f"설정 조회 중 오류 발생: {str(e)}")
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+def delete_mcp_config(server_name):
+    """MCP 서버 설정 삭제 (soft delete)"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE mcp_server_configs 
+            SET is_active = FALSE 
+            WHERE server_name = %s
+        """, (server_name,))
+
+        conn.commit()
+        return True, "설정이 삭제되었습니다."
+
+    except Exception as e:
+        return False, f"설정 삭제 중 오류 발생: {str(e)}"
+    finally:
+        cursor.close()
+        conn.close()
+
+# UI Components
+st.title("🧠 Streamlit MCP Host")
+st.write("A Streamlit app that functions as an MCP host, using Claude API and connecting to Smithery MCP servers.")
+
+# Sidebar for configuration
+with st.sidebar:
+    st.header("Configuration")
+    
+    # MCP Server management
+    st.subheader("MCP 서버 관리")
+    
+    # 서버 유형 선택 (가장 먼저)
+    local_server_type = st.selectbox(
+        "서버 유형",
+        ["mysql", "perplexity", "firecrawl"],
+        format_func=lambda x: {
+            "mysql": "MySQL", 
+            "perplexity": "Perplexity", 
+            "firecrawl": "FireCrawl"
+        }.get(x, x),
+        key="local_server_type"
+    )
+
+    # MySQL 설정 (서버 유형 선택 직후)
+    mysql_userid = None
+    mysql_password = None
+    mysql_database = None
+    if local_server_type == "mysql":
+        st.markdown("### MySQL 연결 설정")
+        mysql_col1, mysql_col2 = st.columns(2)
+        with mysql_col1:
+            mysql_userid = st.text_input("MySQL 사용자 ID", value=os.getenv('SQL_USER', ''))
+            mysql_database = st.text_input("데이터베이스", value=os.getenv('SQL_DATABASE_NEWBIZ', ''))
+        with mysql_col2:
+            mysql_password = st.text_input("MySQL 비밀번호", type="password", value=os.getenv('SQL_PASSWORD', ''))
+        
+        if not mysql_userid or not mysql_password:
+            st.warning("MySQL 연결을 위해 사용자 ID와 비밀번호를 입력해주세요.")
+    
+    # 포트 설정
+    local_server_port = st.number_input(
+        "포트",
+        value=3000 if local_server_type == "mysql" else (3001 if local_server_type == "perplexity" else 3002),
+        min_value=1000,
+        max_value=9999
+    )
+
+    # 서버 상태 표시
+    server_status = "정지됨"
+    if st.session_state['mcp_server_process'] is not None:
+        if st.session_state['mcp_server_process'].poll() is None:
+            server_status = "실행 중"
+        else:
+            server_status = "비정상 종료됨"
+            st.session_state['mcp_server_process'] = None
+    
+    st.metric("서버 상태", server_status)
+    
+    # 시작/중지 버튼
+    if st.session_state['mcp_server_process'] is None:
+        if st.button("MCP 서버 시작"):
+            success, message = start_mcp_server(local_server_type, local_server_port)
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
+    else:
+        if st.button("MCP 서버 중지"):
+            success, message = stop_mcp_server()
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
+    
+    # 서버 로그 표시
+    if st.session_state['mcp_server_process'] is not None:
+        with st.expander("서버 로그", expanded=False):
+            log_text = "\n".join(st.session_state['mcp_server_logs'])
+            st.code(log_text)
+        
+        # 연결 정보 자동 설정
+        if st.button("이 서버에 연결"):
+            if local_server_type == "mysql":
+                if not mysql_userid or not mysql_password:
+                    st.error("MySQL 연결을 위해 사용자 ID와 비밀번호를 입력해주세요.")
+                else:
+                    port = local_server_port
+                    config_name = f"local-mysql-{port}"
+                    config_data = {
+                        "serverUrl": f"http://localhost:{port}",
+                        "serverType": "mysql",
+                        "db_config": {
+                            "host": "localhost",
+                            "port": 3306,
+                            "user": mysql_userid,
+                            "password": mysql_password,
+                            "database": mysql_database if mysql_database else os.getenv('SQL_DATABASE_NEWBIZ')
+                        }
+                    }
+                    
+                    # 설정을 DB에도 저장
+                    config_json = json.dumps(config_data)
+                    success, message = save_mcp_server_config(config_name, "mysql", f"http://localhost:{port}", config_json)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                    
+                    # MCP 서버 초기화
+                    with st.spinner("Connecting to MCP server..."):
+                        client, message = initialize_mcp_server(config_data)
+                        if client:
+                            st.session_state['mcp_configs'][config_name] = {
+                                "client": client,
+                                "config": config_data,
+                                "added_time": datetime.now()
+                            }
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+            elif local_server_type == "perplexity":
+                port = local_server_port
+                config_name = f"local-perplexity-{port}"
+                config_data = {
+                    "serverUrl": f"http://localhost:{port}",
+                    "serverType": "perplexity"
+                }
+                
+                # MCP 서버 초기화
+                with st.spinner("Connecting to MCP server..."):
+                    client, message = initialize_mcp_server(config_data)
+                    if client:
+                        st.session_state['mcp_configs'][config_name] = {
+                            "client": client,
+                            "config": config_data,
+                            "added_time": datetime.now()
+                        }
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+            else:
+                port = local_server_port
+                config_name = f"local-firecrawl-{port}"
+                # FireCrawl API 키를 환경에서 로드
+                firecrawl_api_key = os.getenv("FIRECRAWL_API_KEY", "fc-f4745f41d5fd4e8c9d24d97b65e8a96c")
+                config_data = {
+                    "serverUrl": f"http://localhost:{port}",
+                    "serverType": "firecrawl",
+                    "apiKey": firecrawl_api_key  # API 키 추가
+                }
+                
+                # MCP 서버 초기화
+                with st.spinner("Connecting to MCP server..."):
+                    client, message = initialize_mcp_server(config_data)
+                    if client:
+                        st.session_state['mcp_configs'][config_name] = {
+                            "client": client,
+                            "config": config_data,
+                            "added_time": datetime.now()
+                        }
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+    # Claude API settings
+    st.subheader("Claude API Settings")
+    claude_model = st.selectbox(
+        "Select Claude Model",
+        ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307"],
+        key="claude_model"
+    )
+
+    # Server Configuration Tabs
+    st.subheader("서버 설정")
+    config_tab1, config_tab2, config_tab3, config_tab4 = st.tabs([
+        "JSON 설정",
+        "빠른 설정",
+        "저장된 설정",
+        "Smithery AI"
+    ])
+
+    # JSON Configuration Tab
+    with config_tab1:
+        st.markdown("### JSON 설정으로 연결")
+        
+        st.markdown("""
+        MCP 서버 설정을 JSON 형식으로 입력하세요.
+        
+        예시:
+        ```json
+        {
+            "serverUrl": "http://localhost:3000",
+            "serverType": "mysql",
+            "db_config": {
+                "host": "localhost",
+                "port": 3306,
+                "user": "root",
+                "password": "your_password"
+            }
+        }
+        ```
+        """)
+        
+        # 저장된 설정에서 불러온 JSON이 있으면 표시
+        initial_json = ""
+        initial_name = "custom-config"
+        if 'selected_json_config' in st.session_state:
+            initial_json = st.session_state['selected_json_config']
+            initial_name = st.session_state.get('selected_json_config_name', 'custom-config')
+            # 사용 후 세션에서 제거
+            del st.session_state['selected_json_config']
+            del st.session_state['selected_json_config_name']
+        
+        # JSON 직접 입력
+        json_config = st.text_area(
+            "설정 JSON",
+            value=initial_json,
+            height=200,
+            help="MCP 서버 설정을 JSON 형식으로 입력하세요"
+        )
+        
+        # JSON 설정 이름
+        json_config_name = st.text_input(
+            "설정 이름",
+            value=initial_name,
+            help="이 설정을 식별하기 위한 이름"
+        )
+
+        try:
+            if json_config:
+                config_data = json.loads(json_config)
+                
+                # MySQL 관련 설정인지 확인
+                has_mysql = False
+                if isinstance(config_data, dict):
+                    # serverType이 mysql인 경우
+                    if config_data.get("serverType") == "mysql":
+                        has_mysql = True
+                    # mcpServers에 mysql 관련 설정이 있는 경우
+                    elif "mcpServers" in config_data:
+                        for server in config_data["mcpServers"].values():
+                            if isinstance(server, dict) and "args" in server:
+                                args_str = " ".join(str(arg) for arg in server["args"])
+                                if "mysql" in args_str.lower():
+                                    has_mysql = True
+                                    break
+                
+                # MySQL 설정이 감지된 경우 추가 입력 필드 표시
+                mysql_db_config = None
+                if has_mysql:
+                    st.info("MySQL 설정이 감지되었습니다. 연결 정보를 입력해주세요.")
+                    
+                    mysql_col1, mysql_col2 = st.columns(2)
+                    with mysql_col1:
+                        mysql_host = st.text_input("MySQL 호스트", value="localhost", key="json_mysql_host")
+                        mysql_user = st.text_input("MySQL 사용자", value=os.getenv('SQL_USER', ''), key="json_mysql_user")
+                    with mysql_col2:
+                        mysql_port = st.number_input("MySQL 포트", value=3306, min_value=1, max_value=65535, key="json_mysql_port")
+                        mysql_password = st.text_input("MySQL 비밀번호", type="password", value=os.getenv('SQL_PASSWORD', ''), key="json_mysql_password")
+                    
+                    mysql_database = st.text_input("데이터베이스", value=os.getenv('SQL_DATABASE_NEWBIZ', ''), key="json_mysql_database")
+                    
+                    mysql_db_config = {
+                        "host": mysql_host,
+                        "port": mysql_port,
+                        "user": mysql_user,
+                        "password": mysql_password
+                    }
+                    
+                    if mysql_database:
+                        mysql_db_config["database"] = mysql_database
+                
+                # 연결 테스트 건너뛰기 옵션
+                skip_connection_test = st.checkbox(
+                    "연결 테스트 건너뛰기", 
+                    value=False,
+                    help="서버에 연결할 수 없지만 설정을 저장하려는 경우 선택하세요"
+                )
+                
+                # JSON 연결 버튼
+                if st.button("JSON으로 연결"):
+                    # MySQL 설정이 있으면 config_data에 추가
+                    if has_mysql and mysql_db_config:
+                        config_data["db_config"] = mysql_db_config
+                    
+                    config_data["skipConnectionTest"] = skip_connection_test
+                    
+                    with st.spinner("Connecting to MCP server..."):
+                        client, message = initialize_mcp_server(config_data)
+                        
+                        if client:
+                            st.session_state['mcp_configs'][json_config_name] = {
+                                "client": client,
+                                "config": config_data,
+                                "added_time": datetime.now()
+                            }
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                            
+        except json.JSONDecodeError as e:
+            st.error(f"JSON 형식이 올바르지 않습니다: {str(e)}")
+        except Exception as e:
+            st.error(f"설정 처리 중 오류 발생: {str(e)}")
+
+    # Quick Configuration Tab
+    with config_tab2:
+        st.markdown("### 빠른 설정")
+        
+        # 서버 유형 선택
+        server_type = st.selectbox(
+            "서버 유형",
+            ["mysql", "perplexity", "firecrawl"],
+            format_func=lambda x: {
+                "mysql": "MySQL",
+                "perplexity": "Perplexity",
+                "firecrawl": "FireCrawl"
+            }.get(x, x),
+            key="quick_config_server_type"
+        )
+        
+        # 서버 URL
+        server_url = st.text_input(
+            "서버 URL",
+            value="http://localhost:3000",
+            help="MCP 서버의 URL을 입력하세요"
+        )
+        
+        # MySQL 설정 (선택한 서버 타입이 mysql인 경우)
+        mysql_db_config = None
+        if server_type == "mysql":
+            st.markdown("#### MySQL 연결 설정")
+            mysql_host = st.text_input("MySQL 호스트", value="localhost")
+            mysql_port = st.number_input("MySQL 포트", value=3306, min_value=1, max_value=65535)
+            mysql_user = st.text_input("MySQL 사용자", value="root")
+            mysql_password = st.text_input("MySQL 비밀번호", type="password")
+            
+            mysql_db_config = {
+                "host": mysql_host,
+                "port": mysql_port,
+                "user": mysql_user,
+                "password": mysql_password
+            }
+        
+        # FireCrawl API 키 (선택한 서버 타입이 firecrawl인 경우)
+        firecrawl_api_key = None
+        if server_type == "firecrawl":
+            firecrawl_api_key = st.text_input(
+                "FireCrawl API 키",
+                value=os.getenv("FIRECRAWL_API_KEY", ""),
+                type="password"
+            )
+        
+        # 설정 이름
+        config_name = st.text_input(
+            "설정 이름",
+            value=f"quick-{server_type}",
+            help="이 설정을 식별하기 위한 이름"
+        )
+        
+        # 연결 버튼
+        if st.button("연결", key="quick_connect"):
+            # 기본 설정
+            config_data = {
+                "serverUrl": server_url,
+                "serverType": server_type
+            }
+            
+            # MySQL 설정이 있으면 추가
+            if mysql_db_config:
+                config_data["db_config"] = mysql_db_config
+            
+            # FireCrawl API 키가 있으면 추가
+            if server_type == "firecrawl" and firecrawl_api_key:
+                config_data["apiKey"] = firecrawl_api_key
+            
+            st.info(f"MCP 서버 {server_url}에 연결 중...")
+            
+            with st.spinner("Connecting to MCP server..."):
+                client, message = initialize_mcp_server(config_data)
+                
+                if client:
+                    st.session_state['mcp_configs'][config_name] = {
+                        "client": client,
+                        "config": config_data,
+                        "added_time": datetime.now()
+                    }
+                    st.success(message)
+                    # 세션 상태 업데이트 후 페이지 리프레시
+                    st.rerun()
+                else:
+                    st.error(message)
+
+    # Saved Configurations Tab
+    with config_tab3:
+        st.markdown("### 저장된 설정")
+        
+        # 저장된 설정 목록 표시
+        saved_configs = get_mcp_server_configs()
+        
+        if not saved_configs:
+            st.info("저장된 설정이 없습니다.")
+        else:
+            st.markdown("저장된 MCP 서버 설정 목록:")
+            
+            for config in saved_configs:
+                st.markdown(f"### {config['server_name']} ({config['server_type']})")
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    st.markdown(f"**서버 유형**: {config['server_type']}")
+                    st.markdown(f"**서버 URL**: {config['server_url']}")
+                    st.markdown("**설정 상세**:")
+                    config_json = json.loads(config['config_json'])
+                    st.json(config_json)
+                
+                with col2:
+                    if st.button("설정 불러오기", key=f"load_{config['server_name']}"):
+                        config_data = json.loads(config['config_json'])
+                        
+                        # MySQL 설정인 경우 db_config 확인 및 입력 필드 표시
+                        if config['server_type'] == 'mysql':
+                            mysql_col1, mysql_col2 = st.columns(2)
+                            
+                            with mysql_col1:
+                                mysql_host = st.text_input("MySQL 호스트", 
+                                    value=config_data.get('db_config', {}).get('host', 'localhost'),
+                                    key=f"load_mysql_host_{config['server_name']}")
+                                mysql_user = st.text_input("MySQL 사용자", 
+                                    value=config_data.get('db_config', {}).get('user', os.getenv('SQL_USER', '')),
+                                    key=f"load_mysql_user_{config['server_name']}")
+                            
+                            with mysql_col2:
+                                mysql_port = st.number_input("MySQL 포트", 
+                                    value=config_data.get('db_config', {}).get('port', 3306),
+                                    min_value=1, max_value=65535,
+                                    key=f"load_mysql_port_{config['server_name']}")
+                                mysql_password = st.text_input("MySQL 비밀번호", 
+                                    type="password",
+                                    value=config_data.get('db_config', {}).get('password', os.getenv('SQL_PASSWORD', '')),
+                                    key=f"load_mysql_password_{config['server_name']}")
+                            
+                            mysql_database = st.text_input("데이터베이스",
+                                value=config_data.get('db_config', {}).get('database', os.getenv('SQL_DATABASE_NEWBIZ', '')),
+                                key=f"load_mysql_database_{config['server_name']}")
+                            
+                            # db_config 업데이트
+                            config_data['db_config'] = {
+                                "host": mysql_host,
+                                "port": mysql_port,
+                                "user": mysql_user,
+                                "password": mysql_password
+                            }
+                            if mysql_database:
+                                config_data['db_config']['database'] = mysql_database
+                            
+                            # 세션 상태에 선택된 JSON 설정 저장
+                            st.session_state['selected_json_config'] = json.dumps(config_data, indent=2)
+                            st.session_state['selected_json_config_name'] = config['server_name']
+                            
+                            with st.spinner("Connecting to MCP server..."):
+                                client, message = initialize_mcp_server(config_data)
+                                
+                                if client:
+                                    st.session_state['mcp_configs'][config['server_name']] = {
+                                        "client": client,
+                                        "config": config_data,
+                                        "added_time": datetime.now()
+                                    }
+                                    st.success(message)
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                        else:
+                            # MySQL이 아닌 경우 바로 연결 시도
+                            # 세션 상태에 선택된 JSON 설정 저장
+                            st.session_state['selected_json_config'] = config['config_json']
+                            st.session_state['selected_json_config_name'] = config['server_name']
+                            
+                            with st.spinner("Connecting to MCP server..."):
+                                client, message = initialize_mcp_server(config_data)
+                                
+                                if client:
+                                    st.session_state['mcp_configs'][config['server_name']] = {
+                                        "client": client,
+                                        "config": config_data,
+                                        "added_time": datetime.now()
+                                    }
+                                    st.success(message)
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                    
+                    if st.button("설정 삭제", key=f"delete_{config['server_name']}"):
+                        success, message = delete_mcp_config(config['server_name'])
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                
+                st.markdown("---")  # 구분선 추가
+
+    # Smithery AI Tab
+    with config_tab4:
+        st.markdown("### Smithery AI MCP 서버 연결")
+        
+        st.markdown("""
+        Smithery AI는 여러 유형의 MCP 서버를 제공합니다. 원하는 서버를 선택하고 연결하세요.
+        
+        Smithery AI 계정에서 제공하는 MCP 서버 URL과 API 키가 필요합니다.
+        """)
+        
+        # Smithery 서버 선택
+        smithery_server_type = st.selectbox(
+            "Smithery AI 서버 유형",
+            ["mysql", "perplexity", "firecrawl", "postgres", "azure-openai", "anthropic", "gemini"],
+            format_func=lambda x: {
+                "mysql": "MySQL",
+                "perplexity": "Perplexity",
+                "firecrawl": "FireCrawl",
+                "postgres": "PostgreSQL",
+                "azure-openai": "Azure OpenAI",
+                "anthropic": "Anthropic",
+                "gemini": "Google Gemini"
+            }.get(x, x),
+            key="smithery_server_type"
+        )
+        
+        # MySQL 설정 (선택한 서버 타입이 mysql인 경우)
+        mysql_db_config = None
+        if smithery_server_type == "mysql":
+            st.markdown("#### MySQL 연결 설정")
+            mysql_host = st.text_input("MySQL 호스트", value="localhost", key="smithery_mysql_host")
+            mysql_port = st.number_input("MySQL 포트", value=3306, min_value=1, max_value=65535, key="smithery_mysql_port")
+            mysql_user = st.text_input("MySQL 사용자", value="root", key="smithery_mysql_user")
+            mysql_password = st.text_input("MySQL 비밀번호", type="password", key="smithery_mysql_password")
+            
+            mysql_db_config = {
+                "host": mysql_host,
+                "port": mysql_port,
+                "user": mysql_user,
+                "password": mysql_password
+            }
+        
+        # 서버 URL 설정
+        smithery_url = st.text_input(
+            "Smithery MCP 서버 URL",
+            value="",
+            placeholder="예: https://your-smithery-subdomain.smithery.host",
+            help="Smithery AI에서 제공한 MCP 서버 URL을 입력하세요"
+        )
+        
+        # API 키 입력
+        smithery_api_key = st.text_input(
+            "Smithery API 키 (선택사항)",
+            type="password",
+            help="Smithery API 키가 필요한 경우 입력하세요"
+        )
+        
+        # Smithery 설정 이름
+        smithery_config_name = st.text_input(
+            "설정 이름",
+            value=f"smithery-{smithery_server_type}",
+            help="이 설정을 식별하기 위한 이름"
+        )
+        
+        # 연결 버튼
+        if st.button("Smithery 서버에 연결", key="smithery_connect"):
+            if not smithery_url:
+                st.error("Smithery MCP 서버 URL을 입력하세요")
+            else:
+                # URL 형식 확인
+                if not smithery_url.startswith(("http://", "https://")):
+                    smithery_url = f"https://{smithery_url}"
+                
+                # 설정 생성
+                smithery_config = {
+                    "serverUrl": smithery_url,
+                    "serverType": smithery_server_type
+                }
+                
+                # API 키가 있으면 추가
+                if smithery_api_key:
+                    smithery_config["apiKey"] = smithery_api_key
+                
+                # MySQL 설정이 있으면 추가
+                if mysql_db_config:
+                    smithery_config["db_config"] = mysql_db_config
+                
+                # 연결 테스트 건너뛰기 옵션
+                smithery_config["skipConnectionTest"] = st.checkbox(
+                    "연결 테스트 건너뛰기", 
+                    value=False,
+                    help="서버에 연결할 수 없지만 설정을 저장하려는 경우 선택하세요"
+                )
+                
+                st.info(f"Smithery MCP 서버 {smithery_url}에 연결 중...")
+                
+                with st.spinner("Connecting to Smithery MCP server..."):
+                    client, message = initialize_mcp_server(smithery_config)
+                    
+                    if client:
+                        st.session_state['mcp_configs'][smithery_config_name] = {
+                            "client": client,
+                            "config": smithery_config,
+                            "added_time": datetime.now()
+                        }
+                        st.success(message)
+                        # 세션 상태 업데이트 후 페이지 리프레시
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+    # Display added configurations
+    if st.session_state['mcp_configs']:
+        st.subheader("연결된 MCP 서버")
+        for config_name in st.session_state['mcp_configs']:
+            st.write(f"- {config_name}")
+
+# Main interface
+tab1, tab2 = st.tabs(["Chat", "MCP Tools"])
+
+# Chat tab
+with tab1:
+    st.header("Chat with Claude")
+    
+    # Display chat history
+    for message in st.session_state['chat_history']:
+        if message["role"] == "user":
+            st.write(f"You: {message['content']}")
+        else:
+            st.write(f"Claude: {message['content']}")
+    
+    # Chat input
+    user_input = st.text_area("Enter your message:", height=100)
+    
+    if st.button("Send to Claude"):
+        if user_input:
+            # Add user message to history
+            st.session_state['chat_history'].append({"role": "user", "content": user_input})
+            
+            # Call Claude API
+            response, error = call_claude_api(user_input, model=claude_model)
+            
+            if response:
+                # Add Claude response to history
+                st.session_state['chat_history'].append({"role": "assistant", "content": response})
+                st.rerun()
+            else:
+                st.error(error)
+
+# MCP Tools tab
+with tab2:
+    st.header("MCP Tools")
+    
+    if not st.session_state['mcp_configs']:
+        st.info("Please add an MCP server configuration in the sidebar first.")
+    else:
+        # Select MCP configuration
+        selected_config = st.selectbox(
+            "Select MCP Server Configuration",
+            list(st.session_state['mcp_configs'].keys()),
+            key="selected_mcp_config"
+        )
+        
+        if selected_config:
+            client = st.session_state['mcp_configs'][selected_config]["client"]
+            server_type = client.server_type
+            
+            # 서버 정보 표시
+            with st.expander("MCP 서버 연결 정보", expanded=True):
+                st.markdown(f"**서버 유형**: {server_type}")
+                st.markdown(f"**서버 URL**: {client.server_url}")
+                
+                if client.is_mcp_server:
+                    st.markdown("### Smithery MCP 서버 정보")
+                    st.markdown(f"**명령어**: `{client.mcp_server_command}`")
+                    if client.mcp_server_args:
+                        st.markdown("**인자**:")
+                        for arg in client.mcp_server_args:
+                            st.markdown(f"- `{arg}`")
+                    
+                    # MCP 서버 유형 표시
+                    if hasattr(client, 'mcp_server_type') and client.mcp_server_type:
+                        st.markdown(f"**MCP 서버 유형**: `{client.mcp_server_type}`")
+                    
+                    # 특별히 key가 있는 경우 마스킹하여 표시
+                    for arg in client.mcp_server_args or []:
+                        if "--key" in str(arg):
+                            key_index = client.mcp_server_args.index(arg) + 1
+                            if key_index < len(client.mcp_server_args):
+                                key_value = client.mcp_server_args[key_index]
+                                # 키 일부 마스킹
+                                if len(str(key_value)) > 8:
+                                    masked_key = str(key_value)[:4] + "*" * (len(str(key_value)) - 8) + str(key_value)[-4:]
+                                    st.markdown(f"**API 키**: `{masked_key}`")
+                
+                # MySQL 연결 정보
+                if server_type == "mysql" and hasattr(client, 'db_config') and client.db_config:
+                    st.markdown("### MySQL 연결 정보")
+                    st.markdown(f"**호스트**: `{client.db_config.get('host', 'N/A')}`")
+                    st.markdown(f"**포트**: `{client.db_config.get('port', 'N/A')}`")
+                    st.markdown(f"**사용자**: `{client.db_config.get('user', 'N/A')}`")
+                    # 비밀번호는 보안을 위해 마스킹
+                    if 'password' in client.db_config and client.db_config['password']:
+                        st.markdown("**비밀번호**: `********`")
+            
+            # 서버 유형에 따른 도구 표시
+            if server_type == "mysql":
+                tool_name = "mysql_query"
+                st.subheader("MySQL Query")
+                st.markdown("""
+                MySQL 쿼리를 입력하세요. 자연어 또는 SQL 문법을 사용할 수 있습니다.
+                예시:
+                - "모든 데이터베이스를 보여줘"
+                - "Show me all tables in the current database"
+                - "SELECT * FROM users LIMIT 5"
+                """)
+                
+                # 쿼리 입력
+                query = st.text_area("쿼리 입력:", height=100)
+                
+                # 자연어 처리 옵션
+                use_claude_for_nl = st.checkbox("자연어 쿼리를 SQL로 변환 (Claude API 사용)", value=True)
+                
+                # 쿼리 실행 전 쿼리 미리보기
+                if st.button("쿼리 변환 미리보기") and query:
+                    if use_claude_for_nl and ANTHROPIC_API_KEY:
+                        with st.spinner("자연어를 SQL로 변환 중..."):
+                            sql_query = natural_language_to_sql(query)
+                            if sql_query:
+                                st.code(sql_query, language="sql")
+                                st.session_state.last_converted_sql = sql_query
+                            else:
+                                st.error("SQL 변환 실패")
+                    else:
+                        st.info("원본 쿼리가 그대로 사용됩니다.")
+                        st.code(query)
+                        st.session_state.last_converted_sql = query
+                
+                # 실행 버튼 - SQL로 변환 후 실행
+                if st.button("실행"):
+                    if query:
+                        # 자연어를 SQL로 변환 (옵션 및 API 키가 있는 경우)
+                        execute_query = query
+                        if use_claude_for_nl and ANTHROPIC_API_KEY:
+                            with st.spinner("자연어를 SQL로 변환 중..."):
+                                sql_query = natural_language_to_sql(query)
+                                if sql_query:
+                                    st.info("자연어가 SQL로 변환되었습니다.")
+                                    st.code(sql_query, language="sql")
+                                    execute_query = sql_query
+                                else:
+                                    st.warning("SQL 변환에 실패했습니다. 원본 쿼리를 실행합니다.")
+                        
+                        # 마지막으로 미리보기한 SQL이 있다면 그것을 사용
+                        if 'last_converted_sql' in st.session_state and use_claude_for_nl:
+                            execute_query = st.session_state.last_converted_sql
+                        
+                        # 쿼리 실행
+                        with st.spinner("쿼리 실행 중..."):
+                            params = {"query": execute_query, "format": "json"}
+                            result, error = communicate_with_mcp_server(client, tool_name, params)
+                            
+                            if result:
+                                st.subheader("쿼리 결과")
+                                st.json(result)
+                                
+                                # 쿼리 히스토리 저장 (옵션)
+                                if 'query_history' not in st.session_state:
+                                    st.session_state.query_history = []
+                                
+                                st.session_state.query_history.append({
+                                    'original_query': query,
+                                    'executed_query': execute_query,
+                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    'success': True
+                                })
+                            else:
+                                st.error(error)
+                                
+                                # 실패한 쿼리도 히스토리에 저장
+                                if 'query_history' not in st.session_state:
+                                    st.session_state.query_history = []
+                                
+                                st.session_state.query_history.append({
+                                    'original_query': query,
+                                    'executed_query': execute_query,
+                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    'success': False,
+                                    'error': error
+                                })
+            
+            elif server_type == "perplexity":
+                tool_name = "search"
+                st.subheader("Perplexity Search")
+                st.markdown("""
+                검색하고 싶은 내용을 자연어로 입력하세요. Perplexity API를 통해 검색 결과를 얻습니다.
+                예시:
+                - "최신 머신러닝 연구 동향"
+                - "에너지 효율을 높이는 최신 기술"
+                - "지속 가능한 농업 방법"
+                """)
+                
+                query = st.text_area("검색 쿼리:", height=100)
+                
+                # 검색 버튼
+                if st.button("검색"):
+                    if query:
+                        with st.spinner("Perplexity 검색 중..."):
+                            params = {"query": query, "format": "json"}
+                            result, error = communicate_with_mcp_server(client, tool_name, params)
+                            
+                            if result:
+                                st.subheader("검색 결과")
+                                
+                                # 응답에서 텍스트 추출 및 표시
+                                if "results" in result and isinstance(result["results"], dict):
+                                    perplexity_result = result["results"]
+                                    
+                                    if "choices" in perplexity_result and perplexity_result["choices"]:
+                                        content = perplexity_result["choices"][0].get("message", {}).get("content", "")
+                                        
+                                        if content:
+                                            st.markdown(f"### 답변\n{content}")
+                                        
+                                        # 인용 정보 표시
+                                        if "citations" in perplexity_result and perplexity_result["citations"]:
+                                            st.markdown("### 출처")
+                                            for citation in perplexity_result["citations"]:
+                                                if isinstance(citation, dict):
+                                                    title = citation.get('title', 'Source')
+                                                    url = citation.get('url', '#')
+                                                    st.markdown(f"- [{title}]({url})")
+                                                elif isinstance(citation, str):
+                                                    st.markdown(f"- {citation}")
+                                                else:
+                                                    st.markdown(f"- {str(citation)}")
+                                
+                                # 원본 응답 데이터 (접기 형태로 표시)
+                                with st.expander("원본 응답 데이터", expanded=False):
+                                    st.json(result)
+                            else:
+                                st.error(error)
+            
+            elif server_type == "firecrawl":
+                st.subheader("FireCrawl Tools")
+                
+                # 탭 생성
+                firecrawl_tab1, firecrawl_tab2 = st.tabs(["Search", "Crawl"])
+                
+                with firecrawl_tab1:
+                    st.markdown("""
+                    ### FireCrawl Search
+                    
+                    검색하고 싶은 내용을 입력하세요. FireCrawl API를 통해 웹 검색 결과를 얻습니다.
+                    """)
+                    
+                    search_query = st.text_area("검색어:", height=100)
+                    max_results = st.slider("최대 결과 수", min_value=1, max_value=50, value=10)
+                    
+                    # 검색 버튼
+                    if st.button("웹 검색", key="firecrawl_search"):
+                        if search_query:
+                            with st.spinner("FireCrawl 검색 중..."):
+                                params = {"query": search_query, "max_results": max_results, "format": "json"}
+                                result, error = communicate_with_mcp_server(client, "search", params)
+                                
+                                if result:
+                                    st.subheader("검색 결과")
+                                    
+                                    # 결과 표시
+                                    if "results" in result:
+                                        firecrawl_results = result["results"]
+                                        
+                                        if isinstance(firecrawl_results, dict) and "results" in firecrawl_results:
+                                            for item in firecrawl_results["results"]:
+                                                with st.expander(item.get("title", "검색 결과")):
+                                                    st.markdown(f"**URL**: [{item.get('url', '#')}]({item.get('url', '#')})")
+                                                    st.markdown(f"**내용**: {item.get('content', '')}")
+                                        else:
+                                            st.json(firecrawl_results)
+                                    
+                                    # 원본 응답 데이터
+                                    with st.expander("원본 응답 데이터", expanded=False):
+                                        st.json(result)
+                                else:
+                                    st.error(error)
+                
+                with firecrawl_tab2:
+                    st.markdown("""
+                    ### FireCrawl Web Crawling
+                    
+                    크롤링하려는 웹 페이지의 URL을 입력하세요. FireCrawl API를 통해 페이지 내용을 추출합니다.
+                    """)
+                    
+                    crawl_url = st.text_input("웹 페이지 URL:", placeholder="https://example.com")
+                    include_links = st.checkbox("링크 포함", value=False)
+                    include_images = st.checkbox("이미지 정보 포함", value=False)
+                    
+                    # 크롤링 버튼
+                    if st.button("페이지 크롤링", key="firecrawl_crawl"):
+                        if crawl_url:
+                            with st.spinner("웹 페이지 크롤링 중..."):
+                                params = {
+                                    "url": crawl_url, 
+                                    "include_links": include_links, 
+                                    "include_images": include_images,
+                                    "format": "json"
+                                }
+                                result, error = communicate_with_mcp_server(client, "crawl", params)
+                                
+                                if result:
+                                    st.subheader("크롤링 결과")
+                                    
+                                    # 결과 표시
+                                    if "results" in result:
+                                        crawl_results = result["results"]
+                                        
+                                        if isinstance(crawl_results, dict):
+                                            st.markdown(f"**제목**: {crawl_results.get('title', '(제목 없음)')}")
+                                            st.markdown(f"**URL**: {crawl_results.get('url', crawl_url)}")
+                                            
+                                            with st.expander("본문 내용", expanded=True):
+                                                st.markdown(crawl_results.get("content", "(내용 없음)"))
+                                            
+                                            if include_links and "links" in crawl_results:
+                                                with st.expander("발견된 링크", expanded=False):
+                                                    for link in crawl_results["links"]:
+                                                        st.markdown(f"- [{link.get('text', link.get('url', '#'))}]({link.get('url', '#')})")
+                                            
+                                            if include_images and "images" in crawl_results:
+                                                with st.expander("발견된 이미지", expanded=False):
+                                                    for image in crawl_results["images"]:
+                                                        st.markdown(f"- ![이미지]({image.get('src', '#')})")
+                                                        st.markdown(f"  - Alt: {image.get('alt', '(대체 텍스트 없음)')}")
+                                        else:
+                                            st.json(crawl_results)
+                                    
+                                    # 원본 응답 데이터
+                                    with st.expander("원본 응답 데이터", expanded=False):
+                                        st.json(result)
+                                else:
+                                    st.error(error)
+            
+            else:
+                st.info(f"서버 유형 '{server_type}'에 대한 인터페이스가 준비되지 않았습니다.")
+                st.write("아래 정보를 확인하여 서버에 적합한 도구를 사용하세요:")
+                
+                # 서버 상태 정보 요청
+                try:
+                    server_info = client.get_server_info()
+                    st.json(server_info)
+                    
+                    # 도구 목록 표시
+                    if "tools" in server_info and server_info["tools"]:
+                        st.subheader("사용 가능한 도구")
+                        for tool in server_info["tools"]:
+                            st.markdown(f"- `{tool}`")
+                except Exception as e:
+                    st.error(f"서버 정보 조회 실패: {str(e)}")
+
+# Footer
+st.markdown("---")
+st.caption("Streamlit MCP Host Application") 
