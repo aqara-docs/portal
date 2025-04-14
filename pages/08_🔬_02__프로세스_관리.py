@@ -1482,7 +1482,7 @@ def display_products_management(conn):
                         conn.commit()
                         st.success(f"제품 '{edit_product_name}' 정보 업데이트 완료!")
         else:
-            st.info("등록된 제품이 없습니다.")
+            st.info("등록된 제품이 없습니다. 제품을 등록해 주세요.")
 
 if __name__ == "__main__":
     main() 
