@@ -10,7 +10,6 @@ from mysql.connector import Error
 from dotenv import load_dotenv
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from db_creation import create_rayleigh_skylights_tables
 
 # 환경 변수 로드
 load_dotenv()
@@ -138,13 +137,10 @@ def main():
     conn = get_connection()
     if conn:
         # 테이블 생성 확인
-        if not create_rayleigh_skylights_tables():
+        if not create_sample_data(conn):
             st.error("테이블 생성에 실패했습니다. 데이터베이스 관리 페이지에서 테이블을 생성해주세요.")
             return
             
-        # 샘플 데이터 생성
-        create_sample_data(conn)
-        
         # 사이드바 메뉴
         st.sidebar.title("YUER-한국 조인트벤처")
         menu = st.sidebar.selectbox(
@@ -811,7 +807,7 @@ def display_sales_management(conn):
         # 판매 데이터 조회
         cursor = conn.cursor()
         cursor.execute("""
-        SELECT s.id, s.invoice_number, s.sale_date, s.customer, p.product_name, s.quantity, s.unit_price, s.total_amount, s.payment_method
+        SELECT s.id, s.invoice_number, s.sale_date, s.customer, p.product_name, s.quantity, s.unit_price, s.total_amount
         FROM sales s
         JOIN products p ON s.product_id = p.id
         ORDER BY s.sale_date DESC
@@ -820,7 +816,7 @@ def display_sales_management(conn):
         
         if sales_data:
             sales_df = pd.DataFrame(sales_data, 
-                                 columns=['ID', '송장번호', '판매일', '고객', '제품명', '수량', '단가(₩)', '총액(₩)', '결제방법'])
+                                 columns=['ID', '송장번호', '판매일', '고객', '제품명', '수량', '단가(₩)', '총액(₩)'])
             
             # 날짜 형식 변환
             sales_df['판매일'] = pd.to_datetime(sales_df['판매일']).dt.strftime('%Y-%m-%d')
