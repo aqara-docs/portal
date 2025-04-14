@@ -3,266 +3,128 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import os
-import sqlite3
-from sqlite3 import Connection
+from datetime import datetime, timedelta
+import mysql.connector
+from mysql.connector import Error
+from dotenv import load_dotenv
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from db_creation import create_rayleigh_skylights_tables
+
+# 환경 변수 로드
+load_dotenv()
 
 # 데이터베이스 설정
-def get_connection() -> Connection:
-    """SQLite 데이터베이스 연결 생성"""
-    if not os.path.exists("./data"):
-        os.mkdir("./data")
-    conn = sqlite3.connect("./data/joint_venture.db", check_same_thread=False)
-    return conn
-
-def init_db(conn: Connection):
-    """데이터베이스 테이블 초기화"""
-    cursor = conn.cursor()
-    
-    # 부품 테이블
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS parts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        part_code TEXT NOT NULL,
-        part_name TEXT NOT NULL,
-        supplier TEXT DEFAULT 'YUER',
-        unit_price REAL NOT NULL,
-        lead_time INTEGER NOT NULL,
-        stock INTEGER DEFAULT 0,
-        min_stock INTEGER DEFAULT 10,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # 주문 테이블
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_number TEXT NOT NULL,
-        order_date TIMESTAMP NOT NULL,
-        expected_arrival TIMESTAMP,
-        status TEXT DEFAULT 'Pending',
-        total_amount REAL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # 주문 상세 테이블
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS order_details (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id INTEGER,
-        part_id INTEGER,
-        quantity INTEGER NOT NULL,
-        unit_price REAL NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (order_id) REFERENCES orders (id),
-        FOREIGN KEY (part_id) REFERENCES parts (id)
-    )
-    ''')
-    
-    # 제품 테이블
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_code TEXT NOT NULL,
-        product_name TEXT NOT NULL,
-        brand TEXT DEFAULT 'Korean Brand',
-        selling_price REAL NOT NULL,
-        production_cost REAL,
-        stock INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # 생산 테이블
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS production (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        batch_number TEXT NOT NULL,
-        product_id INTEGER,
-        quantity INTEGER NOT NULL,
-        start_date TIMESTAMP,
-        end_date TIMESTAMP,
-        status TEXT DEFAULT 'Planned',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (product_id) REFERENCES products (id)
-    )
-    ''')
-    
-    # 자재 소요량 테이블 (BOM)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS bill_of_materials (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id INTEGER,
-        part_id INTEGER,
-        quantity INTEGER NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (product_id) REFERENCES products (id),
-        FOREIGN KEY (part_id) REFERENCES parts (id)
-    )
-    ''')
-    
-    # 판매 테이블
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS sales (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        invoice_number TEXT NOT NULL,
-        sale_date TIMESTAMP NOT NULL,
-        customer TEXT,
-        product_id INTEGER,
-        quantity INTEGER NOT NULL,
-        unit_price REAL NOT NULL,
-        total_amount REAL,
-        status TEXT DEFAULT 'Completed',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (product_id) REFERENCES products (id)
-    )
-    ''')
-    
-    conn.commit()
+def get_connection():
+    """MySQL 데이터베이스 연결 생성"""
+    try:
+        conn = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4',
+            collation='utf8mb4_unicode_ci'
+        )
+        return conn
+    except Error as e:
+        st.error(f"데이터베이스 연결 실패: {str(e)}")
+        return None
 
 # 샘플 데이터 생성
-def create_sample_data(conn: Connection):
-    """샘플 데이터 추가"""
+def create_sample_data(conn):
+    """샘플 데이터 생성"""
     cursor = conn.cursor()
     
-    # 이미 데이터가 있는지 확인
-    cursor.execute("SELECT COUNT(*) FROM parts")
-    if cursor.fetchone()[0] > 0:
-        return
-    
-    # 부품 데이터
-    parts_data = [
-        ('P001', 'Acrylic Dome', 120.5, 14, 50, 10),
-        ('P002', 'Light Tube Assembly', 85.3, 10, 100, 20),
-        ('P003', 'Flashing Kit', 45.0, 7, 80, 15),
-        ('P004', 'Aluminum Frame', 150.2, 21, 30, 5),
-        ('P005', 'Sealant Kit', 25.5, 5, 150, 30),
-    ]
-    
-    for part in parts_data:
-        cursor.execute(
-            "INSERT INTO parts (part_code, part_name, unit_price, lead_time, stock, min_stock) VALUES (?, ?, ?, ?, ?, ?)",
-            part
-        )
-    
-    # 제품 데이터
-    products_data = [
-        ('SK001', 'Standard Skylight 60cm', 450.0, 280.0),
-        ('SK002', 'Premium Skylight 90cm', 750.0, 480.0),
-        ('SK003', 'Deluxe Skylight 120cm', 1200.0, 780.0),
-        ('SK004', 'Ventilated Skylight 60cm', 580.0, 350.0),
-        ('SK005', 'Solar Powered Skylight 90cm', 1500.0, 950.0),
-    ]
-    
-    for product in products_data:
-        cursor.execute(
-            "INSERT INTO products (product_code, product_name, selling_price, production_cost) VALUES (?, ?, ?, ?)",
-            product
-        )
-    
-    # BOM 데이터
-    # 각 제품에 필요한 부품과 수량 (제품ID, 부품ID, 수량)
-    bom_data = [
-        (1, 1, 1), (1, 2, 1), (1, 3, 1), (1, 5, 2),
-        (2, 1, 1), (2, 2, 2), (2, 3, 1), (2, 4, 1), (2, 5, 3),
-        (3, 1, 2), (3, 2, 2), (3, 3, 2), (3, 4, 2), (3, 5, 4),
-        (4, 1, 1), (4, 2, 1), (4, 3, 1), (4, 4, 1), (4, 5, 2),
-        (5, 1, 1), (5, 2, 2), (5, 3, 1), (5, 4, 1), (5, 5, 3),
-    ]
-    
-    for bom in bom_data:
-        cursor.execute(
-            "INSERT INTO bill_of_materials (product_id, part_id, quantity) VALUES (?, ?, ?)",
-            bom
-        )
-    
-    # 주문 및 판매 데이터 생성
-    # 현재 날짜로부터 60일 전 ~ 현재까지의 주문 생성
-    current_date = datetime.now()
-    
-    # 주문 데이터
-    for i in range(1, 11):
-        order_date = current_date - timedelta(days=np.random.randint(1, 60))
-        expected_arrival = order_date + timedelta(days=np.random.randint(7, 30))
+    try:
+        # 외래 키 체크 비활성화
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
         
-        status_options = ['Pending', 'Shipped', 'Delivered', 'Cancelled']
-        status_weights = [0.2, 0.3, 0.4, 0.1]
-        status = np.random.choice(status_options, p=status_weights)
+        # 기존 테이블 삭제
+        cursor.execute("DROP TABLE IF EXISTS sales")
+        cursor.execute("DROP TABLE IF EXISTS products")
+        conn.commit()
         
-        # 금액은 나중에 계산
-        cursor.execute(
-            "INSERT INTO orders (order_number, order_date, expected_arrival, status) VALUES (?, ?, ?, ?)",
-            (f'ORD-2023-{i:03d}', order_date, expected_arrival, status)
-        )
-        
-        order_id = cursor.lastrowid
-        
-        # 주문 상세 - 몇 개의 부품을 랜덤하게 선택
-        num_parts = np.random.randint(1, 4)
-        part_ids = np.random.choice(range(1, 6), size=num_parts, replace=False)
-        
-        total_amount = 0
-        for part_id in part_ids:
-            quantity = np.random.randint(10, 101)
-            
-            # 부품 가격 조회
-            cursor.execute("SELECT unit_price FROM parts WHERE id = ?", (part_id,))
-            unit_price = cursor.fetchone()[0]
-            
-            cursor.execute(
-                "INSERT INTO order_details (order_id, part_id, quantity, unit_price) VALUES (?, ?, ?, ?)",
-                (order_id, part_id, quantity, unit_price)
+        # 1. 테이블 생성
+        cursor.execute('''
+            CREATE TABLE products (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                product_code VARCHAR(50) UNIQUE NOT NULL,
+                product_name VARCHAR(100) NOT NULL,
+                product_type VARCHAR(50) NOT NULL,  -- 고정식, 개폐식, 자동식 등
+                size VARCHAR(50) NOT NULL,  -- 제품 크기
+                brand VARCHAR(100) NOT NULL,
+                selling_price DECIMAL(10, 2) NOT NULL,
+                production_cost DECIMAL(10, 2) NOT NULL,
+                stock INT DEFAULT 0,
+                specifications TEXT,  -- 제품 사양 정보
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
+        ''')
+        
+        # 판매 테이블 생성
+        cursor.execute('''
+            CREATE TABLE sales (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                invoice_number VARCHAR(50) UNIQUE NOT NULL,
+                sale_date DATE NOT NULL,
+                customer VARCHAR(100) NOT NULL,
+                product_id INT NOT NULL,
+                quantity INT NOT NULL,
+                unit_price DECIMAL(10, 2) NOT NULL,
+                total_amount DECIMAL(10, 2) NOT NULL,
+                payment_method VARCHAR(50) NOT NULL,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (product_id) REFERENCES products(id)
+            )
+        ''')
+        conn.commit()
             
-            total_amount += quantity * unit_price
+        # 2. 제품 데이터 생성
+        products = [
+            ('PR001', 'V6 엔진', '고정식', '대형', 'YUER', 5000000, 3000000, 10),
+            ('PR002', 'V8 엔진', '고정식', '대형', 'YUER', 8000000, 4800000, 5),
+            ('PR003', 'I4 엔진', '개폐식', '중형', 'YUER', 3000000, 1800000, 15),
+            ('PR004', '디젤 엔진', '고정식', '대형', 'YUER', 6000000, 3600000, 8),
+            ('PR005', '하이브리드 엔진', '자동식', '중형', 'YUER', 7000000, 4200000, 12)
+        ]
         
-        # 주문 총액 업데이트
-        cursor.execute(
-            "UPDATE orders SET total_amount = ? WHERE id = ?",
-            (total_amount, order_id)
-        )
-    
-    # 생산 데이터
-    for i in range(1, 16):
-        product_id = np.random.randint(1, 6)
-        quantity = np.random.randint(5, 51)
+        try:
+            cursor.executemany('''
+                INSERT INTO products (product_code, product_name, product_type, size, brand, selling_price, production_cost, stock)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ''', products)
+            conn.commit()
+        except mysql.connector.Error as err:
+            if err.errno == 1062:  # Duplicate entry error
+                st.warning(f"중복된 제품 코드가 발견되었습니다. 건너뜁니다: {err}")
+                conn.rollback()
+            else:
+                raise
         
-        start_date = current_date - timedelta(days=np.random.randint(1, 45))
-        end_date = start_date + timedelta(days=np.random.randint(1, 10))
+        # 제품 ID 확인
+        cursor.execute("SELECT id FROM products")
+        product_ids = [row[0] for row in cursor.fetchall()]
         
-        status_options = ['Planned', 'In Progress', 'Completed', 'Delayed']
-        status_weights = [0.2, 0.3, 0.4, 0.1]
-        status = np.random.choice(status_options, p=status_weights)
+        if not product_ids:
+            st.error("제품 데이터가 생성되지 않았습니다. 샘플 데이터 생성을 중단합니다.")
+            return False
         
-        cursor.execute(
-            "INSERT INTO production (batch_number, product_id, quantity, start_date, end_date, status) VALUES (?, ?, ?, ?, ?, ?)",
-            (f'BATCH-2023-{i:03d}', product_id, quantity, start_date, end_date, status)
-        )
-    
-    # 판매 데이터
-    for i in range(1, 31):
-        product_id = np.random.randint(1, 6)
-        quantity = np.random.randint(1, 11)
+        # 외래 키 체크 다시 활성화
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+        conn.commit()
         
-        # 제품 가격 조회
-        cursor.execute("SELECT selling_price FROM products WHERE id = ?", (product_id,))
-        unit_price = cursor.fetchone()[0]
+        return True
         
-        sale_date = current_date - timedelta(days=np.random.randint(1, 50))
-        
-        customer_list = ['가구나라', '홈플러스', '롯데하이마트', '이케아코리아', '한샘', '까사미아', 
-                         '현대백화점', '신세계백화점', '롯데백화점', '온라인 쇼핑몰']
-        customer = np.random.choice(customer_list)
-        
-        cursor.execute(
-            "INSERT INTO sales (invoice_number, sale_date, customer, product_id, quantity, unit_price, total_amount) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (f'INV-2023-{i:03d}', sale_date, customer, product_id, quantity, unit_price, quantity * unit_price)
-        )
-    
-    conn.commit()
+    except mysql.connector.Error as err:
+        st.error(f"샘플 데이터 생성 중 오류 발생: {err}")
+        return False
+    finally:
+        cursor.close()
 
 # 앱 레이아웃 및 기능
 def main():
@@ -274,36 +136,44 @@ def main():
     
     # 데이터베이스 초기화
     conn = get_connection()
-    init_db(conn)
-    create_sample_data(conn)
-    
-    # 사이드바 메뉴
-    st.sidebar.title("YUER-한국 조인트벤처")
-    menu = st.sidebar.selectbox(
-        "메뉴 선택",
-        ["대시보드", "부품 관리", "부품 주문", "생산 관리", "제품 관리", "판매 분석", "재고 관리", "설정"]
-    )
-    
-    # 메뉴별 페이지 렌더링
-    if menu == "대시보드":
-        display_dashboard(conn)
-    elif menu == "부품 관리":
-        display_parts_management(conn)
-    elif menu == "부품 주문":
-        display_orders_management(conn)
-    elif menu == "생산 관리":
-        display_production_management(conn)
-    elif menu == "제품 관리":
-        display_products_management(conn)
-    elif menu == "판매 분석":
-        display_sales_analysis(conn)
-    elif menu == "재고 관리":
-        display_inventory_management(conn)
-    elif menu == "설정":
-        display_settings(conn)
-    
-    # 데이터베이스 연결 종료
-    conn.close()
+    if conn:
+        # 테이블 생성 확인
+        if not create_rayleigh_skylights_tables():
+            st.error("테이블 생성에 실패했습니다. 데이터베이스 관리 페이지에서 테이블을 생성해주세요.")
+            return
+            
+        # 샘플 데이터 생성
+        create_sample_data(conn)
+        
+        # 사이드바 메뉴
+        st.sidebar.title("YUER-한국 조인트벤처")
+        menu = st.sidebar.selectbox(
+            "메뉴 선택",
+            ["대시보드", "부품 관리", "부품 주문", "생산 관리", "제품 관리", "판매 관리", "판매 분석", "재고 관리", "설정"]
+        )
+        
+        # 메뉴별 페이지 렌더링
+        if menu == "대시보드":
+            display_dashboard(conn)
+        elif menu == "부품 관리":
+            display_parts_management(conn)
+        elif menu == "부품 주문":
+            display_orders_management(conn)
+        elif menu == "생산 관리":
+            display_production_management(conn)
+        elif menu == "제품 관리":
+            display_products_management(conn)
+        elif menu == "판매 관리":
+            display_sales_management(conn)
+        elif menu == "판매 분석":
+            display_sales_analysis(conn)
+        elif menu == "재고 관리":
+            display_inventory_management(conn)
+        elif menu == "설정":
+            display_settings(conn)
+        
+        # 데이터베이스 연결 종료
+        conn.close()
 
 # 대시보드 페이지
 def display_dashboard(conn):
@@ -357,7 +227,7 @@ def display_dashboard(conn):
         
         # 월별 주문 데이터
         cursor.execute("""
-        SELECT strftime('%Y-%m', order_date) as month, SUM(total_amount) as total
+        SELECT DATE_FORMAT(order_date, '%Y-%m') as month, SUM(total_amount) as total
         FROM orders
         WHERE status != 'Cancelled'
         GROUP BY month
@@ -367,7 +237,7 @@ def display_dashboard(conn):
         
         # 월별 판매 데이터
         cursor.execute("""
-        SELECT strftime('%Y-%m', sale_date) as month, SUM(total_amount) as total
+        SELECT DATE_FORMAT(sale_date, '%Y-%m') as month, SUM(total_amount) as total
         FROM sales
         GROUP BY month
         ORDER BY month
@@ -598,7 +468,7 @@ def display_parts_management(conn):
                 else:
                     cursor = conn.cursor()
                     cursor.execute(
-                        "INSERT INTO parts (part_code, part_name, supplier, unit_price, lead_time, stock, min_stock) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO parts (part_code, part_name, supplier, unit_price, lead_time, stock, min_stock) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                         (part_code, part_name, supplier, unit_price, lead_time, stock, min_stock)
                     )
                     conn.commit()
@@ -621,7 +491,7 @@ def display_parts_management(conn):
             
             # 선택한 부품 정보 조회
             cursor.execute(
-                "SELECT part_code, part_name, supplier, unit_price, lead_time, stock, min_stock FROM parts WHERE id = ?",
+                "SELECT part_code, part_name, supplier, unit_price, lead_time, stock, min_stock FROM parts WHERE id = %s",
                 (part_id,)
             )
             part_data = cursor.fetchone()
@@ -642,7 +512,7 @@ def display_parts_management(conn):
                     
                     if update_submitted:
                         cursor.execute(
-                            "UPDATE parts SET part_code = ?, part_name = ?, supplier = ?, unit_price = ?, lead_time = ?, stock = ?, min_stock = ? WHERE id = ?",
+                            "UPDATE parts SET part_code = %s, part_name = %s, supplier = %s, unit_price = %s, lead_time = %s, stock = %s, min_stock = %s WHERE id = %s",
                             (edit_part_code, edit_part_name, edit_supplier, edit_unit_price, edit_lead_time, edit_stock, edit_min_stock, part_id)
                         )
                         conn.commit()
@@ -691,7 +561,6 @@ def display_orders_management(conn):
                     return 'background-color: #f7d4d4'
                 return ''
             
-            # 스타일 적용된 데이터프레임 표시
             st.dataframe(orders_df.style.applymap(highlight_status, subset=['상태']), use_container_width=True)
             
             # 주문 상세 정보 표시
@@ -699,25 +568,22 @@ def display_orders_management(conn):
             selected_order = st.selectbox("주문 선택", orders_df['주문번호'].tolist())
             
             if selected_order:
-                # 선택한 주문의 ID 찾기
-                order_id = orders_df.loc[orders_df['주문번호'] == selected_order, 'ID'].iloc[0]
+                order_id = int(orders_df.loc[orders_df['주문번호'] == selected_order, 'ID'].iloc[0])
                 
-                # 주문 상세 정보 조회
                 cursor.execute("""
-                SELECT od.id, p.part_code, p.part_name, od.quantity, od.unit_price, (od.quantity * od.unit_price) as subtotal
+                SELECT od.id, p.part_code, p.part_name, p.part_category, od.quantity, od.unit_price, (od.quantity * od.unit_price) as subtotal
                 FROM order_details od
                 JOIN parts p ON od.part_id = p.id
-                WHERE od.order_id = ?
+                WHERE od.order_id = %s
                 """, (order_id,))
                 order_details = cursor.fetchall()
                 
                 if order_details:
                     details_df = pd.DataFrame(order_details, 
-                                            columns=['ID', '부품 코드', '부품명', '수량', '단가(₩)', '소계(₩)'])
+                                            columns=['ID', '부품 코드', '부품명', '카테고리', '수량', '단가(₩)', '소계(₩)'])
                     st.dataframe(details_df, use_container_width=True)
                     
-                    # 총액 표시
-                    total_amount = details_df['소계(₩)'].sum()
+                    total_amount = float(details_df['소계(₩)'].sum())
                     st.metric("주문 총액", f"₩{total_amount:,.0f}")
                 else:
                     st.info("이 주문에 대한 상세 정보가 없습니다.")
@@ -727,7 +593,6 @@ def display_orders_management(conn):
     with tab2:
         st.subheader("새 주문 생성")
         
-        # 현재 날짜를 기본값으로 설정
         today = datetime.now().date()
         
         with st.form("new_order_form"):
@@ -737,14 +602,17 @@ def display_orders_management(conn):
             
             # 부품 선택을 위한 멀티셀렉트
             cursor = conn.cursor()
-            cursor.execute("SELECT id, part_code, part_name, unit_price FROM parts ORDER BY part_code")
+            cursor.execute("""
+                SELECT id, part_code, part_name, part_category, unit_price 
+                FROM parts 
+                ORDER BY part_category, part_code
+            """)
             available_parts = cursor.fetchall()
             
             if available_parts:
-                part_options = {f"{p[1]} - {p[2]} (₩{p[3]:,.0f})": p[0] for p in available_parts}
+                part_options = {f"{p[1]} - {p[2]} ({p[3]}) (₩{p[4]:,.0f})": p[0] for p in available_parts}
                 selected_parts = st.multiselect("주문할 부품 선택", list(part_options.keys()))
                 
-                # 선택한 부품에 대한 수량 입력
                 quantities = {}
                 total_amount = 0
                 
@@ -752,22 +620,21 @@ def display_orders_management(conn):
                     st.write("각 부품의 주문 수량을 입력하세요:")
                     
                     for part in selected_parts:
-                        part_id = part_options[part]
+                        part_id = int(part_options[part])
                         part_name = part.split(' - ')[1].split(' (')[0]
                         
-                        # 해당 부품의 단가 조회
-                        cursor.execute("SELECT unit_price FROM parts WHERE id = ?", (part_id,))
-                        unit_price = cursor.fetchone()[0]
+                        cursor.execute("SELECT unit_price FROM parts WHERE id = %s", (part_id,))
+                        unit_price = float(cursor.fetchone()[0])
                         
                         col1, col2 = st.columns([3, 1])
                         with col1:
                             st.write(part)
                         with col2:
-                            quantity = st.number_input(f"{part_name} 수량", min_value=1, value=10, key=f"qty_{part_id}")
+                            quantity = int(st.number_input(f"{part_name} 수량", min_value=1, value=10, key=f"qty_{part_id}"))
                             quantities[part_id] = quantity
                             total_amount += quantity * unit_price
                 
-                st.metric("주문 총액", f"₩{total_amount:,.0f}")
+                st.metric("주문 총액", f"₩{float(total_amount):,.0f}")
                 
                 submitted = st.form_submit_button("주문 생성")
                 
@@ -775,25 +642,21 @@ def display_orders_management(conn):
                     if not selected_parts:
                         st.error("최소한 하나 이상의 부품을 선택해야 합니다.")
                     else:
-                        # 주문 생성
                         cursor.execute(
-                            "INSERT INTO orders (order_number, order_date, expected_arrival, status, total_amount) VALUES (?, ?, ?, ?, ?)",
-                            (order_number, order_date, expected_arrival, "Pending", total_amount)
+                            "INSERT INTO orders (order_number, order_date, expected_arrival, status, total_amount) VALUES (%s, %s, %s, %s, %s)",
+                            (order_number, order_date, expected_arrival, "Pending", float(total_amount))
                         )
                         conn.commit()
                         
-                        # 주문 ID 가져오기
-                        cursor.execute("SELECT last_insert_rowid()")
-                        order_id = cursor.fetchone()[0]
+                        cursor.execute("SELECT LAST_INSERT_ID()")
+                        order_id = int(cursor.fetchone()[0])
                         
-                        # 주문 상세 정보 추가
                         for part_id, quantity in quantities.items():
-                            # 부품 단가 조회
-                            cursor.execute("SELECT unit_price FROM parts WHERE id = ?", (part_id,))
-                            unit_price = cursor.fetchone()[0]
+                            cursor.execute("SELECT unit_price FROM parts WHERE id = %s", (int(part_id),))
+                            unit_price = float(cursor.fetchone()[0])
                             
                             cursor.execute(
-                                "INSERT INTO order_details (order_id, part_id, quantity, unit_price) VALUES (?, ?, ?, ?)",
+                                "INSERT INTO order_details (order_id, part_id, quantity, unit_price) VALUES (%s, %s, %s, %s)",
                                 (order_id, part_id, quantity, unit_price)
                             )
                         
@@ -805,7 +668,6 @@ def display_orders_management(conn):
     with tab3:
         st.subheader("주문 상태 관리")
         
-        # 대기 중 또는 배송 중인 주문 조회
         cursor = conn.cursor()
         cursor.execute("""
         SELECT id, order_number, order_date, expected_arrival, status, total_amount
@@ -819,13 +681,11 @@ def display_orders_management(conn):
             active_orders_df = pd.DataFrame(active_orders, 
                                          columns=['ID', '주문번호', '주문일자', '예상도착일', '현재 상태', '총액(₩)'])
             
-            # 날짜 형식 변환
             active_orders_df['주문일자'] = pd.to_datetime(active_orders_df['주문일자']).dt.strftime('%Y-%m-%d')
             active_orders_df['예상도착일'] = pd.to_datetime(active_orders_df['예상도착일']).dt.strftime('%Y-%m-%d')
             
             st.dataframe(active_orders_df, use_container_width=True)
             
-            # 주문 상태 업데이트 폼
             st.write("주문 상태 업데이트")
             
             col1, col2 = st.columns(2)
@@ -837,31 +697,26 @@ def display_orders_management(conn):
                 new_status = st.selectbox("새 상태", ["Pending", "Shipped", "Delivered", "Cancelled"])
             
             if st.button("상태 업데이트"):
-                # 선택한 주문의 ID 찾기
-                order_id = active_orders_df.loc[active_orders_df['주문번호'] == order_to_update, 'ID'].iloc[0]
+                order_id = int(active_orders_df.loc[active_orders_df['주문번호'] == order_to_update, 'ID'].iloc[0])
                 
-                # 주문 상태 업데이트
                 cursor.execute(
-                    "UPDATE orders SET status = ? WHERE id = ?",
+                    "UPDATE orders SET status = %s WHERE id = %s",
                     (new_status, order_id)
                 )
                 conn.commit()
                 
-                # 배송 완료인 경우 재고 업데이트
                 if new_status == "Delivered":
-                    # 주문 상세 정보 조회
                     cursor.execute("""
                     SELECT part_id, quantity
                     FROM order_details
-                    WHERE order_id = ?
+                    WHERE order_id = %s
                     """, (order_id,))
                     order_details = cursor.fetchall()
                     
-                    # 재고 업데이트
                     for part_id, quantity in order_details:
                         cursor.execute(
-                            "UPDATE parts SET stock = stock + ? WHERE id = ?",
-                            (quantity, part_id)
+                            "UPDATE parts SET stock = stock + %s WHERE id = %s",
+                            (int(quantity), int(part_id))
                         )
                     
                     conn.commit()
@@ -873,157 +728,182 @@ def display_orders_management(conn):
 
 # 생산 관리 페이지
 def display_production_management(conn):
-    st.title("생산 관리")
+    """생산 관리 대시보드"""
+    st.header("생산 관리")
     
-    tab1, tab2, tab3 = st.tabs(["생산 계획 목록", "새 생산 계획", "생산 현황 관리"])
-    
-    with tab1:
-        st.subheader("생산 계획 목록")
-        
-        # 생산 계획 데이터 조회
-        cursor = conn.cursor()
-        cursor.execute("""
-        SELECT p.id, p.batch_number, pr.product_name, p.quantity, p.start_date, p.end_date, p.status
+    # 생산 현황 조회
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT 
+            p.batch_number,
+            pr.product_name,
+            p.quantity,
+            p.start_date,
+            p.end_date,
+            p.status
         FROM production p
         JOIN products pr ON p.product_id = pr.id
         ORDER BY p.start_date DESC
-        """)
-        production_data = cursor.fetchall()
+    """)
+    productions = cursor.fetchall()
+    
+    # 생산 현황 표시
+    if productions:
+        df = pd.DataFrame(productions)
         
-        if production_data:
-            production_df = pd.DataFrame(production_data, 
-                                       columns=['ID', '배치번호', '제품명', '수량', '시작일', '종료일', '상태'])
+        # 상태별 색상 지정
+        def highlight_status(val):
+            color = 'lightgray'
+            if val == 'Completed':
+                color = 'lightgreen'
+            elif val == 'In Progress':
+                color = 'lightblue'
+            elif val == 'Delayed':
+                color = 'lightcoral'
+            return f'background-color: {color}'
+        
+        st.dataframe(
+            df.style.applymap(highlight_status, subset=['status']),
+            use_container_width=True
+        )
+        
+        # 부족 부품 확인
+        shortage = False  # Initialize shortage variable
+        for production in productions:
+            if production['status'] == 'Delayed':
+                shortage = True
+                break
+        
+        if shortage:
+            st.warning("⚠️ 일부 생산이 지연되고 있습니다. 부품 재고를 확인해주세요.")
+            
+            # 부족 부품 목록 조회
+            cursor.execute("""
+                SELECT 
+                    pa.part_name,
+                    pa.stock,
+                    pa.min_stock
+                FROM parts pa
+                WHERE pa.stock < pa.min_stock
+            """)
+            shortage_parts = cursor.fetchall()
+            
+            if shortage_parts:
+                st.subheader("부족 부품 목록")
+                shortage_df = pd.DataFrame(shortage_parts)
+                st.dataframe(shortage_df, use_container_width=True)
+    
+    else:
+        st.info("생산 데이터가 없습니다.")
+    
+    cursor.close()
+
+# 판매 관리 페이지
+def display_sales_management(conn):
+    """판매 관리 페이지"""
+    st.title("판매 관리")
+    
+    tab1, tab2 = st.tabs(["판매 기록", "새 판매 등록"])
+    
+    with tab1:
+        st.subheader("판매 기록")
+        
+        # 판매 데이터 조회
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT s.id, s.invoice_number, s.sale_date, s.customer, p.product_name, s.quantity, s.unit_price, s.total_amount, s.payment_method
+        FROM sales s
+        JOIN products p ON s.product_id = p.id
+        ORDER BY s.sale_date DESC
+        """)
+        sales_data = cursor.fetchall()
+        
+        if sales_data:
+            sales_df = pd.DataFrame(sales_data, 
+                                 columns=['ID', '송장번호', '판매일', '고객', '제품명', '수량', '단가(₩)', '총액(₩)', '결제방법'])
             
             # 날짜 형식 변환
-            production_df['시작일'] = pd.to_datetime(production_df['시작일']).dt.strftime('%Y-%m-%d')
-            production_df['종료일'] = pd.to_datetime(production_df['종료일']).dt.strftime('%Y-%m-%d')
+            sales_df['판매일'] = pd.to_datetime(sales_df['판매일']).dt.strftime('%Y-%m-%d')
             
-            # 상태별 색상 지정
-            def highlight_status(val):
-                if val == 'Completed':
-                    return 'background-color: #d4f7d4'
-                elif val == 'In Progress':
-                    return 'background-color: #d4e5f7'
-                elif val == 'Planned':
-                    return 'background-color: #f7f7d4'
-                elif val == 'Delayed':
-                    return 'background-color: #f7d4d4'
-                return ''
-            
-            # 스타일 적용된 데이터프레임 표시
-            st.dataframe(production_df.style.applymap(highlight_status, subset=['상태']), use_container_width=True)
-            
-            # 생산 현황 차트
-            st.subheader("생산 현황")
-            
-            # 상태별 수량 계산
-            status_counts = production_df['상태'].value_counts().reset_index()
-            status_counts.columns = ['상태', '건수']
-            
-            # 차트 생성
-            fig = px.pie(status_counts, values='건수', names='상태',
-                       title='생산 계획 상태별 분포',
-                       color='상태',
-                       color_discrete_map={
-                           'Completed': '#00CC96',
-                           'In Progress': '#636EFA',
-                           'Planned': '#FFA15A',
-                           'Delayed': '#EF553B'
-                       })
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # 제품별 생산량 차트
-            product_production = production_df.groupby('제품명')['수량'].sum().reset_index()
-            
-            fig = px.bar(product_production, x='제품명', y='수량',
-                       title='제품별 총 생산량',
-                       labels={'제품명': '제품명', '수량': '총 생산량'})
-            
-            st.plotly_chart(fig, use_container_width=True)
+            # 데이터프레임 표시
+            st.dataframe(sales_df, use_container_width=True)
         else:
-            st.info("등록된 생산 계획이 없습니다.")
+            st.info("등록된 판매 기록이 없습니다.")
     
     with tab2:
-        st.subheader("새 생산 계획 생성")
+        st.subheader("새 판매 등록")
         
-        # 제품 목록 조회
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, product_code, product_name FROM products ORDER BY product_code")
-        products = cursor.fetchall()
-        
-        if products:
-            with st.form("new_production_form"):
-                # 현재 날짜를 기본값으로 설정
-                today = datetime.now().date()
-                
-                batch_number = st.text_input("배치번호", value=f"BATCH-{today.strftime('%Y%m%d')}-{np.random.randint(100, 999)}")
-                
-                # 제품 선택
-                product_options = {f"{p[1]} - {p[2]}": p[0] for p in products}
+        with st.form("new_sale_form"):
+            today = datetime.now().date()
+            invoice_number = st.text_input("송장번호", value=f"INV-{today.strftime('%Y%m%d')}-{np.random.randint(1000, 9999)}")
+            sale_date = st.date_input("판매일자", value=today)
+            customer = st.text_input("고객명")
+            
+            # 제품 선택
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, product_code, product_name, selling_price, stock FROM products ORDER BY product_name")
+            products = cursor.fetchall()
+            
+            if products:
+                product_options = {f"{p[1]} - {p[2]} (₩{p[3]:,.0f}) (재고: {p[4]}개)": p[0] for p in products}
                 selected_product = st.selectbox("제품 선택", list(product_options.keys()))
-                product_id = product_options[selected_product]
                 
-                quantity = st.number_input("생산 수량", min_value=1, value=10)
-                start_date = st.date_input("시작일", value=today)
-                end_date = st.date_input("종료 예정일", value=today + timedelta(days=5))
-                
-                status = st.selectbox("초기 상태", ["Planned", "In Progress"])
-                
-                # 생산에 필요한 부품 확인
-                cursor.execute("""
-                SELECT p.part_name, b.quantity, p.stock, (b.quantity * ?) as required_qty
-                FROM bill_of_materials b
-                JOIN parts p ON b.part_id = p.id
-                WHERE b.product_id = ?
-                """, (quantity, product_id))
-                bom_data = cursor.fetchall()
-                
-                if bom_data:
-                    st.write("생산에 필요한 부품:")
+                if selected_product:
+                    product_id = product_options[selected_product]
                     
-                    bom_df = pd.DataFrame(bom_data, columns=['부품명', '단위당 필요수량', '현재 재고', '총 필요수량'])
+                    # 선택한 제품의 재고 확인
+                    cursor.execute("SELECT stock FROM products WHERE id = %s", (product_id,))
+                    current_stock = cursor.fetchone()[0]
                     
-                    # 부족한 부품 표시
-                    bom_df['부족량'] = bom_df.apply(lambda row: max(0, row['총 필요수량'] - row['현재 재고']), axis=1)
-                    bom_df['상태'] = bom_df.apply(lambda row: '부족' if row['부족량'] > 0 else '충분', axis=1)
+                    quantity = st.number_input("수량", min_value=1, max_value=current_stock, value=1)
                     
-                    # 상태별 색상 지정
-                    def highlight_status(val):
-                        if val == '충분':
-                            return 'background-color: #d4f7d4'
-                        elif val == '부족':
-                            return 'background-color: #f7d4d4'
-                        return ''
+                    # 선택한 제품의 단가 조회
+                    cursor.execute("SELECT selling_price FROM products WHERE id = %s", (product_id,))
+                    unit_price = float(cursor.fetchone()[0])
+                    total_amount = quantity * unit_price
                     
-                    st.dataframe(bom_df.style.applymap(highlight_status, subset=['상태']), use_container_width=True)
+                    st.metric("총 판매액", f"₩{total_amount:,.0f}")
                     
-                    # 부족한 부품이 있는지 확인
-                    shortage = bom_df['부족량'].sum() > 0
+                    payment_method = st.selectbox("결제방법", ["현금", "카드", "계좌이체", "기타"])
+                    notes = st.text_area("비고")
                     
-                    if shortage:
-                        st.warning("일부 부품의 재고가 부족합니다. 부품 재고를 확인하세요.")
-                
-                submitted = st.form_submit_button("생산 계획 생성")
-                
-                if submitted:
-                    if start_date > end_date:
-                        st.error("종료일은 시작일보다 이후여야 합니다.")
-                    else:
-                        # 생산 계획 생성
-                        cursor.execute(
-                            "INSERT INTO production (batch_number, product_id, quantity, start_date, end_date, status) VALUES (?, ?, ?, ?, ?, ?)",
-                            (batch_number, product_id, quantity, start_date, end_date, status)
-                        )
-                        conn.commit()
-                        
-                        st.success(f"생산 계획 '{batch_number}'이(가) 생성되었습니다!")
-                        
-                        if shortage:
-                            st.warning("일부 부품의 재고가 부족합니다. 부품 재고를 확인하세요.")
-        else:
-            st.error("등록된 제품이 없습니다. 먼저 제품을 등록해주세요.")
+                    submitted = st.form_submit_button("판매 등록")
+                    
+                    if submitted:
+                        if not customer:
+                            st.error("고객명을 입력해주세요.")
+                        else:
+                            try:
+                                # 트랜잭션 시작
+                                conn.start_transaction()
+                                
+                                # 판매 기록 추가
+                                cursor.execute("""
+                                    INSERT INTO sales (
+                                        invoice_number, sale_date, customer, product_id, quantity,
+                                        unit_price, total_amount, payment_method, notes
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """, (invoice_number, sale_date, customer, product_id, quantity,
+                                      unit_price, total_amount, payment_method, notes))
+                                
+                                # 제품 재고 업데이트
+                                cursor.execute("""
+                                    UPDATE products SET stock = stock - %s WHERE id = %s
+                                """, (quantity, product_id))
+                                
+                                # 트랜잭션 커밋
+                                conn.commit()
+                                st.success("판매가 등록되었습니다.")
+                                st.rerun()
+                                
+                            except mysql.connector.Error as err:
+                                # 에러 발생 시 롤백
+                                conn.rollback()
+                                st.error(f"판매 등록 중 오류 발생: {err}")
+                            finally:
+                                cursor.close()
+            else:
+                st.error("등록된 제품이 없습니다. 먼저 제품을 등록해주세요.")
 
 # 판매 분석 페이지
 def display_sales_analysis(conn):
@@ -1440,7 +1320,7 @@ def display_settings(conn):
 - 애플리케이션: YUER-한국 조인트벤처 관리 시스템
 - 버전: 1.0.0
 - 개발: Claude AI
-- 기반 기술: Python, Streamlit, SQLite""")
+- 기반 기술: Python, Streamlit, MySQL""")
     
     with col2:
         # 현재 DB 통계
@@ -1470,96 +1350,11 @@ def display_settings(conn):
                f"- 판매 기록: {sales_count}개"
         )
 
-if __name__ == "__main__":
-    main()
-    
-    with tab3:
-        st.subheader("생산 현황 관리")
-        
-        # 진행 중이거나 계획된 생산 조회
-        cursor = conn.cursor()
-        cursor.execute("""
-        SELECT p.id, p.batch_number, pr.product_name, p.quantity, p.start_date, p.end_date, p.status
-        FROM production p
-        JOIN products pr ON p.product_id = pr.id
-        WHERE p.status IN ('Planned', 'In Progress', 'Delayed')
-        ORDER BY p.start_date
-        """)
-        active_production = cursor.fetchall()
-        
-        if active_production:
-            active_production_df = pd.DataFrame(active_production, 
-                                              columns=['ID', '배치번호', '제품명', '수량', '시작일', '종료일', '현재 상태'])
-            
-            # 날짜 형식 변환
-            active_production_df['시작일'] = pd.to_datetime(active_production_df['시작일']).dt.strftime('%Y-%m-%d')
-            active_production_df['종료일'] = pd.to_datetime(active_production_df['종료일']).dt.strftime('%Y-%m-%d')
-            
-            st.dataframe(active_production_df, use_container_width=True)
-            
-            # 생산 상태 업데이트 폼
-            st.write("생산 상태 업데이트")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                production_to_update = st.selectbox("업데이트할 생산 계획 선택", active_production_df['배치번호'].tolist())
-            
-            with col2:
-                new_status = st.selectbox("새 상태", ["Planned", "In Progress", "Completed", "Delayed"])
-            
-            if st.button("상태 업데이트"):
-                # 선택한 생산의 ID와 수량 찾기
-                production_row = active_production_df.loc[active_production_df['배치번호'] == production_to_update]
-                production_id = production_row['ID'].iloc[0]
-                production_quantity = production_row['수량'].iloc[0]
-                
-                # 생산 상태 업데이트
-                cursor.execute(
-                    "UPDATE production SET status = ? WHERE id = ?",
-                    (new_status, production_id)
-                )
-                conn.commit()
-                
-                # 완료된 경우 제품 재고 업데이트 및 부품 재고 차감
-                if new_status == "Completed":
-                    # 제품 ID 조회
-                    cursor.execute("SELECT product_id FROM production WHERE id = ?", (production_id,))
-                    product_id = cursor.fetchone()[0]
-                    
-                    # 제품 재고 업데이트
-                    cursor.execute(
-                        "UPDATE products SET stock = stock + ? WHERE id = ?",
-                        (production_quantity, product_id)
-                    )
-                    
-                    # BOM 조회하여 부품 재고 차감
-                    cursor.execute("""
-                    SELECT part_id, quantity
-                    FROM bill_of_materials
-                    WHERE product_id = ?
-                    """, (product_id,))
-                    bom_items = cursor.fetchall()
-                    
-                    for part_id, qty_per_unit in bom_items:
-                        total_qty = qty_per_unit * production_quantity
-                        cursor.execute(
-                            "UPDATE parts SET stock = stock - ? WHERE id = ?",
-                            (total_qty, part_id)
-                        )
-                    
-                    conn.commit()
-                    st.success(f"생산 '{production_to_update}'의 상태가 '{new_status}'로 변경되었습니다. 제품 재고와 부품 재고가 업데이트되었습니다.")
-                else:
-                    st.success(f"생산 '{production_to_update}'의 상태가 '{new_status}'로 변경되었습니다.")
-        else:
-            st.info("진행 중이거나 계획된 생산이 없습니다.")
-
-# 제품 관리 페이지
 def display_products_management(conn):
+    """제품 관리 페이지"""
     st.title("제품 관리")
     
-    tab1, tab2, tab3 = st.tabs(["제품 목록", "제품 추가/수정", "BOM 관리"])
+    tab1, tab2 = st.tabs(["제품 목록", "제품 추가/수정"])
     
     with tab1:
         st.subheader("제품 목록")
@@ -1567,7 +1362,8 @@ def display_products_management(conn):
         # 제품 데이터 조회
         cursor = conn.cursor()
         cursor.execute("""
-        SELECT id, product_code, product_name, brand, selling_price, production_cost, stock
+        SELECT id, product_code, product_name, product_type, size, brand, 
+               selling_price, production_cost, stock
         FROM products
         ORDER BY product_code
         """)
@@ -1575,67 +1371,42 @@ def display_products_management(conn):
         
         if products_data:
             products_df = pd.DataFrame(products_data, 
-                                    columns=['ID', '제품 코드', '제품명', '브랜드', '판매가(₩)', '생산원가(₩)', '현재 재고'])
-            
-            # 마진 계산
-            products_df['마진(₩)'] = products_df['판매가(₩)'] - products_df['생산원가(₩)']
-            products_df['마진율(%)'] = (products_df['마진(₩)'] / products_df['판매가(₩)'] * 100).round(1)
+                                    columns=['ID', '제품 코드', '제품명', '제품 유형', '크기', '브랜드', 
+                                            '판매가(₩)', '생산비용(₩)', '재고'])
             
             # 데이터프레임 표시
             st.dataframe(products_df, use_container_width=True)
             
-            # 제품별 판매가/원가 차트
-            st.subheader("제품별 판매가 및 원가")
+            # 제품별 재고 차트
+            st.subheader("제품별 재고 상태")
             
-            fig = go.Figure()
-            
-            fig.add_trace(go.Bar(
-                x=products_df['제품명'],
-                y=products_df['판매가(₩)'],
-                name='판매가',
-                marker_color='#1f77b4'
-            ))
-            
-            fig.add_trace(go.Bar(
-                x=products_df['제품명'],
-                y=products_df['생산원가(₩)'],
-                name='생산원가',
-                marker_color='#ff7f0e'
-            ))
-            
-            fig.add_trace(go.Scatter(
-                x=products_df['제품명'],
-                y=products_df['마진율(%)'],
-                name='마진율(%)',
-                yaxis='y2',
-                mode='lines+markers',
-                marker_color='red'
-            ))
-            
-            fig.update_layout(
-                title='제품별 판매가 및 원가',
-                xaxis_title='제품명',
-                yaxis_title='금액 (₩)',
-                yaxis2=dict(
-                    title='마진율 (%)',
-                    overlaying='y',
-                    side='right',
-                    range=[0, 100]
-                ),
-                barmode='group'
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # 제품별 재고 현황
-            st.subheader("제품별 재고 현황")
-            
-            fig = px.bar(products_df, x='제품명', y='현재 재고',
+            fig = px.bar(products_df, 
+                       x='제품명', y='재고',
                        title='제품별 재고 수준',
-                       color='현재 재고',
-                       labels={'제품명': '제품명', '현재 재고': '재고 수량'})
+                       color='재고',
+                       labels={'제품명': '제품명', '재고': '재고 수량'})
             
             st.plotly_chart(fig, use_container_width=True)
+            
+            # 제품별 수익성 분석
+            st.subheader("제품별 수익성 분석")
+            
+            # 마진 계산
+            products_df['마진(₩)'] = products_df['판매가(₩)'] - products_df['생산비용(₩)']
+            products_df['마진율(%)'] = (products_df['마진(₩)'] / products_df['판매가(₩)'] * 100).round(1)
+            
+            # 수익성 차트
+            fig = px.bar(products_df, 
+                       x='제품명', y='마진(₩)',
+                       title='제품별 마진',
+                       color='마진율(%)',
+                       labels={'제품명': '제품명', '마진(₩)': '마진(₩)'})
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 상세 수익성 테이블
+            st.dataframe(products_df[['제품명', '판매가(₩)', '생산비용(₩)', '마진(₩)', '마진율(%)']], 
+                        use_container_width=True)
         else:
             st.info("등록된 제품이 없습니다.")
     
@@ -1647,9 +1418,11 @@ def display_products_management(conn):
             st.write("새 제품 등록")
             product_code = st.text_input("제품 코드")
             product_name = st.text_input("제품명")
-            brand = st.text_input("브랜드", value="Korean Brand")
+            product_type = st.selectbox("제품 유형", ["고정식", "개폐식", "자동식"])
+            size = st.text_input("크기")
+            brand = st.text_input("브랜드", value="YUER")
             selling_price = st.number_input("판매가(₩)", min_value=0.0, step=0.1)
-            production_cost = st.number_input("생산원가(₩)", min_value=0.0, step=0.1)
+            production_cost = st.number_input("생산비용(₩)", min_value=0.0, step=0.1)
             stock = st.number_input("초기 재고", min_value=0, step=1)
             
             submitted = st.form_submit_button("제품 추가")
@@ -1660,8 +1433,8 @@ def display_products_management(conn):
                 else:
                     cursor = conn.cursor()
                     cursor.execute(
-                        "INSERT INTO products (product_code, product_name, brand, selling_price, production_cost, stock) VALUES (?, ?, ?, ?, ?, ?)",
-                        (product_code, product_name, brand, selling_price, production_cost, stock)
+                        "INSERT INTO products (product_code, product_name, product_type, size, brand, selling_price, production_cost, stock) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        (product_code, product_name, product_type, size, brand, selling_price, production_cost, stock)
                     )
                     conn.commit()
                     st.success(f"제품 '{product_name}' 추가 완료!")
@@ -1683,7 +1456,7 @@ def display_products_management(conn):
             
             # 선택한 제품 정보 조회
             cursor.execute(
-                "SELECT product_code, product_name, brand, selling_price, production_cost, stock FROM products WHERE id = ?",
+                "SELECT product_code, product_name, product_type, size, brand, selling_price, production_cost, stock FROM products WHERE id = %s",
                 (product_id,)
             )
             product_data = cursor.fetchone()
@@ -1694,165 +1467,26 @@ def display_products_management(conn):
                     
                     edit_product_code = st.text_input("제품 코드", value=product_data[0])
                     edit_product_name = st.text_input("제품명", value=product_data[1])
-                    edit_brand = st.text_input("브랜드", value=product_data[2])
-                    edit_selling_price = st.number_input("판매가(₩)", min_value=0.0, step=0.1, value=float(product_data[3]))
-                    edit_production_cost = st.number_input("생산원가(₩)", min_value=0.0, step=0.1, value=float(product_data[4]))
-                    edit_stock = st.number_input("현재 재고", min_value=0, step=1, value=int(product_data[5]))
+                    edit_product_type = st.selectbox("제품 유형", ["고정식", "개폐식", "자동식"], 
+                                                  index=["고정식", "개폐식", "자동식"].index(product_data[2]))
+                    edit_size = st.text_input("크기", value=product_data[3])
+                    edit_brand = st.text_input("브랜드", value=product_data[4])
+                    edit_selling_price = st.number_input("판매가(₩)", min_value=0.0, step=0.1, value=float(product_data[5]))
+                    edit_production_cost = st.number_input("생산비용(₩)", min_value=0.0, step=0.1, value=float(product_data[6]))
+                    edit_stock = st.number_input("재고", min_value=0, step=1, value=int(product_data[7]))
                     
                     update_submitted = st.form_submit_button("정보 업데이트")
                     
                     if update_submitted:
                         cursor.execute(
-                            "UPDATE products SET product_code = ?, product_name = ?, brand = ?, selling_price = ?, production_cost = ?, stock = ? WHERE id = ?",
-                            (edit_product_code, edit_product_name, edit_brand, edit_selling_price, edit_production_cost, edit_stock, product_id)
+                            "UPDATE products SET product_code = %s, product_name = %s, product_type = %s, size = %s, brand = %s, selling_price = %s, production_cost = %s, stock = %s WHERE id = %s",
+                            (edit_product_code, edit_product_name, edit_product_type, edit_size, edit_brand, 
+                             edit_selling_price, edit_production_cost, edit_stock, product_id)
                         )
                         conn.commit()
                         st.success(f"제품 '{edit_product_name}' 정보 업데이트 완료!")
         else:
             st.info("등록된 제품이 없습니다.")
-    
-    with tab3:
-        st.subheader("BOM(Bill of Materials) 관리")
-        
-        # 제품 목록 조회
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, product_code, product_name FROM products ORDER BY product_code")
-        products = cursor.fetchall()
-        
-        if products:
-            product_options = {f"{p[1]} - {p[2]}": p[0] for p in products}
-            selected_product = st.selectbox("BOM을 관리할 제품 선택", list(product_options.keys()), key="bom_product")
-            
-            product_id = product_options[selected_product]
-            
-            # 현재 BOM 목록 표시
-            cursor.execute("""
-            SELECT b.id, p.part_code, p.part_name, b.quantity, p.unit_price, (b.quantity * p.unit_price) as total_cost
-            FROM bill_of_materials b
-            JOIN parts p ON b.part_id = p.id
-            WHERE b.product_id = ?
-            ORDER BY p.part_code
-            """, (product_id,))
-            bom_data = cursor.fetchall()
-            
-            if bom_data:
-                st.write(f"'{selected_product.split(' - ')[1]}' 제품의 BOM")
-                
-                bom_df = pd.DataFrame(bom_data, 
-                                    columns=['ID', '부품 코드', '부품명', '필요 수량', '단가(₩)', '소계(₩)'])
-                
-                st.dataframe(bom_df, use_container_width=True)
-                
-                # 총 원가 계산
-                total_cost = bom_df['소계(₩)'].sum()
-                st.metric("총 원가", f"₩{total_cost:,.0f}")
-                
-                # 생산원가와 BOM 원가 비교
-                cursor.execute("SELECT production_cost FROM products WHERE id = ?", (product_id,))
-                production_cost = cursor.fetchone()[0]
-                
-                st.write(f"현재 설정된 생산원가: ₩{production_cost:,.0f}")
-                
-                if abs(total_cost - production_cost) > 0.01:
-                    st.warning(f"BOM 원가(₩{total_cost:,.0f})와 설정된 생산원가(₩{production_cost:,.0f})가 일치하지 않습니다. 생산원가를 업데이트하세요.")
-                    
-                    if st.button("생산원가를 BOM 원가로 업데이트"):
-                        cursor.execute(
-                            "UPDATE products SET production_cost = ? WHERE id = ?",
-                            (total_cost, product_id)
-                        )
-                        conn.commit()
-                        st.success("생산원가가 업데이트되었습니다.")
-            else:
-                st.info(f"'{selected_product.split(' - ')[1]}' 제품의 BOM이 없습니다. BOM을 구성해주세요.")
-            
-            # BOM 항목 추가
-            st.markdown("---")
-            st.write("BOM 항목 추가")
-            
-            # 부품 목록 조회
-            cursor.execute("SELECT id, part_code, part_name, unit_price FROM parts ORDER BY part_code")
-            available_parts = cursor.fetchall()
-            
-            if available_parts:
-                with st.form("add_bom_item_form"):
-                    # 이미 BOM에 있는 부품 ID 목록
-                    existing_part_ids = []
-                    if bom_data:
-                        cursor.execute(
-                            "SELECT part_id FROM bill_of_materials WHERE product_id = ?", 
-                            (product_id,)
-                        )
-                        existing_part_ids = [row[0] for row in cursor.fetchall()]
-                    
-                    # 아직 BOM에 추가되지 않은 부품만 필터링
-                    available_parts_filtered = [p for p in available_parts if p[0] not in existing_part_ids]
-                    
-                    if available_parts_filtered:
-                        part_options = {f"{p[1]} - {p[2]} (₩{p[3]:,.0f})": p[0] for p in available_parts_filtered}
-                        selected_part = st.selectbox("부품 선택", list(part_options.keys()))
-                        part_id = part_options[selected_part]
-                        
-                        quantity = st.number_input("필요 수량", min_value=1, value=1)
-                        
-                        submitted = st.form_submit_button("BOM 항목 추가")
-                        
-                        if submitted:
-                            # 이미 있는지 확인
-                            cursor.execute(
-                                "SELECT COUNT(*) FROM bill_of_materials WHERE product_id = ? AND part_id = ?",
-                                (product_id, part_id)
-                            )
-                            if cursor.fetchone()[0] > 0:
-                                st.error("이 부품은 이미 BOM에 있습니다.")
-                            else:
-                                cursor.execute(
-                                    "INSERT INTO bill_of_materials (product_id, part_id, quantity) VALUES (?, ?, ?)",
-                                    (product_id, part_id, quantity)
-                                )
-                                conn.commit()
-                                st.success("BOM 항목이 추가되었습니다.")
-                    else:
-                        st.info("추가할 수 있는 부품이 없습니다. 모든 부품이 이미 BOM에 포함되어 있습니다.")
-            else:
-                st.error("등록된 부품이 없습니다. 먼저 부품을 등록해주세요.")
-            
-            # BOM 항목 수정/삭제
-            if bom_data:
-                st.markdown("---")
-                st.write("BOM 항목 수정/삭제")
-                
-                bom_item_options = {f"{row[2]} (필요 수량: {row[3]})": row[0] for row in bom_data}
-                selected_bom_item = st.selectbox("수정/삭제할 BOM 항목 선택", list(bom_item_options.keys()))
-                bom_item_id = bom_item_options[selected_bom_item]
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # 현재 수량 조회
-                    cursor.execute("SELECT quantity FROM bill_of_materials WHERE id = ?", (bom_item_id,))
-                    current_quantity = cursor.fetchone()[0]
-                    
-                    new_quantity = st.number_input("새 수량", min_value=1, value=current_quantity)
-                    
-                    if st.button("수량 업데이트"):
-                        cursor.execute(
-                            "UPDATE bill_of_materials SET quantity = ? WHERE id = ?",
-                            (new_quantity, bom_item_id)
-                        )
-                        conn.commit()
-                        st.success("BOM 항목이 업데이트되었습니다.")
-                
-                with col2:
-                    if st.button("항목 삭제", type="primary", help="이 항목을 BOM에서 삭제합니다."):
-                        cursor.execute(
-                            "DELETE FROM bill_of_materials WHERE id = ?",
-                            (bom_item_id,)
-                        )
-                        conn.commit()
-                        st.success("BOM 항목이 삭제되었습니다.")
-        else:
-            st.error("등록된 제품이 없습니다. 먼저 제품을 등록해주세요.")
 
 if __name__ == "__main__":
     main() 
