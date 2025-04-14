@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import pandas as pd
 load_dotenv()
 
-# 페이지 설정
+# 페이지 설정 - 테이블 생성/수정/삭제 시스템
 st.set_page_config(
     page_title="DB 테이블 생성/수정/삭제 시스템",
     page_icon="💾",
