@@ -42,28 +42,112 @@ def create_sample_data(conn):
         
         # 기존 테이블 삭제
         cursor.execute("DROP TABLE IF EXISTS sales")
+        cursor.execute("DROP TABLE IF EXISTS production")
+        cursor.execute("DROP TABLE IF EXISTS bill_of_materials")
+        cursor.execute("DROP TABLE IF EXISTS order_details")
+        cursor.execute("DROP TABLE IF EXISTS orders")
         cursor.execute("DROP TABLE IF EXISTS products")
+        cursor.execute("DROP TABLE IF EXISTS parts")
         conn.commit()
         
-        # 1. 테이블 생성
+        # 1. 부품 테이블 생성
+        cursor.execute('''
+            CREATE TABLE parts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                part_code VARCHAR(50) UNIQUE NOT NULL,
+                part_name VARCHAR(100) NOT NULL,
+                part_category VARCHAR(50),
+                supplier VARCHAR(100) NOT NULL,
+                unit_price DECIMAL(10, 2) NOT NULL,
+                lead_time INT NOT NULL,
+                stock INT DEFAULT 0,
+                min_stock INT DEFAULT 0,
+                specifications TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 2. 제품 테이블 생성
         cursor.execute('''
             CREATE TABLE products (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 product_code VARCHAR(50) UNIQUE NOT NULL,
                 product_name VARCHAR(100) NOT NULL,
-                product_type VARCHAR(50) NOT NULL,  -- 고정식, 개폐식, 자동식 등
-                size VARCHAR(50) NOT NULL,  -- 제품 크기
+                product_type VARCHAR(50) NOT NULL,
+                size VARCHAR(50) NOT NULL,
                 brand VARCHAR(100) NOT NULL,
                 selling_price DECIMAL(10, 2) NOT NULL,
                 production_cost DECIMAL(10, 2) NOT NULL,
                 stock INT DEFAULT 0,
-                specifications TEXT,  -- 제품 사양 정보
+                specifications TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
         ''')
-        
-        # 판매 테이블 생성
+
+        # 3. 주문 테이블 생성
+        cursor.execute('''
+            CREATE TABLE orders (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                order_number VARCHAR(50) UNIQUE NOT NULL,
+                order_date DATE NOT NULL,
+                expected_arrival DATE NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                total_amount DECIMAL(10, 2) NOT NULL,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 4. 주문 상세 테이블 생성
+        cursor.execute('''
+            CREATE TABLE order_details (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                order_id INT NOT NULL,
+                part_id INT NOT NULL,
+                quantity INT NOT NULL,
+                unit_price DECIMAL(10, 2) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (order_id) REFERENCES orders(id),
+                FOREIGN KEY (part_id) REFERENCES parts(id)
+            )
+        ''')
+
+        # 5. BOM(Bill of Materials) 테이블 생성
+        cursor.execute('''
+            CREATE TABLE bill_of_materials (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                product_id INT NOT NULL,
+                part_id INT NOT NULL,
+                quantity_required INT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (product_id) REFERENCES products(id),
+                FOREIGN KEY (part_id) REFERENCES parts(id)
+            )
+        ''')
+
+        # 6. 생산 테이블 생성
+        cursor.execute('''
+            CREATE TABLE production (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                batch_number VARCHAR(50) UNIQUE NOT NULL,
+                product_id INT NOT NULL,
+                quantity INT NOT NULL,
+                start_date DATE NOT NULL,
+                end_date DATE,
+                status VARCHAR(20) NOT NULL,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (product_id) REFERENCES products(id)
+            )
+        ''')
+
+        # 7. 판매 테이블 생성
         cursor.execute('''
             CREATE TABLE sales (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -82,8 +166,23 @@ def create_sample_data(conn):
             )
         ''')
         conn.commit()
+
+        # 샘플 데이터 생성
+        # 1. 부품 데이터
+        parts = [
+            ('PT001', '알루미늄 프레임', '프레임', 'YUER', 50000, 7, 100, 20),
+            ('PT002', '강화유리', '유리', 'YUER', 30000, 5, 80, 15),
+            ('PT003', '개폐 모터', '모터', 'YUER', 20000, 10, 50, 10),
+            ('PT004', '제어 보드', '전자', 'YUER', 15000, 7, 60, 12),
+            ('PT005', '실리콘 씰', '씰링', 'YUER', 5000, 3, 200, 40)
+        ]
+        
+        cursor.executemany('''
+            INSERT INTO parts (part_code, part_name, part_category, supplier, unit_price, lead_time, stock, min_stock)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ''', parts)
             
-        # 2. 제품 데이터 생성
+        # 2. 제품 데이터
         products = [
             ('PR001', 'V6 엔진', '고정식', '대형', 'YUER', 5000000, 3000000, 10),
             ('PR002', 'V8 엔진', '고정식', '대형', 'YUER', 8000000, 4800000, 5),
@@ -92,26 +191,12 @@ def create_sample_data(conn):
             ('PR005', '하이브리드 엔진', '자동식', '중형', 'YUER', 7000000, 4200000, 12)
         ]
         
-        try:
-            cursor.executemany('''
-                INSERT INTO products (product_code, product_name, product_type, size, brand, selling_price, production_cost, stock)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ''', products)
-            conn.commit()
-        except mysql.connector.Error as err:
-            if err.errno == 1062:  # Duplicate entry error
-                st.warning(f"중복된 제품 코드가 발견되었습니다. 건너뜁니다: {err}")
-                conn.rollback()
-            else:
-                raise
-        
-        # 제품 ID 확인
-        cursor.execute("SELECT id FROM products")
-        product_ids = [row[0] for row in cursor.fetchall()]
-        
-        if not product_ids:
-            st.error("제품 데이터가 생성되지 않았습니다. 샘플 데이터 생성을 중단합니다.")
-            return False
+        cursor.executemany('''
+            INSERT INTO products (product_code, product_name, product_type, size, brand, selling_price, production_cost, stock)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ''', products)
+
+        conn.commit()
         
         # 외래 키 체크 다시 활성화
         cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
@@ -1376,11 +1461,20 @@ def display_products_management(conn):
             # 제품별 재고 차트
             st.subheader("제품별 재고 상태")
             
-            fig = px.bar(products_df, 
-                       x='제품명', y='재고',
-                       title='제품별 재고 수준',
-                       color='재고',
-                       labels={'제품명': '제품명', '재고': '재고 수량'})
+            fig = go.Figure()
+            
+            fig.add_trace(go.Bar(
+                x=products_df['제품명'],
+                y=products_df['재고'],
+                name='현재 재고',
+                marker_color='#1f77b4'
+            ))
+            
+            fig.update_layout(
+                title='제품별 재고 수준',
+                xaxis_title='제품명',
+                yaxis_title='재고 수량'
+            )
             
             st.plotly_chart(fig, use_container_width=True)
             

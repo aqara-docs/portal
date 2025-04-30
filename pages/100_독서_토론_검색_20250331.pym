@@ -329,7 +329,7 @@ def analyze_with_openai(prompt, model):
         st.error(f"OpenAI API 호출 중 오류 발생: {str(e)}")
         return None
 
-def analyze_with_local_llm(prompt, model):
+def analyze_with_local_llm(prompt, model="mistral:latest"):
     """로컬 LLM을 사용한 분석"""
     url = "http://localhost:11434/api/generate"
     

@@ -287,26 +287,26 @@ def analyze_content(content, keyword, model_key, model_name):
     prompt = f"""
     다음 내용을 '{keyword}' 관점에서 분석해주세요.
     
-    분석 결과는 다음 형식으로 작성해주세요 (전체 글자 수 3500자 이내로 작성).
+    분석 결과는 다음 형식으로 작성해주세요 (전체 글자 수 1750자 이내로 작성).
     반드시 존대말을 사용해 주세요.
     
-    [핵심 요약] (300자 이내)
-    - 핵심 내용을 2-3줄로 요약해 주세요
+    [핵심 요약] (150자 이내)
+    - 핵심 내용을 1-2줄로 요약해 주세요
     
-    [주요 분석] (1800자 이내)
+    [주요 분석] (900자 이내)
     1. '{keyword}' 관련 강점
-    - 주요 강점 3-4개를 설명해 주세요
+    - 주요 강점 2개를 설명해 주세요
     
     2. '{keyword}' 측면의 개선점
-    - 주요 개선점 3-4개를 제시해 주세요
+    - 주요 개선점 2개를 제시해 주세요
     
-    [실행 제안] (1400자 이내)
+    [실행 제안] (700자 이내)
     1. '{keyword}' 중심의 단기 과제 (1-3개월)
-    - 구체적 실행 방안 3-4개를 제시해 주세요
+    - 구체적 실행 방안 2개를 제시해 주세요
     - 각 방안별 기대효과를 설명해 주세요
     
     2. '{keyword}' 중심의 중기 과제 (3-6개월)
-    - 구체적 실행 방안 3-4개를 제시해 주세요
+    - 구체적 실행 방안 2개를 제시해 주세요
     - 각 방안별 기대효과를 설명해 주세요
     
     * 모든 내용은 반드시 존대말로 작성해 주세요.
@@ -324,7 +324,7 @@ def analyze_content(content, keyword, model_key, model_name):
                 json={
                     "model": model_name,
                     "prompt": prompt,
-                    "max_tokens": 1400  # 토큰 수 제한 (약 3500자)
+                    "max_tokens": 700  # 토큰 수 제한 (약 1750자)
                 }
             )
             return response.json()['response']
@@ -333,10 +333,10 @@ def analyze_content(content, keyword, model_key, model_name):
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[
-                    {"role": "system", "content": "당신은 비즈니스 분석 전문가입니다. 항상 존대말을 사용하여 분석 결과를 작성합니다."},
+                    {"role": "system", "content": "당신은 비즈니스 분석 전문가입니다. 항상 존대말을 사용하여 분석 결과를 작성하되, 핵심적인 내용만 간단명료하게 작성합니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=1400,  # 토큰 수 제한 (약 3500자)
+                max_tokens=700,  # 토큰 수 제한 (약 1750자)
                 temperature=0.2
             )
             return response.choices[0].message.content
@@ -365,10 +365,10 @@ def generate_business_opinion(summary_text):
     
     # 문장에서 핵심 주제 추출
     prompt_for_topic = f"""
-    다음 문장에서 가장 중요한 비즈니스 관련 핵심 주제 하나만 5단어 이내로 추출해주세요:
+    다음 문장에서 가장 중요한 비즈니스 관련 핵심 주제 하나만 3단어 이내로 추출해주세요:
     "{best_sentence}"
     
-    예시 형식: "고객 가치 창출", "효율적 리더십", "시장 확장 전략" 등
+    예시 형식: "고객 가치", "효율적 리더십", "시장 전략" 등
     """
     
     try:
@@ -380,7 +380,7 @@ def generate_business_opinion(summary_text):
                 {"role": "user", "content": prompt_for_topic}
             ],
             temperature=0.3,
-            max_tokens=20
+            max_tokens=10
         )
         
         core_topic = topic_response.choices[0].message.content.strip().strip('"\'')
@@ -397,25 +397,25 @@ def generate_business_opinion(summary_text):
         - "오늘 독서 토론에서 다룬 '{core_topic}'에 대해 말씀드리겠습니다."로 시작하여
         - 이 주제가 비즈니스에 어떤 의미가 있는지
         - 어떻게 실제로 적용해볼 수 있는지
-        - 구체적인 실행 방안까지 자연스럽게 설명해주세요
+        간단명료하게 설명해주세요.
         
-        300-500자 내외로 구체적으로 설명해주세요.
+        150-250자 내외로 핵심적인 내용만 설명해주세요.
         """
         
         opinion_response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "당신은 실무 경험이 풍부한 비즈니스 전문가입니다. 주어진 한 가지 주제에 대해서만 깊이 있는 통찰과 실용적인 조언을 제공합니다."},
+                {"role": "system", "content": "당신은 실무 경험이 풍부한 비즈니스 전문가입니다. 주어진 주제에 대해 간단명료하게 핵심적인 통찰과 실용적인 조언을 제공합니다."},
                 {"role": "user", "content": opinion_prompt}
             ],
             temperature=0.7,
-            max_tokens=1000
+            max_tokens=500
         )
         
         return opinion_response.choices[0].message.content
     except Exception as e:
         # 오류 발생 시 기본 응답
-        return f"오늘 독서 토론에서 다룬 '{best_sentence}'에 관한 주제는 비즈니스에 중요한 시사점을 제공합니다. 이를 실제 업무에 적용하려면 구체적인 실행 계획과 단계별 접근이 필요합니다."
+        return f"오늘 독서 토론에서 다룬 '{best_sentence}'에 관한 주제는 비즈니스에 중요한 시사점을 제공합니다."
 
 def text_to_speech(text):
     """OpenAI TTS API를 사용한 텍스트를 음성으로 변환"""

@@ -36,8 +36,7 @@ AVAILABLE_MODELS = [
     {"name": "deepseek-r1:14b", "size": "9.0 GB"},
     {"name": "phi4:latest", "size": "9.1 GB"},
     {"name": "deepseek-r1:32b", "size": "19 GB"},
-    {"name": "llama3.3:latest", "size": "42 GB"},
-    {"name": "deepseek-r1:70b", "size": "42 GB"},
+    {"name": "llama3.3:latest", "size": "42 GB"}
 ]
 
 # 모델 선택 UI
@@ -46,7 +45,7 @@ selected_model = st.sidebar.selectbox(
     "사용할 모델을 선택하세요:",
     options=[model["name"] for model in AVAILABLE_MODELS],
     format_func=lambda x: f"{x} ({next(m['size'] for m in AVAILABLE_MODELS if m['name'] == x)})",
-    index=0  # 기본값으로 가장 작은 모델 선택
+    index=2  # mistral:latest를 기본값으로 설정
 )
 
 # Temperature 설정

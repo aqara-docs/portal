@@ -4,6 +4,146 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+import json
+
+load_dotenv()
+
+# OpenAI 클라이언트 초기화
+openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+def get_ai_analysis(data, analysis_type):
+    """AI 분석 수행"""
+    try:
+        # 분석 유형별 프롬프트 생성
+        prompts = {
+            "투자_분석": """
+            다음은 투자 프로젝트의 분석 결과입니다:
+            
+            {data}
+            
+            이 투자 프로젝트에 대해 다음 사항을 분석해주세요:
+            1. 투자 타당성 평가
+            2. 주요 위험 요소
+            3. 개선 제안
+            4. 종합 의견
+            
+            실무적이고 구체적인 조언을 제공해주세요.
+            """,
+            "재무비율": """
+            다음은 기업의 주요 재무비율 분석 결과입니다:
+            
+            {data}
+            
+            이 재무비율에 대해 다음 사항을 분석해주세요:
+            1. 수익성 평가
+            2. 재무 안정성 평가
+            3. 개선이 필요한 영역
+            4. 종합 의견
+            
+            산업 표준과 비교하여 실질적인 분석을 제공해주세요.
+            """,
+            "손익_예측": """
+            다음은 향후 손익 예측 결과입니다:
+            
+            {data}
+            
+            이 예측 결과에 대해 다음 사항을 분석해주세요:
+            1. 성장성 평가
+            2. 수익성 트렌드
+            3. 잠재적 위험 요소
+            4. 개선 제안
+            
+            현실적이고 실행 가능한 조언을 제공해주세요.
+            """,
+            "수익성_분석": """
+            다음은 수익성 분석 결과입니다:
+            
+            {data}
+            
+            이 결과에 대해 다음 사항을 분석해주세요:
+            1. 마진 적정성 평가
+            2. 가격 전략 제안
+            3. 수익성 개선 방안
+            4. 종합 의견
+            
+            실질적이고 실행 가능한 조언을 제공해주세요.
+            """,
+            "고객가치_분석": """
+            다음은 고객 가치 분석 결과입니다:
+            
+            {data}
+            
+            이 결과에 대해 다음 사항을 분석해주세요:
+            1. LTV 평가
+            2. 고객 획득 전략
+            3. 수익성 개선 방안
+            4. 투자 제안
+            
+            실용적이고 구체적인 조언을 제공해주세요.
+            """,
+            "비용_분석": """
+            다음은 비용 구조 분석 결과입니다:
+            
+            {data}
+            
+            이 결과에 대해 다음 사항을 분석해주세요:
+            1. 비용 구조 평가
+            2. 손익분기점 분석
+            3. 비용 절감 방안
+            4. 운영 효율화 제안
+            
+            구체적이고 실행 가능한 조언을 제공해주세요.
+            """,
+            "시간가치_분석": """
+            다음은 화폐의 시간가치 분석 결과입니다:
+            
+            {data}
+            
+            이 결과에 대해 다음 사항을 분석해주세요:
+            1. 투자 가치 평가
+            2. 리스크 분석
+            3. 투자 전략 제안
+            4. 종합 의견
+            
+            실질적이고 구체적인 조언을 제공해주세요.
+            """,
+            "자금조달_분석": """
+            다음은 자금조달 분석 결과입니다:
+            
+            {data}
+            
+            이 결과에 대해 다음 사항을 분석해주세요:
+            1. 레버리지 효과 평가
+            2. 자금조달 구조 분석
+            3. 리스크 요소
+            4. 최적화 방안
+            
+            실무적이고 구체적인 조언을 제공해주세요.
+            """
+        }
+
+        if analysis_type not in prompts:
+            return "지원되지 않는 분석 유형입니다."
+
+        prompt = prompts[analysis_type].format(data=json.dumps(data, ensure_ascii=False, indent=2))
+
+        response = openai.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[
+                {"role": "system", "content": "당신은 전문 재무 분석가입니다. 데이터를 기반으로 실용적이고 구체적인 분석과 조언을 제공합니다."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=1000
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"AI 분석 중 오류 발생: {str(e)}")
+        return None
 
 def calculate_npv(cash_flows, discount_rate, initial_investment):
     """순현재가치(NPV) 계산"""
@@ -125,6 +265,21 @@ def main():
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # AI 분석 추가
+                st.write("### 💡 AI 분석")
+                with st.spinner("AI가 투자 프로젝트를 분석중입니다..."):
+                    analysis_data = {
+                        "초기_투자금": initial_investment,
+                        "현금흐름": cash_flows,
+                        "할인율": discount_rate,
+                        "NPV": npv,
+                        "IRR": irr*100,
+                        "회수기간": payback
+                    }
+                    ai_result = get_ai_analysis(analysis_data, "투자_분석")
+                    if ai_result:
+                        st.markdown(ai_result)
 
         with subtabs1[1]:
             st.header("재무비율 계산기")
@@ -183,6 +338,22 @@ def main():
                 
                 fig.update_layout(title="자본 구조")
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # AI 분석 추가
+                st.write("### 💡 AI 분석")
+                with st.spinner("AI가 재무비율을 분석중입니다..."):
+                    analysis_data = {
+                        "매출총이익률": gross_margin,
+                        "영업이익률": operating_margin,
+                        "순이익률": net_margin,
+                        "부채비율": debt_ratio,
+                        "유동비율": current_ratio,
+                        "자기자본": equity,
+                        "부채": total_liabilities
+                    }
+                    ai_result = get_ai_analysis(analysis_data, "재무비율")
+                    if ai_result:
+                        st.markdown(ai_result)
 
         with subtabs1[2]:
             st.header("손익 예측")
@@ -247,6 +418,22 @@ def main():
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # AI 분석 추가
+                st.write("### 💡 AI 분석")
+                with st.spinner("AI가 손익 예측을 분석중입니다..."):
+                    analysis_data = {
+                        "기준_매출액": base_sales,
+                        "성장률": growth_rate,
+                        "매출원가율": cost_ratio,
+                        "판관비율": sga_ratio,
+                        "예측_기간": forecast_years,
+                        "예측_매출": sales_forecast,
+                        "예측_순이익": net_income_forecast
+                    }
+                    ai_result = get_ai_analysis(analysis_data, "손익_예측")
+                    if ai_result:
+                        st.markdown(ai_result)
 
     with tabs[1]:  # 수익성 분석
         st.header("수익성 분석")
@@ -268,25 +455,20 @@ def main():
                 st.metric("Profit Margin (%)", f"{margin_percent:.1f}%")
                 st.metric("Markup (%)", f"{markup_percent:.1f}%")
                 st.metric("단위당 이익", f"₩{profit:,.0f}")
-        
-        with col3:
-            st.markdown("""
-            #### 마진 vs 마크업
-            - **Profit Margin**: (판매가 - 원가) / 판매가
-            - **Markup**: (판매가 - 원가) / 원가
-            """)
-            
-            # 목표 마진/마크업 계산기 추가
-            target_type = st.selectbox("목표 유형", ["Margin", "Markup"])
-            target_percent = st.number_input(f"목표 {target_type} (%)", min_value=0.0, max_value=100.0, value=30.0)
-            
-            if st.button("목표 가격 계산"):
-                if target_type == "Margin":
-                    target_price = cost_price / (1 - target_percent/100)
-                else:  # Markup
-                    target_price = cost_price * (1 + target_percent/100)
-                
-                st.metric("목표 판매가격", f"₩{target_price:,.0f}")
+
+                # AI 분석 추가
+                st.write("### 💡 AI 분석")
+                with st.spinner("AI가 수익성을 분석중입니다..."):
+                    analysis_data = {
+                        "판매가격": selling_price,
+                        "원가": cost_price,
+                        "이익": profit,
+                        "마진율": margin_percent,
+                        "마크업율": markup_percent
+                    }
+                    ai_result = get_ai_analysis(analysis_data, "수익성_분석")
+                    if ai_result:
+                        st.markdown(ai_result)
 
     with tabs[2]:  # 투자/가치 분석
         st.header("투자 및 가치 분석")
@@ -304,6 +486,20 @@ def main():
                 ltv = monthly_revenue * retention_months * (margin_percent/100)
                 st.metric("고객 생애 가치(LTV)", f"₩{ltv:,.0f}")
                 st.write(f"이 고객을 유치하는데 최대 ₩{ltv*0.3:,.0f} 까지 투자할 수 있습니다. (LTV의 30% 기준)")
+
+                # AI 분석 추가
+                st.write("### 💡 AI 분석")
+                with st.spinner("AI가 고객 가치를 분석중입니다..."):
+                    analysis_data = {
+                        "월_평균_수익": monthly_revenue,
+                        "유지_기간": retention_months,
+                        "이익률": margin_percent,
+                        "LTV": ltv,
+                        "권장_획득비용": ltv * 0.3
+                    }
+                    ai_result = get_ai_analysis(analysis_data, "고객가치_분석")
+                    if ai_result:
+                        st.markdown(ai_result)
         
         with col2:
             st.subheader("허용 획득 비용 (AAC) 분석")
@@ -354,6 +550,23 @@ def main():
                 )])
                 fig.update_layout(title="비용 구조")
                 st.plotly_chart(fig)
+
+                # AI 분석 추가
+                st.write("### 💡 AI 분석")
+                with st.spinner("AI가 비용 구조를 분석중입니다..."):
+                    analysis_data = {
+                        "고정비용": fixed_costs,
+                        "변동비용": total_variable_costs,
+                        "총비용": total_costs,
+                        "매출": revenue,
+                        "영업이익": profit,
+                        "단위당_변동비": unit_cost,
+                        "판매단가": unit_price,
+                        "판매량": units
+                    }
+                    ai_result = get_ai_analysis(analysis_data, "비용_분석")
+                    if ai_result:
+                        st.markdown(ai_result)
         
         with col2:
             st.subheader("손익분기점 분석")
@@ -397,6 +610,19 @@ def main():
                 present_value = future_value / (1 + interest_rate/100) ** years
                 st.metric("현재가치", f"₩{present_value:,.0f}")
                 st.write(f"{years}년 후 ₩{future_value:,.0f}를 받기 위해서는 현재 ₩{present_value:,.0f}가 필요합니다.")
+
+                # AI 분석 추가
+                st.write("### 💡 AI 분석")
+                with st.spinner("AI가 시간가치를 분석중입니다..."):
+                    analysis_data = {
+                        "미래가치": future_value,
+                        "현재가치": present_value,
+                        "이자율": interest_rate,
+                        "기간": years
+                    }
+                    ai_result = get_ai_analysis(analysis_data, "시간가치_분석")
+                    if ai_result:
+                        st.markdown(ai_result)
         
         with col2:
             st.subheader("복리 효과 분석")
@@ -463,6 +689,21 @@ def main():
                 # 결과 표시
                 for scenario, roi in results.items():
                     st.metric(f"{scenario} 시나리오 ROE", f"{roi:.1f}%")
+
+                # AI 분석 추가
+                st.write("### 💡 AI 분석")
+                with st.spinner("AI가 자금조달 구조를 분석중입니다..."):
+                    analysis_data = {
+                        "자기자본": equity,
+                        "레버리지_비율": leverage_ratio,
+                        "차입금": borrowed,
+                        "총투자금": total_investment,
+                        "예상_수익률": expected_return,
+                        "시나리오_결과": results
+                    }
+                    ai_result = get_ai_analysis(analysis_data, "자금조달_분석")
+                    if ai_result:
+                        st.markdown(ai_result)
         
         with col2:
             st.subheader("자금조달 계층 분석")

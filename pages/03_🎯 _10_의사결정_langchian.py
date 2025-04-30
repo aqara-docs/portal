@@ -9,23 +9,6 @@ import json
 import base64
 import requests
 import graphviz
-from typing import Dict, List, Any, Tuple
-from langchain.agents import Tool, AgentExecutor, create_openai_tools_agent
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_openai import ChatOpenAI
-from langchain.tools import DuckDuckGoSearchResults
-from langchain.utilities import DuckDuckGoSearchAPIWrapper
-from langchain.tools import WikipediaQueryRun
-from langchain.utilities import WikipediaAPIWrapper
-from langchain.tools import PythonREPLTool
-from langchain.tools.yahoo_finance_news import YahooFinanceNewsTool
-from langchain_community.tools.sec_filings import SECFilingsTool
-from langchain.tools import GooglePlacesTool
-from langchain.tools import ArxivQueryRun
-from langchain.tools import HumanInputRun
-from langchain.graphs import NetworkxEntityGraph
-from langgraph.graph import StateGraph, END
-from pydantic import BaseModel, Field
 
 # 환경 변수 로드
 load_dotenv()
@@ -33,218 +16,11 @@ load_dotenv()
 # OpenAI 클라이언트 초기화
 openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-# 기본 LLM 설정
-llm = ChatOpenAI(
-    model="gpt-4",
-    temperature=0.7,
-    openai_api_key=os.getenv('OPENAI_API_KEY')
-)
+# Anthropic 클라이언트 초기화
+anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
-# 에이전트 상태 정의
-class AgentState(BaseModel):
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
-    current_agent: str = Field(default="")
-    final_answer: str = Field(default="")
-    intermediate_steps: List[Tuple[str, str]] = Field(default_factory=list)
-
-# 도구 정의
-def create_agent_tools():
-    """각 에이전트별 도구 생성"""
-    
-    # 재무 전문가 도구
-    financial_tools = [
-        Tool(
-            name="yahoo_finance",
-            func=YahooFinanceNewsTool().run,
-            description="기업의 재무 정보와 주가 데이터를 조회합니다."
-        ),
-        Tool(
-            name="sec_filings",
-            func=SECFilingsTool().run,
-            description="기업의 SEC 공시 자료를 검색합니다."
-        ),
-        PythonREPLTool(),
-    ]
-
-    # 법률 전문가 도구
-    legal_tools = [
-        Tool(
-            name="legal_search",
-            func=DuckDuckGoSearchAPIWrapper().run,
-            description="법률 관련 정보를 검색합니다."
-        ),
-        WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()),
-    ]
-
-    # 시장 분석가 도구
-    market_tools = [
-        Tool(
-            name="market_search",
-            func=DuckDuckGoSearchAPIWrapper().run,
-            description="시장 동향과 경쟁사 정보를 검색합니다."
-        ),
-        GooglePlacesTool(),
-    ]
-
-    # 기술 전문가 도구
-    tech_tools = [
-        Tool(
-            name="tech_research",
-            func=ArxivQueryRun().run,
-            description="최신 기술 연구 논문을 검색합니다."
-        ),
-        PythonREPLTool(),
-    ]
-
-    # 리스크 관리자 도구
-    risk_tools = [
-        Tool(
-            name="risk_search",
-            func=DuckDuckGoSearchAPIWrapper().run,
-            description="리스크 관련 정보를 검색합니다."
-        ),
-        HumanInputRun(),
-    ]
-
-    return {
-        "financial_agent": financial_tools,
-        "legal_agent": legal_tools,
-        "market_agent": market_tools,
-        "tech_agent": tech_tools,
-        "risk_agent": risk_tools,
-    }
-
-# 에이전트 생성
-def create_agents(tools_dict):
-    """각 역할별 에이전트 생성"""
-    agents = {}
-    
-    for agent_name, tools in tools_dict.items():
-        prompt = create_agent_prompt(agent_name)
-        agent = create_openai_tools_agent(llm, tools, prompt)
-        agents[agent_name] = AgentExecutor.from_agent_and_tools(
-            agent=agent,
-            tools=tools,
-            verbose=True
-        )
-    
-    return agents
-
-def create_agent_prompt(agent_type: str) -> str:
-    """에이전트별 프롬프트 생성"""
-    base_prompt = """당신은 의사결정 지원 시스템의 전문가 에이전트입니다.
-주어진 정보를 분석하고 전문적인 의견을 제시해야 합니다.
-할당된 도구들을 활용하여 필요한 정보를 수집하고 분석하세요.
-"""
-    
-    role_prompts = {
-        "financial_agent": """재무 전문가로서:
-- 재무적 타당성 분석
-- ROI 및 현금흐름 예측
-- 재무적 리스크 평가
-- 투자 가치 분석""",
-
-        "legal_agent": """법률 전문가로서:
-- 법적 규제 검토
-- 계약 관련 리스크
-- 규정 준수 여부
-- 법적 대응 방안""",
-
-        "market_agent": """시장 분석가로서:
-- 시장 규모 및 성장성
-- 경쟁사 분석
-- 시장 진입 장벽
-- 고객 니즈 분석""",
-
-        "tech_agent": """기술 전문가로서:
-- 기술적 실현 가능성
-- 기술 트렌드 분석
-- 필요 기술 스택
-- 기술 리스크 평가""",
-
-        "risk_agent": """리스크 관리자로서:
-- 종합적 리스크 평가
-- 리스크 완화 방안
-- 비상 계획 수립
-- 모니터링 방안"""
-    }
-    
-    return base_prompt + "\n" + role_prompts.get(agent_type, "")
-
-# 워크플로우 정의
-def create_workflow(agents):
-    """에이전트 워크플로우 생성"""
-    
-    workflow = StateGraph(AgentState)
-    
-    # 노드 추가
-    for agent_name, agent in agents.items():
-        workflow.add_node(agent_name, agent.run)
-    
-    # 엣지 추가
-    workflow.add_edge("financial_agent", "legal_agent")
-    workflow.add_edge("legal_agent", "market_agent")
-    workflow.add_edge("market_agent", "tech_agent")
-    workflow.add_edge("tech_agent", "risk_agent")
-    workflow.add_edge("risk_agent", END)
-    
-    # 시작 노드 설정
-    workflow.set_entry_point("financial_agent")
-    
-    return workflow.compile()
-
-def analyze_with_agents(title, description, options, reference_files, active_agents, debug_mode=False, model_name="gpt-4"):
-    """Langchain과 LangGraph를 이용한 에이전트 분석"""
-    try:
-        # 도구 생성
-        tools_dict = create_agent_tools()
-        
-        # 활성화된 에이전트에 대해서만 도구 할당
-        active_tools = {
-            agent_type: tools 
-            for agent_type, tools in tools_dict.items()
-            if active_agents.get(agent_type, False)
-        }
-        
-        # 에이전트 생성
-        agents = create_agents(active_tools)
-        
-        # 워크플로우 생성
-        workflow = create_workflow(agents)
-        
-        # 초기 상태 설정
-        initial_state = AgentState(
-            messages=[{
-                "title": title,
-                "description": description,
-                "options": options,
-                "reference_files": reference_files
-            }]
-        )
-        
-        # 워크플로우 실행
-        final_state = workflow.invoke(initial_state)
-        
-        # 결과 포맷팅
-        results = {}
-        for agent_type in active_tools.keys():
-            agent_messages = [
-                msg for msg in final_state.messages 
-                if msg.get("agent_type") == agent_type
-            ]
-            
-            if agent_messages:
-                results[agent_type] = {
-                    "analysis": agent_messages[-1].get("analysis", ""),
-                    "recommendation": agent_messages[-1].get("recommendation", ""),
-                    "risk_assessment": agent_messages[-1].get("risk_assessment", "")
-                }
-        
-        return results
-
-    except Exception as e:
-        st.error(f"AI 분석 중 오류 발생: {str(e)}")
-        return None
+# 페이지 설정
+st.set_page_config(page_title="의사결정 지원 시스템", page_icon="🎯", layout="wide")
 
 def connect_to_db():
     """MySQL DB 연결"""
@@ -410,6 +186,66 @@ def read_markdown_file(uploaded_file):
         st.error(f"파일 읽기 오류: {str(e)}")
         return None
 
+def analyze_with_ai(title, description, options, reference_files=None, model_choice="claude-3-7-sonnet-latest"):
+    """AI 분석 수행"""
+    try:
+        base_prompt = f"""
+다음 의사결정 안건을 분석해주세요:
+
+제목: {title}
+설명: {description}
+"""
+
+        if reference_files:
+            base_prompt += "\n추가 참고 자료:\n"
+            for file in reference_files:
+                base_prompt += f"""
+파일명: {file['filename']}
+내용:
+{file['content']}
+---
+"""
+
+        base_prompt += f"""
+옵션들:
+{json.dumps([{
+    '이름': opt['name'],
+    '장점': opt['advantages'],
+    '단점': opt['disadvantages'],
+    '예상기간': opt['duration'],
+    '우선순위': opt['priority']
+} for opt in options], ensure_ascii=False, indent=2)}
+
+다음 형식으로 분석해주세요:
+
+1. 각 옵션별 객관적 분석
+2. 각 옵션의 실현 가능성과 위험도
+3. 우선순위 추천과 그 이유
+4. 최종 추천안과 구체적인 실행 방안
+
+분석시 제공된 모든 정보(설명 및 추가 참고 자료)를 종합적으로 고려해주세요.
+분석은 객관적이고 전문적인 관점에서 수행해주세요."""
+
+        if model_choice == "gpt-4o-mini":
+            response = openai.chat.completions.create(
+                model=model_choice,
+                messages=[{"role": "user", "content": base_prompt}],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            return response.choices[0].message.content
+        else:  # Claude 모델 사용
+            response = anthropic_client.messages.create(
+                model=model_choice,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": base_prompt}]
+            )
+            return response.content[0].text
+
+    except Exception as e:
+        st.error(f"AI 분석 중 오류 발생: {str(e)}")
+        return None
+
 def delete_decision_case(case_id):
     """의사결정 안건 삭제"""
     conn = connect_to_db()
@@ -468,6 +304,170 @@ def get_reference_files(case_id):
         cursor.close()
         conn.close()
 
+def analyze_with_agents(title, description, options, reference_files, active_agents, debug_mode=False, model_name="gpt-4o-mini"):
+    """멀티 에이전트 분석 수행"""
+    try:
+        # 에이전트별 프롬프트 템플릿 (간소화)
+        agent_prompts = {
+            'financial_agent': "재무 전문가 관점에서 재무적 영향, ROI, 현금 흐름, 리스크를 분석해주세요.",
+            'legal_agent': "법률 전문가 관점에서 법적 준수사항, 리스크, 필요 절차를 검토해주세요.",
+            'market_agent': "시장 분석가 관점에서 시장성, 경쟁력, 성장 가능성을 평가해주세요.",
+            'risk_agent': "리스크 관리자 관점에서 잠재적 위험과 대응 방안을 제시해주세요.",
+            'tech_agent': "기술 전문가 관점에서 기술적 실현 가능성과 요구사항을 검토해주세요.",
+            'hr_agent': "인사/조직 전문가 관점에서 조직 영향과 필요 인력을 분석해주세요.",
+            'operation_agent': "운영 전문가 관점에서 실행 가능성과 운영 효율성을 평가해주세요.",
+            'strategy_agent': "전략 전문가 관점에서 전략적 적합성과 장기적 영향을 분석해주세요."
+        }
+
+        results = {}
+        
+        # 옵션 정보 간소화
+        simplified_options = [{
+            'name': opt['name'],
+            'advantages': opt.get('advantages', ''),
+            'disadvantages': opt.get('disadvantages', ''),
+            'duration': opt['duration'],
+            'priority': opt['priority']
+        } for opt in options]
+
+        # 각 에이전트별 분석 수행
+        for agent_type, is_active in active_agents.items():
+            if not is_active or agent_type == 'integration_agent':
+                continue
+                
+            if debug_mode:
+                st.write(f"🤖 {agent_type} 분석 시작...")
+            
+            # 기본 프롬프트
+            base_prompt = f"""
+            {agent_prompts.get(agent_type, '전문가로서 분석해주세요:')}
+
+            제목: {title}
+            설명: {description[:1000]}...
+
+            [특별 분석 지침]
+            이번 분석에서는 다음 사항을 특히 중점적으로 고려해주세요:
+            {description[1000:] if len(description) > 1000 else '일반적인 관점에서 분석해주세요.'}
+
+            옵션 개요:
+            {json.dumps(simplified_options, ensure_ascii=False, indent=2)}
+
+            분석 결과에는 다음과 같은 형식의 flowchart를 포함해주세요:
+
+            ```mermaid
+            graph LR
+                A[주요 옵션] --> B[영향 1]
+                A --> C[영향 2]
+                B --> D[결과 1]
+                C --> E[결과 2]
+            ```
+
+            위 형식을 참고하여 실제 분석 내용에 맞는 flowchart를 생성해주세요.
+            각 노드는 명확한 설명을 포함해야 합니다.
+            """
+
+            # 상세 분석을 위한 추가 프롬프트
+            detail_prompt = f"""
+            옵션 상세:
+            {json.dumps(options, ensure_ascii=False, indent=2)}
+            """
+
+            # 기본 분석 수행
+            response = openai.chat.completions.create(
+                model=model_name,
+                messages=[{
+                    "role": "user",
+                    "content": base_prompt
+                }],
+                temperature=0.7
+            )
+
+            # 상세 분석 수행
+            detail_response = openai.chat.completions.create(
+                model=model_name,
+                messages=[{
+                    "role": "user",
+                    "content": detail_prompt
+                }],
+                temperature=0.7
+            )
+
+            # 분석 결과 결합
+            combined_analysis = f"""
+            # 기본 분석
+            {response.choices[0].message.content}
+
+            # 상세 분석
+            {detail_response.choices[0].message.content}
+            """
+
+            results[agent_type] = {
+                'analysis': combined_analysis,
+                'recommendation': generate_recommendation(agent_type, simplified_options),
+                'risk_assessment': generate_risk_assessment(agent_type, simplified_options)
+            }
+
+        # 통합 매니저 분석 (요약된 결과만 사용)
+        if debug_mode:
+            st.write("🤖 통합 매니저 분석 시작...")
+
+        # 각 에이전트의 핵심 분석만 추출
+        summary_results = {
+            agent: {
+                'key_points': result['analysis'][:500],  # 핵심 포인트만 추출
+                'recommendation': result['recommendation'][:200]  # 추천 사항 요약
+            } for agent, result in results.items()
+        }
+
+        integration_prompt = f"""
+        통합 매니저로서 다음 전문가들의 핵심 의견을 종합하여 최종 의견을 제시해주세요:
+
+        {json.dumps(summary_results, ensure_ascii=False, indent=2)}
+
+        다음 형식으로 종합 분석을 제공해주세요:
+        1. 각 전문가의 주요 의견 요약
+        2. 의견 간 상충점
+        3. 최종 추천안
+        """
+
+        integration_response = openai.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": integration_prompt}],
+            temperature=0.7
+        )
+
+        results['integration_agent'] = {
+            'analysis': integration_response.choices[0].message.content,
+            'recommendation': "통합 분석 기반 추천",
+            'risk_assessment': "종합적 리스크 평가"
+        }
+
+        return results
+
+    except Exception as e:
+        st.error(f"AI 분석 중 오류 발생: {str(e)}")
+        return None
+
+def delete_ai_analysis(case_id):
+    """기존 AI 분석 결과 삭제"""
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            DELETE FROM decision_ai_analysis 
+            WHERE case_id = %s
+        """, (case_id,))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"AI 분석 삭제 중 오류 발생: {str(e)}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
 def format_options_for_analysis(options):
     """데이터베이스 옵션을 AI 분석용 형식으로 변환"""
     return [{
@@ -478,6 +478,135 @@ def format_options_for_analysis(options):
         'priority': opt['priority'],
         'additional_info': opt.get('additional_info', '')
     } for opt in options]
+
+def generate_recommendation(agent_type, options):
+    """에이전트별 추천 의견 생성"""
+    try:
+        prompt = f"""
+        {agent_type.replace('_', ' ').title()} 관점에서 다음 옵션들 중 
+        가장 추천할 만한 옵션과 그 이유를 설명해주세요:
+
+        옵션들:
+        {json.dumps([{
+            '이름': opt['name'],
+            '우선순위': opt['priority'],
+            '예상기간': opt['duration']
+        } for opt in options], ensure_ascii=False, indent=2)}
+
+        분석 결과를 Mermaid 차트로 표현해주세요.
+        예시:
+        ```mermaid
+        graph TD
+            A[최우선 추천] --> B[옵션명]
+            B --> C[주요 이유 1]
+            B --> D[주요 이유 2]
+        ```
+        """
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"추천 의견 생성 중 오류 발생: {str(e)}")
+        return "추천 의견을 생성할 수 없습니다."
+
+def generate_risk_assessment(agent_type, options):
+    """에이전트별 위험도 평가 생성"""
+    try:
+        prompt = f"""
+        {agent_type.replace('_', ' ').title()} 관점에서 다음 옵션들의 
+        위험 요소를 분석하고 대응 방안을 제시해주세요:
+
+        옵션들:
+        {json.dumps([{
+            '이름': opt['name'],
+            '우선순위': opt['priority'],
+            '예상기간': opt['duration']
+        } for opt in options], ensure_ascii=False, indent=2)}
+
+        분석 결과를 Mermaid 차트로 표현해주세요.
+        예시:
+        ```mermaid
+        graph TD
+            A[위험 요소] --> B[위험 1]
+            A --> C[위험 2]
+            B --> D[대응 방안 1]
+            C --> E[대응 방안 2]
+        ```
+        """
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"위험도 평가 생성 중 오류 발생: {str(e)}")
+        return "위험도 평가를 생성할 수 없습니다."
+
+def mermaid_to_graphviz(mermaid_code):
+    """Mermaid 코드를 Graphviz로 변환"""
+    try:
+        # Mermaid 코드에서 노드와 엣지 추출
+        import re
+        
+        # flowchart/graph 형식 파싱
+        nodes = {}
+        edges = []
+        
+        # 노드 정의 찾기 (예: A[내용])
+        node_pattern = r'([A-Za-z0-9_]+)\[(.*?)\]'
+        for match in re.finditer(node_pattern, mermaid_code):
+            node_id, node_label = match.groups()
+            nodes[node_id] = node_label
+        
+        # 엣지 정의 찾기 (예: A --> B)
+        edge_pattern = r'([A-Za-z0-9_]+)\s*-->\s*([A-Za-z0-9_]+)'
+        edges = re.findall(edge_pattern, mermaid_code)
+        
+        # Graphviz 객체 생성
+        dot = graphviz.Digraph()
+        dot.attr(rankdir='LR')  # 왼쪽에서 오른쪽으로 방향 설정
+        
+        # 노드 추가
+        for node_id, node_label in nodes.items():
+            dot.node(node_id, node_label)
+        
+        # 엣지 추가
+        for src, dst in edges:
+            dot.edge(src, dst)
+        
+        return dot
+    except Exception as e:
+        st.error(f"차트 변환 중 오류 발생: {str(e)}")
+        return None
+
+def display_mermaid_chart(markdown_text):
+    """Mermaid 차트가 포함된 마크다운 텍스트를 표시"""
+    import re
+    mermaid_pattern = r"```mermaid\n(.*?)\n```"
+    
+    # 일반 마크다운과 Mermaid 차트 분리
+    parts = re.split(mermaid_pattern, markdown_text, flags=re.DOTALL)
+    
+    for i, part in enumerate(parts):
+        if i % 2 == 0:  # 일반 마크다운
+            if part.strip():
+                st.markdown(part)
+        else:  # Mermaid 차트
+            # Graphviz로 변환하여 표시
+            dot = mermaid_to_graphviz(part)
+            if dot:
+                st.graphviz_chart(dot)
+            else:
+                # 변환 실패 시 코드 표시
+                st.code(part, language="mermaid")
 
 def main():
     st.title("🎯 의사결정 지원 시스템")

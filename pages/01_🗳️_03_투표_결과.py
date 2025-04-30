@@ -490,6 +490,193 @@ def get_vote_results():
         cursor.close()
         conn.close()
 
+def get_subjective_question_results(question_id):
+    """주관식 질문의 결과와 응답자 목록 조회"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        # 전체 응답 수 조회
+        cursor.execute("""
+            SELECT COUNT(DISTINCT r.response_id) as total_responses
+            FROM subjective_responses r
+            WHERE question_id = %s
+        """, (question_id,))
+        total_responses = cursor.fetchone()['total_responses']
+        
+        # 응답별 결과 조회 (동일 응답 그룹화)
+        cursor.execute("""
+            SELECT 
+                response_text,
+                COUNT(*) as response_count,
+                COALESCE(
+                    ROUND(COUNT(*) * 100.0 / NULLIF(%s, 0), 1),
+                    0.0
+                ) as response_percentage,
+                GROUP_CONCAT(DISTINCT voter_name ORDER BY voter_name SEPARATOR ', ') as voters
+            FROM subjective_responses
+            WHERE question_id = %s
+            GROUP BY response_text
+            ORDER BY response_count DESC, response_text
+        """, (total_responses, question_id))
+        results = cursor.fetchall()
+        
+        # 응답자 목록 조회 (신뢰도 점수 포함)
+        cursor.execute("""
+            SELECT DISTINCT 
+                r.voter_name,
+                COALESCE(uc.credibility_score, 1.0) as credibility_score
+            FROM subjective_responses r
+            LEFT JOIN dot_user_credibility uc 
+                ON r.voter_name COLLATE utf8mb4_unicode_ci = uc.user_name COLLATE utf8mb4_unicode_ci
+            WHERE r.question_id = %s AND r.voter_name IS NOT NULL AND r.voter_name != '익명'
+            ORDER BY r.voter_name
+        """, (question_id,))
+        voters = cursor.fetchall()
+        
+        return results, voters, total_responses
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_subjective_llm_vote(question_id, model_name):
+    """LLM의 주관식 답변 결과와 이유 가져오기"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    result = None
+    
+    try:
+        cursor.execute("""
+            SELECT response_text, reasoning
+            FROM subjective_llm_responses
+            WHERE question_id = %s AND llm_model = %s
+            ORDER BY voted_at DESC
+            LIMIT 1
+        """, (question_id, model_name))
+        
+        result = cursor.fetchone()
+        
+    except mysql.connector.Error as err:
+        st.error(f"LLM 답변 결과 조회 중 오류 발생: {err}")
+    finally:
+        cursor.close()
+        conn.close()
+    
+    return result
+
+def save_subjective_llm_response(question_id, model_name, response_text, reasoning, weight):
+    """LLM의 주관식 답변을 DB에 저장"""
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            INSERT INTO subjective_llm_responses 
+            (question_id, llm_model, response_text, reasoning, weight)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (question_id, model_name, response_text, reasoning, weight))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_combined_subjective_results(question_id, apply_weights=False):
+    """일반 답변과 LLM 답변 결과 모두 가져오기"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        if apply_weights:
+            # 신뢰도 가중치를 적용한 쿼리
+            cursor.execute("""
+                WITH response_data AS (
+                    SELECT 
+                        response_text,
+                        COUNT(*) as response_count,
+                        SUM(COALESCE(uc.credibility_score, 1.0)) as total_credibility
+                    FROM subjective_responses r
+                    LEFT JOIN dot_user_credibility uc 
+                        ON r.voter_name COLLATE utf8mb4_unicode_ci = uc.user_name COLLATE utf8mb4_unicode_ci
+                    WHERE r.question_id = %s
+                    GROUP BY response_text
+                ),
+                llm_data AS (
+                    SELECT 
+                        response_text,
+                        SUM(weight) as total_weight
+                    FROM subjective_llm_responses
+                    WHERE question_id = %s
+                    GROUP BY response_text
+                )
+                SELECT 
+                    r.response_text,
+                    r.response_count as raw_human_responses,
+                    CAST(COALESCE(r.total_credibility, 0) AS SIGNED) as human_responses,
+                    CAST(COALESCE(l.total_weight, 0) AS SIGNED) as weighted_llm_responses,
+                    CAST(
+                        COALESCE(r.total_credibility, 0) + COALESCE(l.total_weight, 0)
+                        AS SIGNED
+                    ) as total_responses
+                FROM response_data r
+                LEFT JOIN llm_data l ON r.response_text = l.response_text
+                UNION
+                SELECT 
+                    l.response_text,
+                    0 as raw_human_responses,
+                    0 as human_responses,
+                    CAST(l.total_weight AS SIGNED) as weighted_llm_responses,
+                    CAST(l.total_weight AS SIGNED) as total_responses
+                FROM llm_data l
+                LEFT JOIN response_data r ON l.response_text = r.response_text
+                WHERE r.response_text IS NULL
+                ORDER BY total_responses DESC
+            """, (question_id, question_id))
+        else:
+            cursor.execute("""
+                WITH response_data AS (
+                    SELECT 
+                        response_text,
+                        COUNT(*) as response_count
+                    FROM subjective_responses
+                    WHERE question_id = %s
+                    GROUP BY response_text
+                ),
+                llm_data AS (
+                    SELECT 
+                        response_text,
+                        SUM(weight) as total_weight
+                    FROM subjective_llm_responses
+                    WHERE question_id = %s
+                    GROUP BY response_text
+                )
+                SELECT 
+                    r.response_text,
+                    COALESCE(r.response_count, 0) as human_responses,
+                    CAST(COALESCE(l.total_weight, 0) AS SIGNED) as weighted_llm_responses,
+                    CAST(
+                        COALESCE(r.response_count, 0) + COALESCE(l.total_weight, 0)
+                        AS SIGNED
+                    ) as total_responses
+                FROM response_data r
+                LEFT JOIN llm_data l ON r.response_text = l.response_text
+                UNION
+                SELECT 
+                    l.response_text,
+                    0 as human_responses,
+                    CAST(l.total_weight AS SIGNED) as weighted_llm_responses,
+                    CAST(l.total_weight AS SIGNED) as total_responses
+                FROM llm_data l
+                LEFT JOIN response_data r ON l.response_text = r.response_text
+                WHERE r.response_text IS NULL
+                ORDER BY total_responses DESC
+            """, (question_id, question_id))
+        
+        results = cursor.fetchall()
+        return results
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     # 모든 투표 문제 가져오기
     questions = get_all_questions()
@@ -498,298 +685,584 @@ def main():
         st.info("등록된 투표가 없습니다.")
         return
     
-    # 문제 선택
-    selected_question = st.selectbox(
-        "결과를 볼 투표를 선택하세요",
-        questions,
-        format_func=lambda x: f"{x['title']} ({x['created_at'].strftime('%Y-%m-%d %H:%M')})"
-    )
+    # 탭 생성
+    tab1, tab2 = st.tabs(["📊 객관식 투표", "✏️ 주관식 투표"])
     
-    if selected_question:
-        st.write("---")
-        st.write(f"## {selected_question['title']}")
-        st.write(selected_question['description'])
+    with tab1:
+        # 문제 선택
+        selected_question = st.selectbox(
+            "결과를 볼 투표를 선택하세요",
+            questions,
+            format_func=lambda x: f"{x['title']} ({x['created_at'].strftime('%Y-%m-%d %H:%M')})"
+        )
         
-        # 투표 상태 표시
-        status_color = "🟢" if selected_question['status'] == 'active' else "🔴"
-        st.write(f"상태: {status_color} {selected_question['status'].upper()}")
-        
-        # 기본 통계
-        st.write(f"총 투표 수: {selected_question['total_votes']}")
-        st.write(f"참여자 수: {selected_question['unique_voters']}")
-        
-        # 결과 가져오기
-        results, voters = get_question_results(selected_question['question_id'])
-        
-        if results:
-            # Print the column names for debugging
-            print("Column Names:", results[0].keys())  # Debugging output
-
-            # Create DataFrame with correct column names
-            df_results = pd.DataFrame(results).astype({
-                'vote_count': 'int64',
-                'vote_percentage': 'float64'
-            })
+        if selected_question:
+            st.write("---")
+            st.write(f"## {selected_question['title']}")
+            st.write(selected_question['description'])
             
-            # 차트 그리기
-            col1, col2 = st.columns([2, 1])
+            # 투표 상태 표시
+            status_color = "🟢" if selected_question['status'] == 'active' else "🔴"
+            st.write(f"상태: {status_color} {selected_question['status'].upper()}")
+            
+            # 기본 통계
+            st.write(f"총 투표 수: {selected_question['total_votes']}")
+            st.write(f"참여자 수: {selected_question['unique_voters']}")
+            
+            # 결과 가져오기
+            results, voters = get_question_results(selected_question['question_id'])
+            
+            if results:
+                # Print the column names for debugging
+                print("Column Names:", results[0].keys())  # Debugging output
+
+                # Create DataFrame with correct column names
+                df_results = pd.DataFrame(results).astype({
+                    'vote_count': 'int64',
+                    'vote_percentage': 'float64'
+                })
+                
+                # 차트 그리기
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.write("### 투표 결과 차트")
+                    fig = px.bar(
+                        df_results,
+                        x='option_text',
+                        y='vote_count',
+                        text='vote_count',
+                        title="선택지별 투표 수",
+                        labels={'option_text': '선택지', 'vote_count': '투표 수'}
+                    )
+                    fig.update_traces(textposition='outside')
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    st.write("### 상세 결과")
+                    for result in results:
+                        st.write(f"#### {result['option_text']}")
+                        
+                        # 안전한 값 추출
+                        vote_count = result.get('vote_count', 0) or 0
+                        vote_percentage = result.get('vote_percentage', 0.0) or 0.0
+                        
+                        # 결과 표시
+                        st.write(f"투표 수: {vote_count} ({vote_percentage:.1f}%)")
+                        
+                        # 선택 이유 표시
+                        if result.get('reasonings'):
+                            with st.expander("💬 선택 이유 보기"):
+                                reasonings = result['reasonings'].split('\n')
+                                for reasoning in reasonings:
+                                    if reasoning.strip():
+                                        st.markdown(f"- {reasoning}")
+                
+                # 투표자 목록 (익명 제외)
+                if voters:
+                    with st.expander("투표자 목록 보기 (익명 제외)"):
+                        for voter in voters:
+                            st.write(f"- {voter['voter_name']} (신뢰도: {voter['credibility_score']:.2f})")
+                
+                # 관리자 기능
+                if selected_question['status'] == 'active':
+                    if st.button("투표 종료하기"):
+                        conn = connect_to_db()
+                        cursor = conn.cursor()
+                        try:
+                            cursor.execute("""
+                                UPDATE vote_questions
+                                SET status = 'closed'
+                                WHERE question_id = %s
+                            """, (selected_question['question_id'],))
+                            conn.commit()
+                            st.success("투표가 종료되었습니다.")
+                            st.rerun()
+                        except mysql.connector.Error as err:
+                            st.error(f"투표 종료 중 오류가 발생했습니다: {err}")
+                        finally:
+                            cursor.close()
+                            conn.close()
+
+            # LLM 투표 섹션
+            st.write("---")
+            st.write("## 🤖 LLM 투표")
+            
+            col1, col2 = st.columns([1, 2])
             
             with col1:
-                st.write("### 투표 결과 차트")
-                fig = px.bar(
-                    df_results,
-                    x='option_text',
-                    y='vote_count',
-                    text='vote_count',
-                    title="선택지별 투표 수",
-                    labels={'option_text': '선택지', 'vote_count': '투표 수'}
+                selected_model = st.selectbox(
+                    "LLM 모델 선택",
+                    get_available_models()
                 )
-                fig.update_traces(textposition='outside')
-                st.plotly_chart(fig, use_container_width=True)
+                
+                # LLM 투표 가중치 설정
+                llm_weight = st.slider(
+                    "LLM 투표 가중치",
+                    min_value=1,
+                    max_value=10,
+                    value=1,
+                    help="LLM의 투표가 몇 명의 투표와 동일한 가중치를 가질지 설정합니다."
+                )
+                
+                # RAG 사용 여부 선택
+                use_rag = st.checkbox("문서 참조 사용 (RAG)", 
+                                    help="선택한 문서를 참조하여 답변합니다.")
+                
+                if use_rag:
+                    # 파일 입력 방식 선택
+                    input_method = st.radio(
+                        "참조 문서 입력 방식",
+                        ["파일 업로드", "디렉토리 경로"]
+                    )
+                    
+                    context = ""
+                    if input_method == "파일 업로드":
+                        uploaded_files = st.file_uploader(
+                            "참조할 파일 선택 (여러 파일 가능)",
+                            accept_multiple_files=True,
+                            type=['txt', 'md', 'pdf']
+                        )
+                        
+                        if uploaded_files:
+                            with st.spinner("파일 처리 중..."):
+                                documents = load_files(uploaded_files)
+                                if documents:
+                                    vectorstore = create_vectorstore(documents)
+                                    
+                    else:  # 디렉토리 경로
+                        doc_directory = st.text_input(
+                            "참조할 문서 디렉토리 경로",
+                            help="마크다운/텍스트/PDF 파일이 있는 디렉토리"
+                        )
+                        
+                        if doc_directory and os.path.exists(doc_directory):
+                            with st.spinner("디렉토리 처리 중..."):
+                                documents = load_documents(doc_directory)
+                                if documents:
+                                    vectorstore = create_vectorstore(documents)
+                
+                # LLM 투표 버튼
+                if st.button("LLM 투표 실행"):
+                    options = get_question_options(selected_question['question_id'])
+                    options_text = "\n".join([f"{i+1}. {opt['option_text']}" 
+                                            for i, opt in enumerate(options)])
+                    
+                    context = ""
+                    if use_rag and 'vectorstore' in locals():
+                        with st.spinner("관련 문맥 검색 중..."):
+                            context = get_relevant_context(
+                                vectorstore,
+                                selected_question['description'],
+                                options_text
+                            )
+                            if context:
+                                st.write("### 참조한 문맥:")
+                                st.write(context)
+                    
+                    # LLM에게 물어보기
+                    with st.spinner("LLM 응답 대기 중..."):
+                        llm_response = ask_llm(
+                            selected_question['description'],
+                            options_text,
+                            selected_model,
+                            context if use_rag else ""
+                        )
+                    
+                    # 응답 파싱 및 저장
+                    try:
+                        selection, reasoning = parse_llm_response(llm_response)
+                        
+                        if selection < 1 or selection > len(options):
+                            st.error(f"LLM이 잘못된 선택지 번호를 반환했습니다: {selection}")
+                            return
+                        
+                        save_llm_vote(
+                            selected_question['question_id'],
+                            options[selection - 1]['option_id'],
+                            selected_model,
+                            reasoning,
+                            llm_weight
+                        )
+                        st.success(f"LLM 투표가 가중치 {llm_weight}로 저장되었습니다!")
+                        st.rerun()
+                        
+                    except ValueError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"LLM 응답 처리 중 오류 발생: {e}")
             
             with col2:
-                st.write("### 상세 결과")
-                for result in results:
-                    st.write(f"#### {result['option_text']}")
-                    
-                    # 안전한 값 추출
-                    vote_count = result.get('vote_count', 0) or 0
-                    vote_percentage = result.get('vote_percentage', 0.0) or 0.0
-                    
-                    # 결과 표시
-                    st.write(f"투표 수: {vote_count} ({vote_percentage:.1f}%)")
-                    
-                    # 선택 이유 표시
-                    if result.get('reasonings'):
-                        with st.expander("💬 선택 이유 보기"):
-                            reasonings = result['reasonings'].split('\n')
-                            for reasoning in reasonings:
-                                if reasoning.strip():
-                                    st.markdown(f"- {reasoning}")
+                # 기존 LLM 투표 결과 표시
+                llm_vote = get_llm_vote(selected_question['question_id'], selected_model)
+                if llm_vote:
+                    st.write("### 🤖 LLM 투표 결과")
+                    st.write(f"**선택한 항목:** {llm_vote['option_text']}")
+                    st.write("**선택 이유:**")
+                    st.write(llm_vote['reasoning'])
             
-            # 투표자 목록 (익명 제외)
-            if voters:
-                with st.expander("투표자 목록 보기 (익명 제외)"):
-                    for voter in voters:
-                        st.write(f"- {voter['voter_name']} (신뢰도: {voter['credibility_score']:.2f})")
+            # 결과 비교 표시
+            st.write("---")
+            st.write("## 📊 통합 결과 비교")
             
-            # 관리자 기능
-            if selected_question['status'] == 'active':
-                if st.button("투표 종료하기"):
-                    conn = connect_to_db()
-                    cursor = conn.cursor()
-                    try:
-                        cursor.execute("""
-                            UPDATE vote_questions
-                            SET status = 'closed'
-                            WHERE question_id = %s
-                        """, (selected_question['question_id'],))
-                        conn.commit()
-                        st.success("투표가 종료되었습니다.")
-                        st.rerun()
-                    except mysql.connector.Error as err:
-                        st.error(f"투표 종료 중 오류가 발생했습니다: {err}")
-                    finally:
-                        cursor.close()
-                        conn.close()
+            # 신뢰도 가중치 적용 여부 선택
+            apply_weights = st.checkbox("참여자 신뢰도 가중치 적용", 
+                                      help="체크하면 00_12_신뢰도_가중치_부여.py에서 설정된 신뢰도 점수가 투표에 반영됩니다.")
+            
+            results = get_combined_results(selected_question['question_id'], apply_weights)
+            if results:
+                # Print the column names for debugging
+                print("Combined Results Column Names:", results[0].keys())
 
-        # LLM 투표 섹션
-        st.write("---")
-        st.write("## 🤖 LLM 투표")
-        
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            selected_model = st.selectbox(
-                "LLM 모델 선택",
-                get_available_models()
-            )
-            
-            # LLM 투표 가중치 설정
-            llm_weight = st.slider(
-                "LLM 투표 가중치",
-                min_value=1,
-                max_value=10,
-                value=1,
-                help="LLM의 투표가 몇 명의 투표와 동일한 가중치를 가질지 설정합니다."
-            )
-            
-            # RAG 사용 여부 선택
-            use_rag = st.checkbox("문서 참조 사용 (RAG)", 
-                                help="선택한 문서를 참조하여 답변합니다.")
-            
-            if use_rag:
-                # 파일 입력 방식 선택
-                input_method = st.radio(
-                    "참조 문서 입력 방식",
-                    ["파일 업로드", "디렉토리 경로"]
-                )
+                # Create DataFrame with correct column names
+                df_results = pd.DataFrame(results)
                 
-                context = ""
-                if input_method == "파일 업로드":
-                    uploaded_files = st.file_uploader(
-                        "참조할 파일 선택 (여러 파일 가능)",
-                        accept_multiple_files=True,
-                        type=['txt', 'md', 'pdf']
-                    )
-                    
-                    if uploaded_files:
-                        with st.spinner("파일 처리 중..."):
-                            documents = load_files(uploaded_files)
-                            if documents:
-                                vectorstore = create_vectorstore(documents)
-                                
-                else:  # 디렉토리 경로
-                    doc_directory = st.text_input(
-                        "참조할 문서 디렉토리 경로",
-                        help="마크다운/텍스트/PDF 파일이 있는 디렉토리"
-                    )
-                    
-                    if doc_directory and os.path.exists(doc_directory):
-                        with st.spinner("디렉토리 처리 중..."):
-                            documents = load_documents(doc_directory)
-                            if documents:
-                                vectorstore = create_vectorstore(documents)
-            
-            # LLM 투표 버튼
-            if st.button("LLM 투표 실행"):
-                options = get_question_options(selected_question['question_id'])
-                options_text = "\n".join([f"{i+1}. {opt['option_text']}" 
-                                        for i, opt in enumerate(options)])
+                # Convert numeric columns to appropriate types
+                numeric_columns = ['human_votes', 'weighted_llm_votes', 'total_votes']
+                if apply_weights:
+                    numeric_columns.append('raw_human_votes')
                 
-                context = ""
-                if use_rag and 'vectorstore' in locals():
-                    with st.spinner("관련 문맥 검색 중..."):
-                        context = get_relevant_context(
-                            vectorstore,
-                            selected_question['description'],
-                            options_text
-                        )
-                        if context:
-                            st.write("### 참조한 문맥:")
-                            st.write(context)
+                for col in numeric_columns:
+                    if col in df_results.columns:
+                        df_results[col] = pd.to_numeric(df_results[col], errors='coerce').fillna(0).astype('int64')
                 
-                # LLM에게 물어보기
-                with st.spinner("LLM 응답 대기 중..."):
-                    llm_response = ask_llm(
-                        selected_question['description'],
-                        options_text,
-                        selected_model,
-                        context if use_rag else ""
-                    )
-                
-                # 응답 파싱 및 저장
-                try:
-                    selection, reasoning = parse_llm_response(llm_response)
-                    
-                    if selection < 1 or selection > len(options):
-                        st.error(f"LLM이 잘못된 선택지 번호를 반환했습니다: {selection}")
-                        return
-                    
-                    save_llm_vote(
-                        selected_question['question_id'],
-                        options[selection - 1]['option_id'],
-                        selected_model,
-                        reasoning,
-                        llm_weight
-                    )
-                    st.success(f"LLM 투표가 가중치 {llm_weight}로 저장되었습니다!")
-                    st.rerun()
-                    
-                except ValueError as e:
-                    st.error(str(e))
-                except Exception as e:
-                    st.error(f"LLM 응답 처리 중 오류 발생: {e}")
-        
-        with col2:
-            # 기존 LLM 투표 결과 표시
-            llm_vote = get_llm_vote(selected_question['question_id'], selected_model)
-            if llm_vote:
-                st.write("### 🤖 LLM 투표 결과")
-                st.write(f"**선택한 항목:** {llm_vote['option_text']}")
-                st.write("**선택 이유:**")
-                st.write(llm_vote['reasoning'])
-        
-        # 결과 비교 표시
-        st.write("---")
-        st.write("## 📊 통합 결과 비교")
-        
-        # 신뢰도 가중치 적용 여부 선택
-        apply_weights = st.checkbox("참여자 신뢰도 가중치 적용", 
-                                  help="체크하면 00_12_신뢰도_가중치_부여.py에서 설정된 신뢰도 점수가 투표에 반영됩니다.")
-        
-        results = get_combined_results(selected_question['question_id'], apply_weights)
-        if results:
-            # Print the column names for debugging
-            print("Combined Results Column Names:", results[0].keys())
-
-            # Create DataFrame with correct column names
-            df_results = pd.DataFrame(results)
-            
-            # Convert numeric columns to appropriate types
-            numeric_columns = ['human_votes', 'weighted_llm_votes', 'total_votes']
-            if apply_weights:
-                numeric_columns.append('raw_human_votes')
-            
-            for col in numeric_columns:
-                if col in df_results.columns:
-                    df_results[col] = pd.to_numeric(df_results[col], errors='coerce').fillna(0).astype('int64')
-            
-            # 인간 투표 차트
-            fig1 = px.bar(
-                df_results,
-                x='option_text',
-                y='raw_human_votes' if apply_weights else 'human_votes',
-                title=f"인간 투표 결과 {'(가중치 적용 전)' if apply_weights else ''}",
-                labels={'option_text': '선택지', 
-                       'raw_human_votes': '투표 수', 
-                       'human_votes': '투표 수'}
-            )
-            st.plotly_chart(fig1, use_container_width=True)
-            
-            if apply_weights:
-                # 가중치가 적용된 인간 투표 차트
-                fig_weighted = px.bar(
+                # 인간 투표 차트
+                fig1 = px.bar(
                     df_results,
                     x='option_text',
-                    y='human_votes',
-                    title="인간 투표 결과 (가중치 적용 후)",
-                    labels={'option_text': '선택지', 'human_votes': '가중치 적용된 투표 수'}
+                    y='raw_human_votes' if apply_weights else 'human_votes',
+                    title=f"인간 투표 결과 {'(가중치 적용 전)' if apply_weights else ''}",
+                    labels={'option_text': '선택지', 
+                           'raw_human_votes': '투표 수', 
+                           'human_votes': '투표 수'}
                 )
-                st.plotly_chart(fig_weighted, use_container_width=True)
+                st.plotly_chart(fig1, use_container_width=True)
+                
+                if apply_weights:
+                    # 가중치가 적용된 인간 투표 차트
+                    fig_weighted = px.bar(
+                        df_results,
+                        x='option_text',
+                        y='human_votes',
+                        title="인간 투표 결과 (가중치 적용 후)",
+                        labels={'option_text': '선택지', 'human_votes': '가중치 적용된 투표 수'}
+                    )
+                    st.plotly_chart(fig_weighted, use_container_width=True)
+                
+                # 통합 결과 차트
+                df_melted = pd.melt(
+                    df_results,
+                    id_vars=['option_text'],
+                    value_vars=['human_votes', 'weighted_llm_votes']
+                )
+                
+                fig2 = px.bar(
+                    df_melted,
+                    x='option_text',
+                    y='value',
+                    color='variable',
+                    title=f"통합 투표 결과 (인간{' (가중치 적용)' if apply_weights else ''} + LLM)",
+                    labels={
+                        'option_text': '선택지',
+                        'value': '투표 수',
+                        'variable': '투표자 유형'
+                    },
+                    barmode='stack'
+                )
+                
+                # 범례 이름 변경
+                fig2.update_traces(
+                    name=f"인간 투표{' (가중치 적용)' if apply_weights else ''}",
+                    selector=dict(name="human_votes")
+                )
+                fig2.update_traces(
+                    name="LLM 투표 (가중치 적용)",
+                    selector=dict(name="weighted_llm_votes")
+                )
+                
+                st.plotly_chart(fig2, use_container_width=True)
+
+    with tab2:
+        st.write("## 주관식 투표 결과")
+        
+        # 주관식 질문 목록 가져오기
+        conn = connect_to_db()
+        cursor = conn.cursor(dictionary=True)
+        
+        try:
+            cursor.execute("""
+                SELECT q.*, 
+                       COUNT(DISTINCT r.response_id) as total_responses,
+                       COUNT(DISTINCT r.voter_name) as unique_voters
+                FROM subjective_questions q
+                LEFT JOIN subjective_responses r ON q.question_id = r.question_id
+                GROUP BY q.question_id
+                ORDER BY q.created_at DESC
+            """)
+            subjective_questions = cursor.fetchall()
             
-            # 통합 결과 차트
-            df_melted = pd.melt(
-                df_results,
-                id_vars=['option_text'],
-                value_vars=['human_votes', 'weighted_llm_votes']
+            if not subjective_questions:
+                st.info("등록된 주관식 질문이 없습니다.")
+                return
+            
+            # 질문 선택
+            selected_question = st.selectbox(
+                "결과를 볼 질문을 선택하세요",
+                subjective_questions,
+                format_func=lambda x: f"{x['title']} ({x['created_at'].strftime('%Y-%m-%d %H:%M')})",
+                key="subjective_question_selector"
             )
             
-            fig2 = px.bar(
-                df_melted,
-                x='option_text',
-                y='value',
-                color='variable',
-                title=f"통합 투표 결과 (인간{' (가중치 적용)' if apply_weights else ''} + LLM)",
-                labels={
-                    'option_text': '선택지',
-                    'value': '투표 수',
-                    'variable': '투표자 유형'
-                },
-                barmode='stack'
-            )
-            
-            # 범례 이름 변경
-            fig2.update_traces(
-                name=f"인간 투표{' (가중치 적용)' if apply_weights else ''}",
-                selector=dict(name="human_votes")
-            )
-            fig2.update_traces(
-                name="LLM 투표 (가중치 적용)",
-                selector=dict(name="weighted_llm_votes")
-            )
-            
-            st.plotly_chart(fig2, use_container_width=True)
+            if selected_question:
+                st.write("---")
+                st.write(f"## {selected_question['title']}")
+                st.write(selected_question['description'])
+                
+                # 투표 상태 표시
+                status_color = "🟢" if selected_question['status'] == 'active' else "🔴"
+                st.write(f"상태: {status_color} {selected_question['status'].upper()}")
+                
+                # 기본 통계
+                st.write(f"총 응답 수: {selected_question['total_responses']}")
+                st.write(f"참여자 수: {selected_question['unique_voters']}")
+                
+                # 결과 가져오기
+                results, voters, total_responses = get_subjective_question_results(selected_question['question_id'])
+                
+                if results:
+                    # 결과를 DataFrame으로 변환
+                    df_results = pd.DataFrame(results)
+                    
+                    # 차트 그리기
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        st.write("### 응답 분포 차트")
+                        # 상위 10개 응답만 표시
+                        top_responses = df_results.head(10)
+                        fig = px.bar(
+                            top_responses,
+                            x='response_text',
+                            y='response_count',
+                            text='response_count',
+                            title="응답별 빈도 (상위 10개)",
+                            labels={'response_text': '응답', 'response_count': '응답 수'}
+                        )
+                        fig.update_traces(textposition='outside')
+                        fig.update_layout(xaxis_tickangle=-45)
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        st.write("### 상세 결과")
+                        for result in results:
+                            with st.expander(f"📝 {result['response_text']} ({result['response_count']}회)"):
+                                st.write(f"응답 비율: {result['response_percentage']}%")
+                                if result['voters'] and result['voters'] != '익명':
+                                    st.write("응답자:")
+                                    voters_list = result['voters'].split(', ')
+                                    for voter in voters_list:
+                                        if voter != '익명':
+                                            st.write(f"- {voter}")
+                    
+                    # LLM 답변 섹션
+                    st.write("---")
+                    st.write("## 🤖 LLM 답변")
+                    
+                    col1, col2 = st.columns([1, 2])
+                    
+                    with col1:
+                        selected_model = st.selectbox(
+                            "LLM 모델 선택",
+                            get_available_models(),
+                            key="subjective_llm_model"
+                        )
+                        
+                        # LLM 답변 가중치 설정
+                        llm_weight = st.slider(
+                            "LLM 답변 가중치",
+                            min_value=1,
+                            max_value=10,
+                            value=1,
+                            help="LLM의 답변이 몇 명의 답변과 동일한 가중치를 가질지 설정합니다.",
+                            key="subjective_llm_weight"
+                        )
+                        
+                        # RAG 사용 여부 선택
+                        use_rag = st.checkbox("문서 참조 사용 (RAG)", 
+                                            help="선택한 문서를 참조하여 답변합니다.",
+                                            key="subjective_use_rag")
+                        
+                        if use_rag:
+                            # 파일 입력 방식 선택
+                            input_method = st.radio(
+                                "참조 문서 입력 방식",
+                                ["파일 업로드", "디렉토리 경로"],
+                                key="subjective_input_method"
+                            )
+                            
+                            context = ""
+                            if input_method == "파일 업로드":
+                                uploaded_files = st.file_uploader(
+                                    "참조할 파일 선택 (여러 파일 가능)",
+                                    accept_multiple_files=True,
+                                    type=['txt', 'md', 'pdf'],
+                                    key="subjective_file_uploader"
+                                )
+                                
+                                if uploaded_files:
+                                    with st.spinner("파일 처리 중..."):
+                                        documents = load_files(uploaded_files)
+                                        if documents:
+                                            vectorstore = create_vectorstore(documents)
+                                            
+                            else:  # 디렉토리 경로
+                                doc_directory = st.text_input(
+                                    "참조할 문서 디렉토리 경로",
+                                    help="마크다운/텍스트/PDF 파일이 있는 디렉토리",
+                                    key="subjective_doc_directory"
+                                )
+                                
+                                if doc_directory and os.path.exists(doc_directory):
+                                    with st.spinner("디렉토리 처리 중..."):
+                                        documents = load_documents(doc_directory)
+                                        if documents:
+                                            vectorstore = create_vectorstore(documents)
+                        
+                        # LLM 답변 버튼
+                        if st.button("LLM 답변 생성", key="subjective_llm_button"):
+                            context = ""
+                            if use_rag and 'vectorstore' in locals():
+                                with st.spinner("관련 문맥 검색 중..."):
+                                    context = get_relevant_context(
+                                        vectorstore,
+                                        selected_question['description'],
+                                        ""
+                                    )
+                                    if context:
+                                        st.write("### 참조한 문맥:")
+                                        st.write(context)
+                            
+                            # LLM에게 물어보기
+                            with st.spinner("LLM 응답 대기 중..."):
+                                llm_response = ask_llm(
+                                    selected_question['description'],
+                                    "",
+                                    selected_model,
+                                    context if use_rag else ""
+                                )
+                            
+                            # 응답 파싱 및 저장
+                            try:
+                                response_text = llm_response.strip()
+                                save_subjective_llm_response(
+                                    selected_question['question_id'],
+                                    selected_model,
+                                    response_text,
+                                    context if use_rag else "",
+                                    llm_weight
+                                )
+                                st.success(f"LLM 답변이 가중치 {llm_weight}로 저장되었습니다!")
+                                st.rerun()
+                                
+                            except Exception as e:
+                                st.error(f"LLM 응답 처리 중 오류 발생: {e}")
+                    
+                    with col2:
+                        # 기존 LLM 답변 결과 표시
+                        llm_response = get_subjective_llm_vote(selected_question['question_id'], selected_model)
+                        if llm_response:
+                            st.write("### 🤖 LLM 답변 결과")
+                            st.write(f"**답변:** {llm_response['response_text']}")
+                            if llm_response['reasoning']:
+                                st.write("**참조한 문맥:**")
+                                st.write(llm_response['reasoning'])
+                    
+                    # 결과 비교 표시
+                    st.write("---")
+                    st.write("## 📊 통합 결과 비교")
+                    
+                    # 신뢰도 가중치 적용 여부 선택
+                    apply_weights = st.checkbox(
+                        "참여자 신뢰도 가중치 적용", 
+                        help="체크하면 00_12_신뢰도_가중치_부여.py에서 설정된 신뢰도 점수가 답변에 반영됩니다.",
+                        key="subjective_apply_weights"
+                    )
+                    
+                    combined_results = get_combined_subjective_results(selected_question['question_id'], apply_weights)
+                    if combined_results:
+                        # Create DataFrame with correct column names
+                        df_combined = pd.DataFrame(combined_results)
+                        
+                        # Convert numeric columns to appropriate types
+                        numeric_columns = ['human_responses', 'weighted_llm_responses', 'total_responses']
+                        if apply_weights:
+                            numeric_columns.append('raw_human_responses')
+                        
+                        for col in numeric_columns:
+                            if col in df_combined.columns:
+                                df_combined[col] = pd.to_numeric(df_combined[col], errors='coerce').fillna(0).astype('int64')
+                        
+                        # 인간 답변 차트
+                        fig1 = px.bar(
+                            df_combined,
+                            x='response_text',
+                            y='raw_human_responses' if apply_weights else 'human_responses',
+                            title=f"인간 답변 결과 {'(가중치 적용 전)' if apply_weights else ''}",
+                            labels={'response_text': '답변', 
+                                   'raw_human_responses': '답변 수', 
+                                   'human_responses': '답변 수'}
+                        )
+                        st.plotly_chart(fig1, use_container_width=True)
+                        
+                        if apply_weights:
+                            # 가중치가 적용된 인간 답변 차트
+                            fig_weighted = px.bar(
+                                df_combined,
+                                x='response_text',
+                                y='human_responses',
+                                title="인간 답변 결과 (가중치 적용 후)",
+                                labels={'response_text': '답변', 'human_responses': '가중치 적용된 답변 수'}
+                            )
+                            st.plotly_chart(fig_weighted, use_container_width=True)
+                        
+                        # 통합 결과 차트
+                        df_melted = pd.melt(
+                            df_combined,
+                            id_vars=['response_text'],
+                            value_vars=['human_responses', 'weighted_llm_responses']
+                        )
+                        
+                        fig2 = px.bar(
+                            df_melted,
+                            x='response_text',
+                            y='value',
+                            color='variable',
+                            title=f"통합 답변 결과 (인간{' (가중치 적용)' if apply_weights else ''} + LLM)",
+                            labels={
+                                'response_text': '답변',
+                                'value': '답변 수',
+                                'variable': '답변자 유형'
+                            },
+                            barmode='stack'
+                        )
+                        
+                        # 범례 이름 변경
+                        fig2.update_traces(
+                            name=f"인간 답변{' (가중치 적용)' if apply_weights else ''}",
+                            selector=dict(name="human_responses")
+                        )
+                        fig2.update_traces(
+                            name="LLM 답변 (가중치 적용)",
+                            selector=dict(name="weighted_llm_responses")
+                        )
+                        
+                        st.plotly_chart(fig2, use_container_width=True)
+
+        except mysql.connector.Error as err:
+            st.error(f"데이터 조회 중 오류가 발생했습니다: {err}")
+        finally:
+            cursor.close()
+            conn.close()
 
 if __name__ == "__main__":
     os.environ['PYTHONPATH'] = os.getcwd()

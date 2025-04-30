@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 import json
 from openai import OpenAI
+import graphviz
 
 # .env 파일 로드
 load_dotenv()
@@ -23,15 +24,15 @@ TOC_MODELS = {
             "제약 식별(Identify): 시스템의 성과를 제한하는 제약 찾기",
             "제약 활용(Exploit): 기존 제약을 최대한 활용",
             "다른 요소 종속(Subordinate): 모든 활동을 제약에 동기화",
-            "제약 향상(Elevate): 제약 해소를 위한 투자/개선",
-            "반복(Repeat): 새로운 제약 발견 시 프로세스 반복"
+            "제약 격상(Elevate): 제약 해소를 위한 투자/개선",
+            "재평가(Return): 새로운 제약 발견 시 프로세스 반복"
         ],
         "questions": [
-            "현재 시스템의 주요 성과 지표는 무엇입니까?",
-            "어떤 요소가 성과 향상을 가로막고 있습니까?",
-            "제약 요소의 현재 활용도는 어떠합니까?",
-            "제약에 맞춰 다른 요소들을 어떻게 조정할 수 있습니까?",
-            "제약 해소를 위해 어떤 투자나 개선이 필요합니까?"
+            "1. 식별 단계: 현재 시스템에서 가장 큰 제약(병목)은 무엇입니까? 어떤 증거로 이를 확인할 수 있습니까?",
+            "2. 활용 단계: 현재의 제약 요소를 최대한 활용하기 위해 어떤 즉각적인 개선이 가능합니까?",
+            "3. 종속 단계: 다른 모든 프로세스와 자원을 제약에 맞추려면 어떻게 조정해야 합니까?",
+            "4. 격상 단계: 제약을 근본적으로 해소하기 위해 어떤 투자나 변화가 필요합니까?",
+            "5. 재평가 단계: 이전 단계들의 개선 후 새로운 제약은 무엇이 될 것으로 예상됩니까?"
         ],
         "description": "시스템의 제약을 찾아 개선하는 기본적인 TOC 적용 모델"
     },
@@ -43,13 +44,111 @@ TOC_MODELS = {
             "전제 조건도(PRT): 해결책 실행을 위한 중간 목표 설정",
             "전환 계획도(TT): 구체적인 실행 계획 수립"
         ],
+        "tool_descriptions": {
+            "CRT": """
+### 현상 구조도(Current Reality Tree)
+- **목적**: 현재 시스템의 바람직하지 않은 현상들(UDE)과 그 원인들 간의 인과관계를 파악
+- **주요 특징**:
+  - 현재 상황의 논리적 분석
+  - 핵심 문제(Core Problem)의 식별
+  - 문제들 간의 인과관계 시각화
+- **사용 시점**: 문제의 근본 원인을 찾고자 할 때
+- **기대 효과**: 표면적 증상이 아닌 근본 원인에 대한 해결책 도출 가능
+            """,
+            "EC": """
+### 충돌 해소도(Evaporating Cloud)
+- **목적**: 시스템 내의 근본적인 갈등 상황을 파악하고 해결책 도출
+- **주요 특징**:
+  - 갈등 상황의 양면성 분석
+  - 전제 조건의 타당성 검토
+  - 창의적 해결책 도출
+- **사용 시점**: 서로 상충되는 요구사항이나 목표가 있을 때
+- **기대 효과**: 양측 모두가 수용할 수 있는 win-win 해결책 도출
+            """,
+            "FRT": """
+### 미래 구조도(Future Reality Tree)
+- **목적**: 제안된 해결책이 의도한 효과를 가져올 것인지 검증
+- **주요 특징**:
+  - 해결책 실행의 파급 효과 예측
+  - 부작용 식별 및 대응 방안 수립
+  - 긍정적 효과의 강화 방안 모색
+- **사용 시점**: 해결책 실행 전 효과성 검증이 필요할 때
+- **기대 효과**: 해결책의 실효성 검증 및 부작용 최소화
+            """,
+            "PRT": """
+### 전제 조건도(Prerequisite Tree)
+- **목적**: 목표 달성을 위한 중간 단계와 장애물 식별
+- **주요 특징**:
+  - 장애물 식별 및 분석
+  - 중간 목표 설정
+  - 단계별 달성 전략 수립
+- **사용 시점**: 해결책 실행의 구체적 단계가 필요할 때
+- **기대 효과**: 실행 가능한 단계별 계획 수립
+            """,
+            "TT": """
+### 전환 계획도(Transition Tree)
+- **목적**: 현재 상태에서 목표 상태로의 구체적인 실행 계획 수립
+- **주요 특징**:
+  - 단계별 실행 계획
+  - 마일스톤 설정
+  - 진행 상황 모니터링 포인트 정의
+- **사용 시점**: 구체적인 실행 계획이 필요할 때
+- **기대 효과**: 체계적이고 실행 가능한 변화 관리 계획 수립
+            """
+        },
         "questions": [
-            "어떤 바람직하지 않은 현상들이 있습니까?",
-            "이러한 현상들 사이의 인과관계는 무엇입니까?",
-            "핵심적인 갈등 상황은 무엇입니까?",
-            "갈등 해결을 위한 전제 조건은 무엇입니까?",
-            "해결책 실행의 장애물은 무엇입니까?"
+            "현재 상황에서 발생하는 바람직하지 않은 현상들은 무엇입니까? (각 현상을 구체적으로 기술해주세요)",
+            "이러한 현상들 사이의 인과관계는 어떻게 됩니까? (A 때문에 B가 발생하는 식으로 설명해주세요)",
+            "핵심적인 갈등 상황은 무엇이며, 이를 해결하기 위한 전제 조건은 무엇입니까?",
+            "제안된 해결책이 실행되면 어떤 긍정적/부정적 효과가 예상됩니까?",
+            "해결책 실행을 위한 구체적인 단계와 일정은 어떻게 됩니까?"
         ],
+        "chart_templates": {
+            "CRT": """```mermaid
+graph TD
+    UDE1[바람직하지 않은 현상 1] --> Effect1[영향 1]
+    UDE2[바람직하지 않은 현상 2] --> Effect1
+    Effect1 --> CoreProblem[핵심 문제]
+    UDE3[바람직하지 않은 현상 3] --> Effect2[영향 2]
+    Effect2 --> CoreProblem
+```""",
+            "EC": """```mermaid
+graph TD
+    Conflict[갈등 상황] --> Want1[원하는 것 1]
+    Conflict --> Want2[원하는 것 2]
+    Want1 --> Prerequisite1[전제 조건 1]
+    Want2 --> Prerequisite2[전제 조건 2]
+    Prerequisite1 --> Solution[해결책]
+    Prerequisite2 --> Solution
+```""",
+            "FRT": """```mermaid
+graph TD
+    Action[제안된 해결책] --> Effect1[긍정적 효과 1]
+    Action --> Effect2[긍정적 효과 2]
+    Effect1 --> Result1[기대 결과 1]
+    Effect2 --> Result2[기대 결과 2]
+    Action --> Risk[잠재적 위험]
+```""",
+            "PRT": """```mermaid
+graph LR
+    Current[현재 상태] --> Obstacle1[장애물 1]
+    Current --> Obstacle2[장애물 2]
+    Obstacle1 --> Action1[중간 목표 1]
+    Obstacle2 --> Action2[중간 목표 2]
+    Action1 --> Goal[최종 목표]
+    Action2 --> Goal
+```""",
+            "TT": """```mermaid
+graph LR
+    Start[시작] --> Phase1[단계 1]
+    Phase1 --> Phase2[단계 2]
+    Phase2 --> Phase3[단계 3]
+    Phase3 --> End[완료]
+    Phase1 --> Milestone1[마일스톤 1]
+    Phase2 --> Milestone2[마일스톤 2]
+    Phase3 --> Milestone3[마일스톤 3]
+```"""
+        },
         "description": "문제 해결과 변화 관리를 위한 로직 기반 도구"
     },
     "쓰루풋 회계": {
@@ -119,6 +218,71 @@ TOC_MODELS = {
             "프로젝트 버퍼는 얼마나 필요합니까?"
         ],
         "description": "프로젝트 관리를 위한 TOC 적용"
+    }
+}
+
+# TOC 모델 간 연관성 정의
+TOC_MODEL_RELATIONSHIPS = {
+    "5단계 집중 프로세스": {
+        "related_models": {
+            "사고 프로세스": "제약 식별 단계에서 CRT를 활용하여 제약 분석",
+            "쓰루풋 회계": "제약 활용 단계에서 쓰루풋 분석으로 최적화",
+            "드럼-버퍼-로프": "제약 활용과 종속 단계에서 생산 일정 최적화",
+            "버퍼 관리": "제약 활용 단계에서 버퍼 관리로 제약 보호",
+            "중요 체인 프로젝트 관리": "제약 격상 단계에서 프로젝트 관리 방법론 활용"
+        },
+        "flow_chart": """```mermaid
+graph TD
+    A[제약 식별] --> B[제약 활용]
+    B --> C[다른 요소 종속]
+    C --> D[제약 격상]
+    D --> E[재평가]
+    A -.-> F[사고 프로세스/CRT]
+    B -.-> G[쓰루풋 회계]
+    B -.-> H[드럼-버퍼-로프]
+    B -.-> I[버퍼 관리]
+    D -.-> J[중요 체인]
+```"""
+    },
+    "사고 프로세스": {
+        "related_models": {
+            "5단계 집중 프로세스": "CRT로 제약 식별, FRT로 해결책 검증",
+            "쓰루풋 회계": "EC와 FRT에서 재무적 영향 분석",
+            "드럼-버퍼-로프": "PRT와 TT에서 실행 계획 수립",
+            "버퍼 관리": "FRT와 PRT에서 버퍼 설계",
+            "중요 체인 프로젝트 관리": "TT를 프로젝트 계획에 활용"
+        },
+        "flow_chart": """```mermaid
+graph TD
+    A[CRT] --> B[EC]
+    B --> C[FRT]
+    C --> D[PRT]
+    D --> E[TT]
+    A -.-> F[5단계 프로세스]
+    C -.-> G[쓰루풋 회계]
+    E -.-> H[드럼-버퍼-로프]
+    D -.-> I[버퍼 관리]
+    E -.-> J[중요 체인]
+```"""
+    },
+    "쓰루풋 회계": {
+        "related_models": {
+            "5단계 집중 프로세스": "제약 활용 단계의 재무적 분석",
+            "사고 프로세스": "EC와 FRT에서 재무적 의사결정",
+            "드럼-버퍼-로프": "생산 일정과 재고 관리의 재무적 영향",
+            "버퍼 관리": "버퍼 크기 결정의 재무적 영향",
+            "중요 체인 프로젝트 관리": "프로젝트 투자 결정"
+        },
+        "flow_chart": """```mermaid
+graph TD
+    A[쓰루풋] --> B[재고/투자]
+    B --> C[운영비용]
+    A -.-> D[5단계 프로세스]
+    A -.-> E[사고 프로세스]
+    B -.-> F[드럼-버퍼-로프]
+    C -.-> G[버퍼 관리]
+    B -.-> H[중요 체인]
+```"""
     }
 }
 
@@ -358,51 +522,96 @@ def get_ai_analysis(content, model_type):
         return f"AI 분석 중 오류 발생: {str(e)}"
 
 def save_toc_analysis(title, area, model_type, analysis_data, ai_analysis):
-    """TOC 분석 결과를 DB에 저장"""
+    """TOC 분석 저장"""
     try:
         conn = connect_to_db()
         cursor = conn.cursor()
         
-        insert_query = """
-        INSERT INTO toc_analysis (
-            title, area, current_state, constraints, implementation_plan, solutions, created_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
-        """
+        # analysis_data에 AI 분석 결과 추가
+        analysis_data['ai_analysis'] = ai_analysis
         
-        # 현재 상태에 모델 타입과 입력 데이터 포함
-        current_state = {
-            "model_type": model_type,
-            "input_data": analysis_data
-        }
-        
-        # 제약사항은 빈 객체로 초기화
-        constraints = {}
-        
-        # 실행 계획은 빈 객체로 초기화
-        implementation_plan = {}
-        
-        # AI 분석 결과를 solutions에 저장
-        solutions = {
-            "ai_analysis": ai_analysis
-        }
-        
-        cursor.execute(insert_query, (
+        cursor.execute('''
+            INSERT INTO toc_analysis (
+                analysis_name, analysis_type, description, analysis_data, created_by, created_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, NOW()
+            )
+        ''', (
             title,
-            area,
-            json.dumps(current_state, ensure_ascii=False),
-            json.dumps(constraints, ensure_ascii=False),
-            json.dumps(implementation_plan, ensure_ascii=False),
-            json.dumps(solutions, ensure_ascii=False)
+            model_type,
+            analysis_data.get('current_situation', ''),
+            json.dumps(analysis_data),
+            'system'
         ))
         
+        analysis_id = cursor.lastrowid
         conn.commit()
-        return True
+        cursor.close()
+        conn.close()
+        return True, analysis_id
+    except mysql.connector.Error as err:
+        st.error(f"데이터 저장 중 오류 발생: {err}")
+        return False, None
+
+def get_filtered_analyses(search_name, search_type, start_date, end_date):
+    """필터링된 TOC 분석 목록 조회"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor(dictionary=True)
         
-    except Exception as e:
-        st.error(f"저장 중 오류가 발생했습니다: {str(e)}")
-        return False
+        # 기본 쿼리 작성
+        query = """
+            SELECT 
+                analysis_id,
+                analysis_name,
+                analysis_type,
+                description,
+                analysis_data,
+                created_by,
+                created_at
+            FROM toc_analysis
+            WHERE 1=1
+        """
+        params = []
+        
+        # 검색 조건 추가
+        if search_name and search_name.strip():
+            query += " AND analysis_name LIKE %s"
+            params.append(f"%{search_name.strip()}%")
+        
+        if search_type and search_type != "전체":
+            query += " AND analysis_type = %s"
+            params.append(search_type)
+        
+        if start_date:
+            query += " AND DATE(created_at) >= %s"
+            params.append(start_date)
+        
+        if end_date:
+            query += " AND DATE(created_at) <= %s"
+            params.append(end_date)
+        
+        # 정렬 조건 추가
+        query += " ORDER BY created_at DESC"
+        
+        # 쿼리 실행 및 결과 반환
+        cursor.execute(query, params)
+        analyses = cursor.fetchall()
+        
+        # 결과가 없을 경우 디버깅을 위한 로그
+        if not analyses:
+            st.write("실행된 쿼리:", query)
+            st.write("파라미터:", params)
+            
+        return analyses
+        
+    except mysql.connector.Error as err:
+        st.error(f"데이터베이스 조회 중 오류 발생: {err}")
+        return []
     finally:
-        if 'conn' in locals():
+        if cursor:
+            cursor.close()
+        if conn:
             conn.close()
 
 def get_toc_analyses():
@@ -414,9 +623,9 @@ def get_toc_analyses():
         query = """
         SELECT 
             analysis_id, 
-            title, 
-            area, 
-            current_state,
+            analysis_name,
+            analysis_type,
+            analysis_data,
             created_at 
         FROM toc_analysis 
         ORDER BY created_at DESC
@@ -427,8 +636,9 @@ def get_toc_analyses():
         
         # JSON 파싱 및 모델 타입 추출
         for result in results:
-            current_state = json.loads(result['current_state'])
-            result['model_type'] = current_state.get('model_type', '알 수 없음')
+            if result['analysis_data']:
+                analysis_data = json.loads(result['analysis_data'])
+                result['model_type'] = result['analysis_type']
             
         return results
         
@@ -459,6 +669,64 @@ def get_toc_analysis_detail(analysis_id):
         if 'conn' in locals():
             conn.close()
 
+def mermaid_to_graphviz(mermaid_code):
+    """Mermaid 코드를 Graphviz로 변환"""
+    try:
+        # Mermaid 코드에서 노드와 엣지 추출
+        import re
+        
+        # flowchart/graph 형식 파싱
+        nodes = {}
+        edges = []
+        
+        # 노드 정의 찾기 (예: A[내용])
+        node_pattern = r'([A-Za-z0-9_]+)\[(.*?)\]'
+        for match in re.finditer(node_pattern, mermaid_code):
+            node_id, node_label = match.groups()
+            nodes[node_id] = node_label
+        
+        # 엣지 정의 찾기 (예: A --> B)
+        edge_pattern = r'([A-Za-z0-9_]+)\s*-->\s*([A-Za-z0-9_]+)'
+        edges = re.findall(edge_pattern, mermaid_code)
+        
+        # Graphviz 객체 생성
+        dot = graphviz.Digraph()
+        dot.attr(rankdir='LR')  # 왼쪽에서 오른쪽으로 방향 설정
+        
+        # 노드 추가
+        for node_id, node_label in nodes.items():
+            dot.node(node_id, node_label)
+        
+        # 엣지 추가
+        for src, dst in edges:
+            dot.edge(src, dst)
+        
+        return dot
+    except Exception as e:
+        st.error(f"차트 변환 중 오류 발생: {str(e)}")
+        return None
+
+def display_mermaid_chart(markdown_text):
+    """Mermaid 차트가 포함된 마크다운 텍스트를 표시"""
+    import re
+    mermaid_pattern = r"```mermaid\n(.*?)\n```"
+    
+    # 일반 마크다운과 Mermaid 차트 분리
+    parts = re.split(mermaid_pattern, markdown_text, flags=re.DOTALL)
+    
+    for i, part in enumerate(parts):
+        if i % 2 == 0:  # 일반 마크다운
+            if part.strip():
+                st.markdown(part)
+        else:  # Mermaid 차트
+            # Graphviz로 변환하여 표시
+            dot = mermaid_to_graphviz(part)
+            if dot:
+                st.graphviz_chart(dot)
+            else:
+                # 변환 실패 시 코드 표시
+                st.code(part, language="mermaid")
+
 def get_model_analysis_form(selected_model):
     """선택된 모델에 따른 분석 폼 생성"""
     analysis_data = {}
@@ -478,6 +746,19 @@ def get_model_analysis_form(selected_model):
         
         # 모델별 질문 표시
         st.markdown(f"### {selected_model} 분석")
+        
+        # 사고 프로세스 모델인 경우 차트 템플릿 표시
+        if selected_model == "사고 프로세스":
+            st.markdown("### TOC 사고 프로세스 도구")
+            for tool_name, template in TOC_MODELS[selected_model]["chart_templates"].items():
+                with st.expander(f"{tool_name} - {TOC_MODELS[selected_model]['tools'][list(TOC_MODELS[selected_model]['chart_templates'].keys()).index(tool_name)]}"):
+                    # 도구 설명 표시
+                    st.markdown(TOC_MODELS[selected_model]["tool_descriptions"][tool_name])
+                    st.markdown("#### 차트 템플릿")
+                    display_mermaid_chart(template)
+                    st.markdown("이 템플릿을 참고하여 아래 질문들에 답변해주세요.")
+                    st.markdown("---")
+        
         for i, question in enumerate(TOC_MODELS[selected_model]["questions"], 1):
             analysis_data[f"q{i}"] = st.text_area(
                 f"Q{i}. {question}",
@@ -536,143 +817,240 @@ def get_model_analysis_form(selected_model):
                 st.error("모든 필드를 입력해주세요.")
 
 def show_analysis_results():
-    st.header("분석 결과 조회")
+    """분석 결과 표시"""
+    st.markdown("## 📊 분석 결과")
     
-    # 검색 필터
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        search_title = st.text_input("제목 검색", "")
-    with col2:
-        search_area = st.selectbox(
-            "영역 선택",
-            ["전체"] + ["마케팅", "세일즈", "운영", "생산", "물류", "재고관리", "프로젝트 관리"]
-        )
-    with col3:
-        search_model = st.selectbox(
-            "모델 선택",
-            ["전체"] + list(TOC_MODELS.keys())
-        )
-    
-    # 최근 분석 결과 표시 (접을 수 있는 섹션으로)
-    if 'ai_analysis' in st.session_state:
-        with st.expander("최근 분석 결과 보기", expanded=True):
-            st.info(f"모델: {st.session_state.selected_model}")
-            st.markdown("### 입력 데이터")
-            st.json(st.session_state.analysis_data)
-            st.markdown("### AI 분석 결과")
-            st.write(st.session_state.ai_analysis)
-            st.markdown("---")
-    
-    # 과거 분석 결과 목록
-    st.subheader("과거 분석 결과")
-    
-    # 검색 쿼리 수정
-    def get_filtered_analyses(title="", area="전체", model="전체"):
-        try:
-            conn = connect_to_db()
-            cursor = conn.cursor(dictionary=True)
-            
-            conditions = []
-            params = []
-            
-            if title:
-                conditions.append("title LIKE %s")
-                params.append(f"%{title}%")
-            
-            if area != "전체":
-                conditions.append("area = %s")
-                params.append(area)
-            
-            query = """
-            SELECT 
-                analysis_id, 
-                title, 
-                area, 
-                current_state,
-                created_at 
-            FROM toc_analysis
-            """
-            
-            if conditions:
-                query += " WHERE " + " AND ".join(conditions)
-            
-            query += " ORDER BY created_at DESC"
-            
-            cursor.execute(query, params)
-            results = cursor.fetchall()
-            
-            # JSON 파싱 및 모델 타입 추출
-            filtered_results = []
-            for result in results:
-                current_state = json.loads(result['current_state'])
-                result['model_type'] = current_state.get('model_type', '알 수 없음')
-                if model == "전체" or result['model_type'] == model:
-                    filtered_results.append(result)
-            
-            return filtered_results
-            
-        except Exception as e:
-            st.error(f"검색 중 오류가 발생했습니다: {str(e)}")
-            return []
-        finally:
-            if 'conn' in locals():
-                conn.close()
-    
-    # 검색 결과 표시
-    analyses = get_filtered_analyses(search_title, search_area, search_model)
-    
-    if analyses:
-        # 날짜별 그룹화
-        from itertools import groupby
-        from datetime import datetime
+    # 검색 필터 섹션
+    with st.expander("🔍 분석 결과 검색", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            search_name = st.text_input("분석 이름으로 검색", placeholder="분석 이름 입력...")
+            analysis_types = ["전체"] + list(TOC_MODELS.keys())
+            search_type = st.selectbox("분석 유형", analysis_types)
         
-        def get_date_str(analysis):
-            return analysis['created_at'].strftime('%Y-%m-%d')
-        
-        grouped_analyses = groupby(analyses, key=get_date_str)
-        
-        for date, group in grouped_analyses:
-            with st.expander(f"📅 {date}", expanded=True):
-                for analysis in group:
-                    with st.container():
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.markdown(f"#### {analysis['title']}")
-                            st.info(f"모델: {analysis['model_type']} | 영역: {analysis['area']}")
-                        with col2:
-                            if st.button("상세 보기", key=f"view_{analysis['analysis_id']}"):
-                                detail = get_toc_analysis_detail(analysis['analysis_id'])
-                                st.session_state.selected_detail = detail
-                        st.markdown("---")
-        
-        # 선택된 분석 상세 정보 표시
-        if 'selected_detail' in st.session_state:
-            detail = st.session_state.selected_detail
-            with st.expander("상세 분석 내용", expanded=True):
-                st.markdown(f"### {detail['title']}")
-                current_state = json.loads(detail['current_state'])
-                st.info(f"모델: {current_state.get('model_type', '알 수 없음')}")
-                st.write(f"분석 영역: {detail['area']}")
-                st.write(f"작성일: {detail['created_at'].strftime('%Y-%m-%d %H:%M')}")
-                
-                st.markdown("### 입력 데이터")
-                st.json(current_state.get('input_data', {}))
-                
-                st.markdown("### AI 분석 결과")
-                solutions = json.loads(detail['solutions'])
-                st.write(solutions.get('ai_analysis', '분석 결과가 없습니다.'))
+        with col2:
+            start_date = st.date_input("시작 날짜", value=None)
+            end_date = st.date_input("종료 날짜", value=None)
+    
+    # 검색 버튼
+    if st.button("🔍 검색", type="primary"):
+        analyses = get_filtered_analyses(search_name, search_type, start_date, end_date)
     else:
+        analyses = get_filtered_analyses(None, None, None, None)  # 초기 로드시 모든 결과 표시
+    
+    if not analyses:
         st.info("검색 결과가 없습니다.")
+        return
+    
+    # 날짜별로 분석 결과 그룹화
+    analyses_by_date = {}
+    for analysis in analyses:
+        date = analysis['created_at'].date()
+        if date not in analyses_by_date:
+            analyses_by_date[date] = []
+        analyses_by_date[date].append(analysis)
+    
+    # 날짜별로 정렬된 결과 표시
+    for date in sorted(analyses_by_date.keys(), reverse=True):
+        st.markdown(f"### 📅 {date.strftime('%Y-%m-%d')} 분석 결과")
+        for analysis in analyses_by_date[date]:
+            with st.container():
+                # 제목과 기본 정보
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"#### {analysis['analysis_name']}")
+                    st.markdown(f"**분석 유형:** {analysis['analysis_type']}")
+                    if analysis.get('description'):
+                        st.markdown(f"**설명:** {analysis['description']}")
+                
+                with col2:
+                    st.markdown(f"**생성 시각:** {analysis['created_at'].strftime('%H:%M:%S')}")
+                    if analysis.get('created_by'):
+                        st.markdown(f"**작성자:** {analysis['created_by']}")
+                
+                # 분석 데이터 표시
+                if analysis.get('analysis_data'):
+                    try:
+                        data = json.loads(analysis['analysis_data'])
+                        st.markdown("##### 상세 분석 데이터")
+                        
+                        # 현재 상황
+                        if data.get('current_situation'):
+                            st.markdown("**현재 상황:**")
+                            st.markdown(data['current_situation'])
+                        
+                        # 영역 정보
+                        if data.get('area'):
+                            st.markdown(f"**영역:** {data['area']}")
+                        
+                        # 질문과 답변
+                        for i in range(1, 6):  # 최대 5개의 질문 처리
+                            q_key = f'q{i}'
+                            if q_key in data:
+                                st.markdown(f"**질문 {i}:**")
+                                st.markdown(data[q_key])
+                        
+                        # AI 분석 결과
+                        if data.get('ai_analysis'):
+                            st.markdown("**AI 분석 결과:**")
+                            st.markdown(data['ai_analysis'])
+                            
+                    except json.JSONDecodeError:
+                        st.error("분석 데이터 형식이 올바르지 않습니다.")
+                
+                st.divider()
+
+def display_analysis_data(data):
+    """분석 데이터 표시"""
+    if isinstance(data, dict):
+        # 현재 상황
+        if data.get('current_situation'):
+            st.markdown("**현재 상황:**")
+            st.markdown(data['current_situation'])
+        
+        # 영역 정보
+        if data.get('area'):
+            st.markdown(f"**영역:** {data['area']}")
+        
+        # 질문과 답변
+        for i in range(1, 6):  # 최대 5개의 질문 처리
+            q_key = f'q{i}'
+            if q_key in data:
+                st.markdown(f"**질문 {i}:**")
+                st.markdown(data[q_key])
+        
+        # AI 분석 결과
+        if data.get('ai_analysis'):
+            st.markdown("**AI 분석 결과:**")
+            st.markdown(data['ai_analysis'])
+
+def create_toc_relationship_tables():
+    """TOC 모델 간 연관성을 위한 테이블 생성"""
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    
+    try:
+        # TOC 분석 결과 간 연관성 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS toc_analysis_relationships (
+                relationship_id INT AUTO_INCREMENT PRIMARY KEY,
+                source_analysis_id INT,
+                target_analysis_id INT,
+                relationship_type VARCHAR(50),
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (source_analysis_id) REFERENCES toc_analysis(analysis_id),
+                FOREIGN KEY (target_analysis_id) REFERENCES toc_analysis(analysis_id)
+            )
+        """)
+        
+        # TOC 모델 간 연관성 메타데이터 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS toc_model_relationships (
+                model_relationship_id INT AUTO_INCREMENT PRIMARY KEY,
+                source_model VARCHAR(50),
+                target_model VARCHAR(50),
+                relationship_type VARCHAR(50),
+                description TEXT,
+                flow_chart TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류 발생: {str(e)}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def save_toc_relationship(source_id, target_id, relationship_type, description):
+    """TOC 분석 결과 간 연관성 저장"""
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            INSERT INTO toc_analysis_relationships 
+            (source_analysis_id, target_analysis_id, relationship_type, description)
+            VALUES (%s, %s, %s, %s)
+        """, (source_id, target_id, relationship_type, description))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"연관성 저장 중 오류 발생: {str(e)}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_related_analyses(analysis_id):
+    """특정 분석과 연관된 다른 분석 결과 조회"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute("""
+            SELECT r.*, 
+                   a1.title as source_title, 
+                   a2.title as target_title,
+                   a1.model_type as source_model,
+                   a2.model_type as target_model
+            FROM toc_analysis_relationships r
+            JOIN toc_analysis a1 ON r.source_analysis_id = a1.analysis_id
+            JOIN toc_analysis a2 ON r.target_analysis_id = a2.analysis_id
+            WHERE r.source_analysis_id = %s OR r.target_analysis_id = %s
+        """, (analysis_id, analysis_id))
+        
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+def show_model_relationships():
+    """TOC 모델 간 연관성 시각화"""
+    st.markdown("## TOC 모델 간 연관성")
+    
+    # 모델 선택
+    selected_model = st.selectbox(
+        "기준 모델 선택",
+        list(TOC_MODEL_RELATIONSHIPS.keys())
+    )
+    
+    if selected_model:
+        # 선택된 모델의 연관성 정보 표시
+        st.markdown(f"### {selected_model}의 연관 모델")
+        
+        # 연관성 차트 표시
+        st.markdown("#### 모델 연관성 차트")
+        display_mermaid_chart(TOC_MODEL_RELATIONSHIPS[selected_model]["flow_chart"])
+        
+        # 연관 모델 설명
+        st.markdown("#### 연관 모델 설명")
+        for related_model, description in TOC_MODEL_RELATIONSHIPS[selected_model]["related_models"].items():
+            with st.expander(f"{related_model}와의 연관성"):
+                st.write(description)
 
 def main():
     st.title("🔄 제약이론(TOC) 분석 시스템")
+    
+    # 테이블 생성
+    create_toc_relationship_tables()
     
     # 초기 탭 상태 설정
     if 'active_tab' not in st.session_state:
         st.session_state.active_tab = 0  # 첫 번째 탭을 기본값으로
     
     # 탭 생성
-    tab1, tab2, tab3 = st.tabs(["TOC 모델 선택", "분석 수행", "결과 조회"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "TOC 모델 선택", 
+        "분석 수행", 
+        "결과 조회",
+        "모델 연관성"  # 새로운 탭 추가
+    ])
     
     with tab1:
         st.header("TOC 모델 선택")
@@ -730,6 +1108,9 @@ def main():
     
     with tab3:
         show_analysis_results()
+    
+    with tab4:
+        show_model_relationships()
     
     # 현재 활성 탭에 따라 JavaScript로 탭 전환
     if st.session_state.active_tab > 0:

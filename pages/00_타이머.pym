@@ -85,28 +85,34 @@ def get_alarm_js():
     beep_sound = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjIwLjEwMAAAAAAAAAAAAAAA//tUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAAFbgCenp6enp6enp6enp6enp6e//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjM1AAAAAAAAAAAAAAAAJAAAAAAAAAAAAQVuha3nkgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//sUZAAP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAETEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZB4P8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZDwP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sUZFoP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV"
     
     return f"""
-    <audio id="beepAudio" style="display: none;">
-        <source src="{beep_sound}" type="audio/mp3">
-    </audio>
-    <script>
-    let audio = document.getElementById('beepAudio');
-    
-    function playBeep() {{
-        try {{
-            // 오디오 요소 복제 (동시 재생을 위해)
-            let beep = audio.cloneNode(true);
-            beep.volume = 0.5;  // 볼륨 설정
-            beep.play()
-                .then(() => console.log("비프음 재생 성공"))
-                .catch(e => console.error("비프음 재생 실패:", e));
-        }} catch (e) {{
-            console.error("오디오 재생 중 오류:", e);
-        }}
-    }}
+    <div style="display: none;">
+        <audio id="beepAudio" style="display: none;">
+            <source src="{beep_sound}" type="audio/mp3">
+        </audio>
+        <script>
+        (function() {{
+            let audio = document.getElementById('beepAudio');
+            
+            function playBeep() {{
+                try {{
+                    // 오디오 요소 복제 (동시 재생을 위해)
+                    let beep = audio.cloneNode(true);
+                    beep.volume = 0.5;  // 볼륨 설정
+                    beep.play()
+                        .then(() => console.log("비프음 재생 성공"))
+                        .catch(e => console.error("비프음 재생 실패:", e));
+                }} catch (e) {{
+                    console.error("오디오 재생 중 오류:", e);
+                }}
+            }}
 
-    // 전역 스코프에 함수 등록
-    window.playBeep = playBeep;
-    </script>
+            // 전역 스코프에 함수 등록
+            if (typeof window !== 'undefined') {{
+                window.playBeep = playBeep;
+            }}
+        }})();
+        </script>
+    </div>
     """
 
 # 토스트 알림 표시를 위한 JavaScript 함수
@@ -182,7 +188,8 @@ CHARACTERS = {
     "창환님": "🚀 미래의 선구자",
     "성범님": "🎯 통찰의 대가",
     "성현님": "🌟 창의의 연금술사",
-    "상현님": "🎭 질문의 예술가"
+    "상현님": "🎭 질문의 예술가",
+    "성일님": "🌈 혁신의 아이콘"
 }
 
 # 특별한 능력치
@@ -191,7 +198,8 @@ ABILITIES = {
     "창환님": ["창의력 MAX", "혁신 +100", "선구안 +500"],
     "성범님": ["분석력 MAX", "전략 +100", "실행력 +500"],
     "성현님": ["창조력 MAX", "발상 +100", "기획력 +500"],
-    "상현님": ["질문력 MAX", "탐구 +100", "호기심 +500"]
+    "상현님": ["질문력 MAX", "탐구 +100", "호기심 +500"],
+    "성일님": ["혁신력 MAX", "창의성 +100", "적응력 +500"]
 }
 
 # 요일별 테마 설정
@@ -256,7 +264,8 @@ RPG_STATS = {
     "창환님": {"창의력": 92, "혁신": 94, "선구안": 89},
     "성범님": {"분석력": 93, "전략": 91, "실행력": 90},
     "성현님": {"창조력": 91, "발상": 93, "기획력": 92},
-    "상현님": {"질문력": 94, "탐구": 92, "호기심": 91}
+    "상현님": {"질문력": 94, "탐구": 92, "호기심": 91},
+    "성일님": {"혁신력": 93, "창의성": 94, "적응력": 92}
 }
 
 # 랜덤 미션 목록
@@ -494,53 +503,55 @@ st.markdown("""
 
 def get_audio_js():
     return """
-    <script>
-    let audioContext = null;
-    let isAudioInitialized = false;
+    <div style="display: none;">
+        <script>
+        let audioContext = null;
+        let isAudioInitialized = false;
 
-    // 오디오 컨텍스트 초기화 함수
-    async function initAudioContext() {
-        try {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            await audioContext.resume();
-            isAudioInitialized = true;
-            console.log('오디오 컨텍스트 초기화 성공');
-        } catch (e) {
-            console.error('오디오 컨텍스트 초기화 실패:', e);
-        }
-    }
-
-    // 비프음 재생 함수
-    async function playBeep() {
-        if (!isAudioInitialized) {
-            await initAudioContext();
+        // 오디오 컨텍스트 초기화 함수
+        async function initAudioContext() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                await audioContext.resume();
+                isAudioInitialized = true;
+                console.log('오디오 컨텍스트 초기화 성공');
+            } catch (e) {
+                console.error('오디오 컨텍스트 초기화 실패:', e);
+            }
         }
 
-        try {
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
+        // 비프음 재생 함수
+        async function playBeep() {
+            if (!isAudioInitialized) {
+                await initAudioContext();
+            }
 
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
+            try {
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
 
-            oscillator.type = 'sine';
-            oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
-            gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.5);
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
 
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.5);
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+                gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.5);
 
-            console.log('비프음 재생 성공');
-        } catch (e) {
-            console.error('비프음 재생 실패:', e);
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.5);
+
+                console.log('비프음 재생 성공');
+            } catch (e) {
+                console.error('비프음 재생 실패:', e);
+            }
         }
-    }
 
-    // 전역 스코프에 함수 등록
-    window.initAudioContext = initAudioContext;
-    window.playBeep = playBeep;
-    </script>
+        // 전역 스코프에 함수 등록
+        window.initAudioContext = initAudioContext;
+        window.playBeep = playBeep;
+        </script>
+    </div>
     """
 
 # 알람 음성 생성 함수
@@ -710,7 +721,7 @@ def main():
     st.markdown(get_audio_js(), unsafe_allow_html=True)
 
     # 캐릭터 소개
-    cols = st.columns(5)
+    cols = st.columns(6)  # 5에서 6으로 변경
     for i, (person, character) in enumerate(CHARACTERS.items()):
         with cols[i]:
             st.markdown(f"""
@@ -980,3 +991,4 @@ def main():
 
 if __name__ == "__main__":
     main() 
+    
