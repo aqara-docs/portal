@@ -8,7 +8,7 @@ import markdown
 import glob
 
 def init_db():
-    """데이터베이스 초기화"""
+    """데이터베이스의 초기화"""
     conn = connect_to_db()
     cursor = conn.cursor()
     
