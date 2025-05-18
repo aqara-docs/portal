@@ -292,9 +292,9 @@ CHARACTERS = {
     "현철님": "🧙‍♂️ 지혜의 현자",
     "창환님": "🚀 미래의 선구자",
     "성범님": "🎯 통찰의 대가",
-    "성현님": "🌟 창의의 연금술사",
     "상현님": "🎭 질문의 예술가",
-    "성일님": "💡 혁신의 아이콘"
+    "성일님": "💡 혁신의 아이콘",
+    "경호님": "🦾 전략의 마에스트로"  # 신규 입사자
 }
 
 # 특별한 능력치
@@ -302,9 +302,9 @@ ABILITIES = {
     "현철님": ["통찰력 MAX", "지혜 +100", "경험치 +500"],
     "창환님": ["창의력 MAX", "혁신 +100", "선구안 +500"],
     "성범님": ["분석력 MAX", "전략 +100", "실행력 +500"],
-    "성현님": ["창조력 MAX", "발상 +100", "기획력 +500"],
     "상현님": ["질문력 MAX", "탐구 +100", "호기심 +500"],
-    "성일님": ["혁신력 MAX", "창의 +100", "도전정신 +500"]
+    "성일님": ["혁신력 MAX", "창의 +100", "도전정신 +500"],
+    "경호님": ["전략력 MAX", "결단력 +100", "분석력 +500"]  # 신규 입사자
 }
 
 # 요일별 테마 설정
@@ -368,9 +368,9 @@ RPG_STATS = {
     "현철님": {"지혜": 90, "통찰력": 95, "경험": 88},
     "창환님": {"창의력": 92, "혁신": 94, "선구안": 89},
     "성범님": {"분석력": 93, "전략": 91, "실행력": 90},
-    "성현님": {"창조력": 91, "발상": 93, "기획력": 92},
     "상현님": {"질문력": 94, "탐구": 92, "호기심": 91},
-    "성일님": {"혁신력": 95, "창의": 93, "도전정신": 94}
+    "성일님": {"혁신력": 95, "창의": 93, "도전정신": 94},
+    "경호님": {"전략력": 96, "결단력": 94, "분석력": 92}  # 신규 입사자
 }
 
 # 랜덤 미션 목록
@@ -765,7 +765,7 @@ def init_values_state():
                 "Success is not just about making money. It's about making a difference. – Unknown\n성공은 돈을 버는 것만이 아니라 변화를 만드는 것이다. – 작자 미상",
                 "Fall seven times and stand up eight. – Japanese Proverb\n일곱 번 넘어져도 여덟 번째 일어나라. – 일본 속담",
                 "The secret of success is to do the common thing uncommonly well. – John D. Rockefeller Jr.\n성공의 비밀은 평범한 일을 비범하게 잘하는 것이다. – 존 D. 록펠러 주니어",
-                "I find that the harder I work, the more luck I seem to have. – Thomas Jefferson\n열심히 일할숝록 운이 더 좋아지는 것 같다. – 토머스 제퍼슨",
+                "I find that the harder I work, the more luck I seem to have. – Thomas Jefferson\n열심히 일 할수록 운이 더 좋아지는 것 같다. – 토머스 제퍼슨",
                 "Success is not how high you have climbed, but how you make a positive difference to the world. – Roy T. Bennett\n성공은 얼마나 높이 올라갔느냐가 아니라, 세상에 얼마나 긍정적인 변화를 가져왔느냐에 달려 있다. – 로이 T. 베넷",
                 "The only way to do great work is to love what you do. – Steve Jobs\n훌륭한 일을 하는 유일한 방법은 당신이 하는 일을 사랑하는 것이다. – 스티브 잡스"
             ],
@@ -910,9 +910,12 @@ def main():
             with st.spinner("순서를 정하는 중..."):
                 placeholder = generate_roulette_animation()
                 participants = list(CHARACTERS.keys())
-                random.shuffle(participants)
-                st.session_state.final_order = participants
-                st.session_state.effects = {person: get_special_effect() for person in participants}
+                # 현철님을 제외한 나머지 참가자들의 순서를 랜덤으로 섞음
+                other_participants = [p for p in participants if p != "현철님"]
+                random.shuffle(other_participants)
+                # 현철님을 마지막에 추가
+                st.session_state.final_order = other_participants + ["현철님"]
+                st.session_state.effects = {person: get_special_effect() for person in st.session_state.final_order}
                 st.session_state.order_generated = True
                 st.balloons()
                 st.rerun()

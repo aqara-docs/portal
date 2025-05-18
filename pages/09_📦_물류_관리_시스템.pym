@@ -37,18 +37,15 @@ def create_product(product_data):
 
 def main():
     st.title("📦 PI/CI 관리 시스템")
-    
-    # 메뉴 선택
     menu = st.sidebar.selectbox(
         "메뉴 선택",
         ["PI/CI 현황", "제품 등록", "PI 등록", "CI 등록", "PI 목록", "CI 목록", "배송 현황", "배송 현황 등록"]
     )
 
-    # ... existing code ...
-
+    if menu == "PI/CI 현황":
+        pass
     elif menu == "제품 등록":
         st.header("제품 등록")
-        
         # 공급업체 선택
         suppliers = get_suppliers()
         selected_supplier = st.selectbox(
@@ -56,7 +53,6 @@ def main():
             options=suppliers,
             format_func=lambda x: x['supplier_name']
         )
-        
         if selected_supplier:
             with st.form("product_form"):
                 col1, col2 = st.columns(2)
@@ -64,12 +60,10 @@ def main():
                     product_code = st.text_input("제품 코드")
                     product_name = st.text_input("제품명")
                     unit_price = st.number_input("기준 단가", min_value=0.0, format="%.2f")
-                
                 with col2:
                     moq = st.number_input("최소 주문 수량", min_value=1)
                     lead_time = st.number_input("리드타임 (일)", min_value=1)
                     notes = st.text_area("비고")
-                
                 if st.form_submit_button("제품 등록"):
                     if not product_code or not product_name:
                         st.error("필수 항목을 모두 입력해주세요.")
@@ -83,13 +77,11 @@ def main():
                             'lead_time': lead_time,
                             'notes': notes
                         }
-                        
                         success, result = create_product(product_data)
                         if success:
                             st.success("제품이 성공적으로 등록되었습니다.")
                         else:
                             st.error(f"제품 등록 중 오류가 발생했습니다: {result}")
-            
             # 등록된 제품 목록 표시
             st.subheader(f"{selected_supplier['supplier_name']} 등록 제품 목록")
             products = get_products(selected_supplier['supplier_id'])
@@ -106,43 +98,33 @@ def main():
                 st.dataframe(product_df)
             else:
                 st.info("등록된 제품이 없습니다.")
-
     elif menu == "PI 등록":
         st.header("PI 등록")
-        
-        # 공급업체 선택
         suppliers = get_suppliers()
         selected_supplier = st.selectbox(
             "공급업체 선택",
             options=suppliers,
             format_func=lambda x: x['supplier_name']
         )
-        
         if selected_supplier:
-            # 제품 목록 미리 로드
             products = get_products(selected_supplier['supplier_id'])
             if not products:
                 st.warning(f"{selected_supplier['supplier_name']}의 등록된 제품이 없습니다. 먼저 제품을 등록해주세요.")
                 if st.button("제품 등록 페이지로 이동"):
-                    st.switch_page("pages/09_📦_물류관리_PI_CI.py")  # 현재 페이지 다시 로드 (제품 등록 메뉴)
+                    st.switch_page("pages/09_📦_물류관리_PI_CI.py")
             else:
                 with st.form("pi_form"):
-                    # PI 기본 정보
                     col1, col2 = st.columns(2)
                     with col1:
                         pi_number = st.text_input("PI 번호")
                         issue_date = st.date_input("발행일")
                         currency = st.selectbox("통화", ["USD", "CNY", "EUR"])
-                    
                     with col2:
                         expected_delivery_date = st.date_input("예상 납기일")
                         payment_terms = st.text_area("지불 조건")
                         shipping_terms = st.text_area("선적 조건")
-                    
-                    # 제품 선택 및 수량 입력
                     st.subheader("제품 목록")
                     num_products = st.number_input("제품 수", min_value=1, value=1)
-                    
                     items_data = []
                     for i in range(num_products):
                         st.markdown(f"##### 제품 {i+1}")
@@ -178,7 +160,6 @@ def main():
                                 value=default_date,
                                 key=f"prod_date_{i}"
                             )
-                        
                         if product:
                             items_data.append({
                                 'product_id': product['product_id'],
@@ -187,9 +168,7 @@ def main():
                                 'total_price': quantity * unit_price,
                                 'expected_production_date': expected_prod_date
                             })
-                    
                     notes = st.text_area("비고")
-                    
                     if st.form_submit_button("PI 등록"):
                         if not pi_number or not items_data:
                             st.error("필수 항목을 모두 입력해주세요.")
@@ -207,11 +186,11 @@ def main():
                                 'shipping_terms': shipping_terms,
                                 'notes': notes
                             }
-                            
                             success, result = create_pi(pi_data, items_data)
                             if success:
                                 st.success("PI가 성공적으로 등록되었습니다.")
                             else:
                                 st.error(f"PI 등록 중 오류가 발생했습니다: {result}")
-
     # ... rest of the code ... 
+
+main() 

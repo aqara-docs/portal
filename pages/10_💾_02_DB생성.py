@@ -697,10 +697,77 @@ def create_subjective_llm_tables():
         cursor.close()
         conn.close()
 
-def create_logistics_tables():
+def insert_default_suppliers(cursor):
+    """기본 공급업체 데이터 삽입"""
+    suppliers_data = [
+        ('YUER', 'YUER 담당자', 'contact@yuer.com', '+86-123-4567-8901', '중국 광동성 선전시'),
+        ('Signcomplex', 'Signcomplex 담당자', 'contact@signcomplex.com', '+86-123-4567-8902', '중국 광동성 광주시'),
+        ('Keyun', 'Keyun 담당자', 'contact@keyun.com', '+86-123-4567-8903', '중국 광동성 동관시'),
+        ('LEDYi', 'LEDYi 담당자', 'contact@ledyi.com', '+86-123-4567-8904', '중국 광동성 선전시'),
+        ('Wellmax', 'Wellmax 담당자', 'contact@wellmax.com', '+86-123-4567-8905', '중국 광동성 광주시'),
+        ('FSL', 'FSL 담당자', 'contact@fsl.com', '+86-123-4567-8906', '중국 광동성 동관시')
+    ]
+    
+    try:
+        # 기존 데이터 삭제
+        cursor.execute("DELETE FROM suppliers")
+        
+        # 새 데이터 삽입
+        cursor.executemany("""
+            INSERT INTO suppliers 
+            (supplier_name, contact_person, email, phone, address)
+            VALUES (%s, %s, %s, %s, %s)
+        """, suppliers_data)
+        
+        return True
+    except mysql.connector.Error as err:
+        print(f"공급업체 데이터 삽입 중 오류 발생: {err}")
+        return False
+
+def get_supplier_names():
+    """공급업체 이름 목록 조회 (드롭다운용)"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        
+        # 공급업체 이름만 조회하고 정렬 순서 지정
+        cursor.execute("""
+            SELECT supplier_name 
+            FROM suppliers 
+            ORDER BY FIELD(supplier_name, 'YUER', 'Signcomplex', 'Keyun', 'LEDYi', 'Wellmax', 'FSL'),
+            supplier_name
+        """)
+        
+        suppliers = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return suppliers
+    except mysql.connector.Error as err:
+        print(f"공급업체 목록 조회 중 오류 발생: {err}")
+        return []
+
+def create_logistics_tables(mode="migrate"):
     conn = connect_to_db()
     cursor = conn.cursor()
     try:
+        if mode == "reset":
+            # --- 기존 테이블 삭제 후 새로 생성 (데이터 삭제) ---
+            cursor.execute("DROP TABLE IF EXISTS shipment_tracking")
+            cursor.execute("DROP TABLE IF EXISTS ci_items")
+            cursor.execute("DROP TABLE IF EXISTS commercial_invoices")
+            cursor.execute("DROP TABLE IF EXISTS pi_items")
+            cursor.execute("DROP TABLE IF EXISTS proforma_invoices")
+            cursor.execute("DROP TABLE IF EXISTS inventory_transactions")
+            cursor.execute("DROP TABLE IF EXISTS inventory_logistics")
+            cursor.execute("DROP TABLE IF EXISTS products_logistics")
+            cursor.execute("DROP TABLE IF EXISTS suppliers")
+            conn.commit()
+
+        # --- 문자셋 통일을 위한 마이그레이션 ---
+        cursor.execute("""
+            ALTER DATABASE {} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """.format(os.getenv('SQL_DATABASE_NEWBIZ')))
+
         # 공급업체 테이블
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS suppliers (
@@ -712,25 +779,59 @@ def create_logistics_tables():
                 address TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
+
+        # 기본 공급업체 데이터 삽입
+        if insert_default_suppliers(cursor):
+            conn.commit()
+            print("기본 공급업체 데이터가 성공적으로 삽입되었습니다.")
+        else:
+            print("기본 공급업체 데이터 삽입에 실패했습니다.")
 
         # 제품 테이블
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS products_logistics (
                 product_id INT AUTO_INCREMENT PRIMARY KEY,
                 supplier_id INT NOT NULL,
-                product_code VARCHAR(50) NOT NULL,
-                product_name VARCHAR(200) NOT NULL,
+                model_name VARCHAR(200) NOT NULL,
                 unit_price DECIMAL(10, 2) NOT NULL DEFAULT 0,
                 moq INT NOT NULL DEFAULT 1,
                 lead_time INT NOT NULL DEFAULT 1,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                FOREIGN KEY (supplier_id) REFERENCES suppliers(supplier_id),
-                UNIQUE KEY unique_product_code (supplier_id, product_code)
-            )
+                FOREIGN KEY (supplier_id) REFERENCES suppliers(supplier_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 재고 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inventory_logistics (
+                inventory_id INT AUTO_INCREMENT PRIMARY KEY,
+                product_id INT NOT NULL,
+                stock INT NOT NULL DEFAULT 0,
+                is_certified BOOLEAN NOT NULL DEFAULT TRUE,
+                certificate_number VARCHAR(100),
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (product_id) REFERENCES products_logistics(product_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 재고 입출고/폐기 이력 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inventory_transactions (
+                transaction_id INT AUTO_INCREMENT PRIMARY KEY,
+                product_id INT NOT NULL,
+                change_type ENUM('입고', '출고', '폐기') NOT NULL,
+                quantity INT NOT NULL,
+                date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                certificate_number VARCHAR(100),
+                destination VARCHAR(200),
+                notes TEXT,
+                reference_number VARCHAR(50),
+                FOREIGN KEY (product_id) REFERENCES products_logistics(product_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
         # Proforma Invoice 테이블
@@ -746,11 +847,12 @@ def create_logistics_tables():
                 status VARCHAR(20) NOT NULL DEFAULT 'draft',
                 payment_terms TEXT,
                 shipping_terms TEXT,
+                project_name VARCHAR(255),
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (supplier_id) REFERENCES suppliers(supplier_id)
-            )
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
         # PI 항목 테이블
@@ -763,14 +865,52 @@ def create_logistics_tables():
                 unit_price DECIMAL(10, 2) NOT NULL,
                 total_price DECIMAL(15, 2) NOT NULL,
                 expected_production_date DATE,
-                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                status ENUM('pending', 'partial', 'completed', 'cancelled') NOT NULL DEFAULT 'pending',
                 delay_reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (pi_id) REFERENCES proforma_invoices(pi_id),
-                FOREIGN KEY (product_id) REFERENCES products_logistics(product_id)
-            )
+                FOREIGN KEY (product_id) REFERENCES products_logistics(product_id),
+                UNIQUE KEY unique_product_pi (pi_id, product_id),
+                CHECK (quantity > 0)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
+
+        # --- 기존 테이블 마이그레이션 ---
+        cursor.execute("SHOW TABLES LIKE 'pi_items'")
+        if cursor.fetchone():
+            # 1. status 컬럼 타입 변경
+            cursor.execute("""
+                ALTER TABLE pi_items 
+                MODIFY COLUMN status ENUM('pending', 'partial', 'completed', 'cancelled') 
+                NOT NULL DEFAULT 'pending'
+            """)
+            
+            # 2. unique_product_pi 제약조건 추가
+            try:
+                cursor.execute("""
+                    ALTER TABLE pi_items 
+                    ADD CONSTRAINT unique_product_pi 
+                    UNIQUE (pi_id, product_id)
+                """)
+            except mysql.connector.Error as err:
+                if err.errno == 1061:  # Duplicate key name
+                    pass  # 이미 제약조건이 존재하는 경우
+                else:
+                    raise
+            
+            # 3. quantity 체크 제약조건 추가
+            try:
+                cursor.execute("""
+                    ALTER TABLE pi_items 
+                    ADD CONSTRAINT check_quantity 
+                    CHECK (quantity > 0)
+                """)
+            except mysql.connector.Error as err:
+                if err.errno in (3819, 3822):  # Check constraint already exists, Duplicate check constraint name
+                    pass  # 이미 제약조건이 존재하는 경우
+                else:
+                    raise
 
         # Commercial Invoice 테이블
         cursor.execute("""
@@ -779,8 +919,8 @@ def create_logistics_tables():
                 ci_number VARCHAR(50) NOT NULL UNIQUE,
                 pi_id INT,
                 supplier_id INT NOT NULL,
-                issue_date DATE NOT NULL,
-                actual_delivery_date DATE,
+                shipping_date DATE NOT NULL,
+                arrival_date DATE,
                 total_amount DECIMAL(15, 2) NOT NULL,
                 currency VARCHAR(3) NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'draft',
@@ -790,7 +930,7 @@ def create_logistics_tables():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (pi_id) REFERENCES proforma_invoices(pi_id),
                 FOREIGN KEY (supplier_id) REFERENCES suppliers(supplier_id)
-            )
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
         # CI 항목 테이블
@@ -803,7 +943,6 @@ def create_logistics_tables():
                 quantity INT NOT NULL,
                 unit_price DECIMAL(10, 2) NOT NULL,
                 total_price DECIMAL(15, 2) NOT NULL,
-                actual_production_date DATE,
                 shipping_date DATE,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -811,7 +950,7 @@ def create_logistics_tables():
                 FOREIGN KEY (ci_id) REFERENCES commercial_invoices(ci_id),
                 FOREIGN KEY (pi_item_id) REFERENCES pi_items(pi_item_id),
                 FOREIGN KEY (product_id) REFERENCES products_logistics(product_id)
-            )
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
         # 배송 추적 테이블
@@ -830,26 +969,207 @@ def create_logistics_tables():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (ci_id) REFERENCES commercial_invoices(ci_id)
-            )
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
-        # 초기 공급업체 데이터 입력
-        cursor.execute("""
-            INSERT IGNORE INTO suppliers (supplier_name, contact_person, email)
-            VALUES 
-                ('YUER', 'Yuer Contact', 'contact@yuer.com'),
-                ('Signcomplex', 'Signcomplex Contact', 'contact@signcomplex.com'),
-                ('Keyun', 'Keyun Contact', 'contact@keyun.com'),
-                ('Wellmax', 'Wellmax Contact', 'contact@wellmax.com'),
-                ('LEDYi', 'LEDYi Contact', 'contact@ledyi.com'),
-                ('FSL', 'FSL Contact', 'contact@fsl.com')
-        """)
+        # --- 기존 테이블의 문자셋 변경 ---
+        tables = [
+            'suppliers', 'products_logistics', 'inventory_logistics', 
+            'inventory_transactions', 'proforma_invoices', 'pi_items',
+            'commercial_invoices', 'ci_items', 'shipment_tracking'
+        ]
+        for table in tables:
+            cursor.execute(f"""
+                ALTER TABLE {table} CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """)
 
         conn.commit()
-        return True, "물류 관련 테이블이 성공적으로 생성되었습니다."
+        return True, "물류 관련 테이블이 성공적으로 생성/업데이트되었습니다."
     except Exception as e:
         conn.rollback()
         return False, str(e)
+    finally:
+        cursor.close()
+        conn.close()
+
+def create_mcp_analysis_table():
+    """MCP 분석 결과 테이블 생성"""
+    conn = None
+    cursor = None
+    try:
+        conn = connect_to_db()
+        if not conn:
+            return False
+        cursor = conn.cursor()
+        
+        # 기존 테이블 삭제
+        cursor.execute("DROP TABLE IF EXISTS mcp_analysis_results")
+        
+        # 새 테이블 생성
+        cursor.execute("""
+            CREATE TABLE mcp_analysis_results (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                query TEXT NOT NULL,
+                analysis_result JSON NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+        
+        conn.commit()
+        return True
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        return False
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+def create_decision_tree_tables():
+    """비즈니스 의사결정 트리 테이블 생성"""
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    
+    try:
+        # 외래 키 체크 비활성화
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+        
+        # 기존 테이블 삭제
+        cursor.execute("DROP TABLE IF EXISTS decision_outcomes")
+        cursor.execute("DROP TABLE IF EXISTS decision_options")
+        cursor.execute("DROP TABLE IF EXISTS decision_nodes")
+        cursor.execute("DROP TABLE IF EXISTS decision_trees")
+        
+        # 의사결정 트리 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS decision_trees (
+                tree_id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                category VARCHAR(50),
+                discount_rate DECIMAL(5,2),
+                analysis_period INT,
+                created_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 의사결정 노드 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS decision_nodes (
+                node_id INT AUTO_INCREMENT PRIMARY KEY,
+                tree_id INT NOT NULL,
+                parent_id INT,
+                node_type ENUM('decision', 'chance', 'outcome') NOT NULL,
+                question TEXT NOT NULL,
+                description TEXT,
+                market_size DECIMAL(20,2),
+                market_growth DECIMAL(5,2),
+                competition_level INT,
+                risk_level INT,
+                expected_value DECIMAL(15,2),
+                optimal_choice VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tree_id) REFERENCES decision_trees(tree_id) ON DELETE CASCADE,
+                FOREIGN KEY (parent_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 선택지/시나리오 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS decision_options (
+                option_id INT AUTO_INCREMENT PRIMARY KEY,
+                decision_node_id INT NOT NULL,
+                option_name VARCHAR(255) NOT NULL,
+                initial_investment DECIMAL(15,2),
+                operating_cost DECIMAL(15,2),
+                expected_revenue DECIMAL(15,2),
+                market_share DECIMAL(5,2),
+                probability DECIMAL(5,2),
+                revenue_impact DECIMAL(8,2),
+                npv DECIMAL(15,2),
+                roi DECIMAL(10,2),
+                payback_period DECIMAL(10,2),
+                path_probability DECIMAL(5,2),
+                path_value DECIMAL(15,2),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (decision_node_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 결과 노드 상세 정보 테이블
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS decision_outcomes (
+                outcome_id INT AUTO_INCREMENT PRIMARY KEY,
+                decision_node_id INT NOT NULL,
+                final_revenue DECIMAL(15,2),
+                cumulative_profit DECIMAL(15,2),
+                final_market_share DECIMAL(5,2),
+                market_position VARCHAR(20),
+                success_rate DECIMAL(5,2),
+                strategic_fit INT,
+                growth_potential INT,
+                competitive_advantage TEXT,
+                risk_factors TEXT,
+                risk_description TEXT,
+                implications TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (decision_node_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+
+        # 외래 키 체크 다시 활성화
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+        
+        conn.commit()
+        st.success("✅ 비즈니스 의사결정 트리 테이블이 생성되었습니다!")
+        
+        # Show the created table structures
+        st.write("### 생성된 테이블 구조:")
+        
+        tables = ["decision_trees", "decision_nodes", "decision_options", "decision_outcomes"]
+        for table in tables:
+            st.write(f"#### {table} 테이블")
+            schema = get_table_schema(table)
+            if schema:
+                schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                st.dataframe(schema_df)
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def drop_decision_tree_tables():
+    """의사결정 트리 테이블 삭제"""
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    
+    try:
+        # 외래 키 제약 조건으로 인해 역순으로 삭제
+        cursor.execute("DROP TABLE IF EXISTS decision_outcomes")
+        cursor.execute("DROP TABLE IF EXISTS decision_options")
+        cursor.execute("DROP TABLE IF EXISTS decision_nodes")
+        cursor.execute("DROP TABLE IF EXISTS decision_trees")
+        
+        conn.commit()
+        st.success("✅ 의사결정 트리 테이블이 삭제되었습니다.")
+        return True
+        
+    except Exception as e:
+        st.error(f"테이블 삭제 중 오류가 발생했습니다: {str(e)}")
+        conn.rollback()
+        return False
     finally:
         cursor.close()
         conn.close()
@@ -863,7 +1183,8 @@ def main():
         ["테이블 목록", "테이블 생성/수정", "테이블 삭제", "데이터 조회", 
          "Rayleigh Skylights 테이블 생성", "자기소개서 테이블 생성", 
          "TOC 분석 테이블 생성", "기업 가치 평가 테이블 생성", 
-         "주관식 질문 관련 테이블 생성", "물류 관리(PI/CI) 테이블 생성"]
+         "주관식 질문 관련 테이블 생성", "물류 관리(PI/CI) 테이블 생성", 
+         "MCP 분석 테이블 생성", "의사결정 트리 테이블 생성"]
     )
     
     if menu == "테이블 목록":
@@ -1096,17 +1417,22 @@ def main():
 
     elif menu == "물류 관리(PI/CI) 테이블 생성":
         st.header("물류 관리(PI/CI) 테이블 생성")
-        if st.button("물류 관리 테이블 생성"):
-            success, message = create_logistics_tables()
+        # --- 새 옵션: 테이블 생성 방식 선택 ---
+        mode = st.radio(
+            "테이블 작업 방식 선택",
+            ["구조만 업데이트(마이그레이션)", "테이블 새로 생성(기존 데이터 삭제)"],
+            index=0
+        )
+        if st.button("물류 관리 테이블 생성/업데이트"):
+            success, message = create_logistics_tables(
+                mode="reset" if mode == "테이블 새로 생성(기존 데이터 삭제)" else "migrate"
+            )
             if success:
-                st.success("물류 관리 관련 테이블이 성공적으로 생성되었습니다.")
-                
+                st.success("물류 관리 관련 테이블이 성공적으로 생성/업데이트되었습니다.")
                 # 생성된 테이블 구조 표시
-                tables = ["suppliers", "products_logistics", "proforma_invoices", 
+                tables = ["suppliers", "products_logistics", "inventory_logistics", "inventory_transactions", "proforma_invoices", 
                          "pi_items", "commercial_invoices", "ci_items", "shipment_tracking"]
-                
                 st.write("### 생성된 테이블 구조:")
-                
                 for table in tables:
                     st.write(f"#### {table} 테이블")
                     schema = get_table_schema(table)
@@ -1115,7 +1441,49 @@ def main():
                             columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
                         st.dataframe(schema_df)
             else:
-                st.error(f"테이블 생성 중 오류가 발생했습니다: {message}")
+                st.error(f"테이블 생성/업데이트 중 오류가 발생했습니다: {message}")
+
+    elif menu == "MCP 분석 테이블 생성":
+        st.header("MCP 분석 테이블 생성")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("MCP 분석 테이블 생성", type="primary"):
+                if create_mcp_analysis_table():
+                    st.success("✅ MCP 분석 테이블이 생성되었습니다!")
+                else:
+                    st.error("테이블 생성에 실패했습니다.")
+        
+        with col2:
+            if st.button("MCP 분석 테이블 삭제", type="secondary"):
+                try:
+                    conn = connect_to_db()
+                    if not conn:
+                        st.error("데이터베이스 연결에 실패했습니다.")
+                        return
+                    cursor = conn.cursor()
+                    cursor.execute("DROP TABLE IF EXISTS mcp_analysis_results")
+                    conn.commit()
+                    st.success("✅ MCP 분석 테이블이 삭제되었습니다!")
+                except Exception as e:
+                    st.error(f"테이블 삭제 중 오류가 발생했습니다: {str(e)}")
+                finally:
+                    if cursor:
+                        cursor.close()
+                    if conn:
+                        conn.close()
+
+    elif menu == "의사결정 트리 테이블 생성":
+        st.header("의사결정 트리 테이블 생성")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("의사결정 트리 테이블 생성", type="primary"):
+                create_decision_tree_tables()
+        
+        with col2:
+            if st.button("의사결정 트리 테이블 삭제", type="secondary"):
+                drop_decision_tree_tables()
 
 if __name__ == "__main__":
     main() 

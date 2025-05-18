@@ -17,7 +17,7 @@ from langchain.tools import DuckDuckGoSearchResults
 from langchain.utilities import DuckDuckGoSearchAPIWrapper
 from langchain.tools import WikipediaQueryRun
 from langchain.utilities import WikipediaAPIWrapper
-from langchain.tools import PythonREPLTool
+from langchain_experimental.tools import PythonREPLTool
 from langchain.tools.yahoo_finance_news import YahooFinanceNewsTool
 from langchain_community.tools.sec_filings import SECFilingsTool
 from langchain.tools import GooglePlacesTool

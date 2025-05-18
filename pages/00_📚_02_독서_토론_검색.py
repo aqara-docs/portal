@@ -93,14 +93,12 @@ def main():
     col1, col2 = st.columns(2)
     
     with col1:
-        titles = get_book_titles()
-        if "퍼스널 MBA" not in titles:
-            titles = ["퍼스널 MBA"] + titles
-        
+        # 책 선택 리스트 박스 (기본값: Good to Great)
+        titles = ["퍼스널 MBA", "Good to Great"]
         selected_title = st.selectbox(
             "책 선택",
             titles,
-            index=titles.index("퍼스널 MBA") if "퍼스널 MBA" in titles else 0
+            index=1
         )
     
     with col2:
@@ -134,7 +132,7 @@ def main():
     # 적용 자료인 경우 분석 키워드 선택
     analysis_keyword = None
     if material_type in ["적용", "적용 고급", "적용 비교"]:
-        keywords = ["가치 창조", "마케팅", "세일즈", "가치 전달", "재무", "기타"]
+        keywords = ["좋은 것은 위대한 것의 적", "단계5의 리더십","사람 먼저 .. 다음에 할일","냉혹한 사실을 직시하라, 그러나 믿음은 잃지 마라","고슴도치 콘셉트","규율의 문화","기술 가속 페달","플라이휠과 파멸의 올가미","위대한 회사로의 도약에서 고지 지키기 까지","기타"]
         selected_keyword = st.selectbox("분석 키워드", keywords)
         
         if selected_keyword == "기타":
@@ -176,7 +174,9 @@ def main():
                                 selected_file['content'],
                                 analysis_keyword,
                                 model_key,
-                                model_name
+                                model_name,
+                                selected_title,
+                                material_type
                             )
                             st.session_state.ai_analysis = analysis
                     
@@ -192,10 +192,11 @@ def main():
                                 if st.button("🔊 음성으로 듣기"):
                                     with st.spinner("음성을 생성하고 있습니다..."):
                                         # 클로징 멘트 생성
-                                        closing_ment = f"다음 시간에는 {next_topic if next_topic else '다음 주제'}에 대한 독서 토론을 진행할 예정입니다. 즐거운 하루 되세요. 감사합니다."
+                                        closing_ment = f"다음 시간에는 {next_topic if next_topic else '다음 주제'}에 대한 독서 토론을 진행할 예정입니다."
                                         
                                         # AI 분석 결과와 클로징 멘트만 포함
                                         combined_text = f"""
+                                        즐거운 독서 토론이 되셨는지요?
                                         AI 분석 결과입니다.
                                         {st.session_state.ai_analysis}
                                         
@@ -237,6 +238,8 @@ def main():
                                         
                                         AI 의견입니다.
                                         {st.session_state.ai_opinion}
+                                        
+                                        즐거운 독서 토론 되세요.
                                         """
                                         summarized_text = summarize_for_tts(full_text)
                                         audio_html = text_to_speech(summarized_text)
@@ -280,42 +283,154 @@ def get_book_titles():
         cursor.close()
         conn.close()
 
-def analyze_content(content, keyword, model_key, model_name):
+def analyze_content(content, keyword, model_key, model_name, book_title, material_type):
     """내용 분석"""
     client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-    
-    prompt = f"""
-    다음 내용을 '{keyword}' 관점에서 분석해주세요.
-    
-    분석 결과는 다음 형식으로 작성해주세요 (전체 글자 수 1750자 이내로 작성).
-    반드시 존대말을 사용해 주세요.
-    
-    [핵심 요약] (150자 이내)
-    - 핵심 내용을 1-2줄로 요약해 주세요
-    
-    [주요 분석] (900자 이내)
-    1. '{keyword}' 관련 강점
-    - 주요 강점 2개를 설명해 주세요
-    
-    2. '{keyword}' 측면의 개선점
-    - 주요 개선점 2개를 제시해 주세요
-    
-    [실행 제안] (700자 이내)
-    1. '{keyword}' 중심의 단기 과제 (1-3개월)
-    - 구체적 실행 방안 2개를 제시해 주세요
-    - 각 방안별 기대효과를 설명해 주세요
-    
-    2. '{keyword}' 중심의 중기 과제 (3-6개월)
-    - 구체적 실행 방안 2개를 제시해 주세요
-    - 각 방안별 기대효과를 설명해 주세요
-    
-    * 모든 내용은 반드시 존대말로 작성해 주세요.
-    * 예시: "~해야 합니다", "~할 수 있습니다", "~하시기 바랍니다" 등의 형식으로 작성해 주세요.
-    
-    분석 내용:
-    {content}
-    """
-    
+
+    if book_title == "Good to Great" and material_type == "적용":
+        good_to_great_context = '''짐 콜린스(Jim Collins)의 『Good to Great』는 기업이 평범한(good) 수준을 넘어 위대한(great) 기업으로 도약하기 위해 필요한 핵심 원칙들을 설명한 경영서로, 다양한 사업 분야에서 적용 가능한 보편적인 경영 원칙을 담고 있습니다. 아래에 주요 원칙들과 그것들이 사업적 측면에서 적용 가능한 분야를 정리해 드리겠습니다.
+
+[Good to Great의 핵심 개념과 적용 분야]
+
+1. 리더십 5단계 (Level 5 Leadership): 겸손하면서도 강한 의지를 가진 리더가 회사를 위대하게 만든다. (CEO 리더십 개발, 조직문화 구축, 인재경영)
+2. 첫 번째 사람을 버스에 태워라 (First Who, Then What): 전략보다 먼저, 올바른 사람을 채용하고 부적절한 사람은 과감히 정리. (인사 전략, 조직 재편, 스타트업 인재 채용)
+3. 고슴도치 컨셉 (The Hedgehog Concept): 자사가 열정, 경제적 원동력, 세계 최고가 될 수 있는 분야가 만나는 지점을 찾는다. (사업 전략 수립, 브랜드 포지셔닝, 핵심 사업선택)
+4. 잔혹한 현실을 직시하라 (Confront the Brutal Facts): 현실을 정확히 파악하고 마주하며 대응책을 만든다. (위기관리, 경영진 회의체 개선, 내부 진단 도구 도입)
+5. 플라이휠 효과 (Flywheel Effect): 작은 성공의 반복이 모여 조직 전체를 가속하는 원동력이 된다. (성과관리, 제품 개선 루프, 브랜드 성장 전략)
+6. 기술은 가속기일 뿐 (Technology Accelerator): 기술은 전략을 보조하는 수단이지, 본질적인 전략이 아니다. (IT 투자 전략, 디지털 전환 판단 기준)
+7. 문화적 규율 (Culture of Discipline): 자율성과 책임감을 갖춘 조직 문화가 성장을 촉진한다. (중간 관리자 역량 강화, KPI/OKR 도입)
+
+[실제 적용 예시]
+- 스타트업/중소기업: 고슴도치 컨셉을 활용해 핵심 역량 중심의 전략 설정
+- 대기업: 기존 성과가 정체된 기업에 '플라이휠 효과'와 '문화적 규율'을 통해 재도약 기반 마련
+- 제조업/기술기업: 기술 혁신에만 의존하지 않고, 기술을 전략적 가속기로 활용
+- 전통 산업: '잔혹한 현실 직시'를 통해 시장 변화에 유연하게 적응
+
+『Good to Great』는 단순히 대기업이 아닌, 어떤 규모의 조직이든 "좋은 수준"에서 "탁월한 수준"으로 도약하는 데 필요한 보편적이고도 실천적인 경영 원칙을 제공합니다. 특히, 리더십 개발, 인재 관리, 전략 수립, 조직 문화 형성, 장기 성장 전략 분야에서 매우 유용하게 적용될 수 있습니다.'''
+        prompt = f"""
+        다음은 『Good to Great』의 실제 경영 원칙과 적용 예시입니다. 반드시 아래 내용을 참고하여 분석을 진행하세요.
+
+        {good_to_great_context}
+
+        이 적용 파일은 미션, 비전, OKR, 핵심 가치 등 조직의 방향성과 실행체계에 초점을 맞추고 있습니다. 분석 시 반드시 이 점을 고려하세요.
+
+        다음 내용을 '{keyword}' 관점에서 분석해주세요.
+
+        분석 결과는 다음 형식으로 작성해주세요 (전체 글자 수 1750자 이내로 작성).
+        반드시 존대말을 사용해 주세요.
+
+        [핵심 요약] (150자 이내)
+        - 핵심 내용을 1-2줄로 요약해 주세요
+
+        [주요 분석] (900자 이내)
+        1. '{keyword}' 관련 강점
+        - 주요 강점 2개를 설명해 주세요
+
+        2. '{keyword}' 측면의 개선점
+        - 주요 개선점 2개를 제시해 주세요
+
+        [실행 제안] (700자 이내)
+        - 미션, 비전, OKR, 핵심 가치 관점에서 실질적으로 실행할 수 있는 구체적 방안 3~4가지를 제시해 주세요.
+        - 각 방안별 기대효과를 설명해 주세요.
+
+        * 모든 내용은 반드시 존대말로 작성해 주세요.
+        * 예시: "~해야 합니다", "~할 수 있습니다", "~하시기 바랍니다" 등의 형식으로 작성해 주세요.
+
+        분석 내용:
+        {content}
+        """
+    elif book_title == "Good to Great":
+        # 기존 Good to Great 분기 (적용 외)
+        good_to_great_context = '''짐 콜린스(Jim Collins)의 『Good to Great』는 기업이 평범한(good) 수준을 넘어 위대한(great) 기업으로 도약하기 위해 필요한 핵심 원칙들을 설명한 경영서로, 다양한 사업 분야에서 적용 가능한 보편적인 경영 원칙을 담고 있습니다. 아래에 주요 원칙들과 그것들이 사업적 측면에서 적용 가능한 분야를 정리해 드리겠습니다.
+
+[Good to Great의 핵심 개념과 적용 분야]
+
+1. 리더십 5단계 (Level 5 Leadership): 겸손하면서도 강한 의지를 가진 리더가 회사를 위대하게 만든다. (CEO 리더십 개발, 조직문화 구축, 인재경영)
+2. 첫 번째 사람을 버스에 태워라 (First Who, Then What): 전략보다 먼저, 올바른 사람을 채용하고 부적절한 사람은 과감히 정리. (인사 전략, 조직 재편, 스타트업 인재 채용)
+3. 고슴도치 컨셉 (The Hedgehog Concept): 자사가 열정, 경제적 원동력, 세계 최고가 될 수 있는 분야가 만나는 지점을 찾는다. (사업 전략 수립, 브랜드 포지셔닝, 핵심 사업선택)
+4. 잔혹한 현실을 직시하라 (Confront the Brutal Facts): 현실을 정확히 파악하고 마주하며 대응책을 만든다. (위기관리, 경영진 회의체 개선, 내부 진단 도구 도입)
+5. 플라이휠 효과 (Flywheel Effect): 작은 성공의 반복이 모여 조직 전체를 가속하는 원동력이 된다. (성과관리, 제품 개선 루프, 브랜드 성장 전략)
+6. 기술은 가속기일 뿐 (Technology Accelerator): 기술은 전략을 보조하는 수단이지, 본질적인 전략이 아니다. (IT 투자 전략, 디지털 전환 판단 기준)
+7. 문화적 규율 (Culture of Discipline): 자율성과 책임감을 갖춘 조직 문화가 성장을 촉진한다. (중간 관리자 역량 강화, KPI/OKR 도입)
+
+[실제 적용 예시]
+- 스타트업/중소기업: 고슴도치 컨셉을 활용해 핵심 역량 중심의 전략 설정
+- 대기업: 기존 성과가 정체된 기업에 '플라이휠 효과'와 '문화적 규율'을 통해 재도약 기반 마련
+- 제조업/기술기업: 기술 혁신에만 의존하지 않고, 기술을 전략적 가속기로 활용
+- 전통 산업: '잔혹한 현실 직시'를 통해 시장 변화에 유연하게 적응
+
+『Good to Great』는 단순히 대기업이 아닌, 어떤 규모의 조직이든 "좋은 수준"에서 "탁월한 수준"으로 도약하는 데 필요한 보편적이고도 실천적인 경영 원칙을 제공합니다. 특히, 리더십 개발, 인재 관리, 전략 수립, 조직 문화 형성, 장기 성장 전략 분야에서 매우 유용하게 적용될 수 있습니다.'''
+        prompt = f"""
+        다음은 『Good to Great』의 실제 경영 원칙과 적용 예시입니다. 반드시 아래 내용을 참고하여 분석을 진행하세요.
+
+        {good_to_great_context}
+
+        이 적용 파일은 미션, 비전, OKR, 핵심 가치 등 조직의 방향성과 실행체계에 초점을 맞추고 있습니다. 분석 시 반드시 이 점을 고려하세요.
+
+        다음 내용을 '{keyword}' 관점에서 분석해주세요.
+
+        분석 결과는 다음 형식으로 작성해주세요 (전체 글자 수 1750자 이내로 작성).
+        반드시 존대말을 사용해 주세요.
+
+        [핵심 요약] (150자 이내)
+        - 핵심 내용을 1-2줄로 요약해 주세요
+
+        [주요 분석] (900자 이내)
+        1. '{keyword}' 관련 강점
+        - 주요 강점 2개를 설명해 주세요
+
+        2. '{keyword}' 측면의 개선점
+        - 주요 개선점 2개를 제시해 주세요
+
+        [실행 제안] (700자 이내)
+        1. '{keyword}' 중심의 단기 과제 (1-3개월)
+        - 구체적 실행 방안 2개를 제시해 주세요
+        - 각 방안별 기대효과를 설명해 주세요
+
+        2. '{keyword}' 중심의 중기 과제 (3-6개월)
+        - 구체적 실행 방안 2개를 제시해 주세요
+        - 각 방안별 기대효과를 설명해 주세요
+
+        * 모든 내용은 반드시 존대말로 작성해 주세요.
+        * 예시: "~해야 합니다", "~할 수 있습니다", "~하시기 바랍니다" 등의 형식으로 작성해 주세요.
+
+        분석 내용:
+        {content}
+        """
+    else:
+        # 기존 방식
+        prompt = f"""
+        다음 내용을 '{keyword}' 관점에서 분석해주세요.
+
+        분석 결과는 다음 형식으로 작성해주세요 (전체 글자 수 1750자 이내로 작성).
+        반드시 존대말을 사용해 주세요.
+
+        [핵심 요약] (150자 이내)
+        - 핵심 내용을 1-2줄로 요약해 주세요
+
+        [주요 분석] (900자 이내)
+        1. '{keyword}' 관련 강점
+        - 주요 강점 2개를 설명해 주세요
+
+        2. '{keyword}' 측면의 개선점
+        - 주요 개선점 2개를 제시해 주세요
+
+        [실행 제안] (700자 이내)
+        1. '{keyword}' 중심의 단기 과제 (1-3개월)
+        - 구체적 실행 방안 2개를 제시해 주세요
+        - 각 방안별 기대효과를 설명해 주세요
+
+        2. '{keyword}' 중심의 중기 과제 (3-6개월)
+        - 구체적 실행 방안 2개를 제시해 주세요
+        - 각 방안별 기대효과를 설명해 주세요
+
+        * 모든 내용은 반드시 존대말로 작성해 주세요.
+        * 예시: "~해야 합니다", "~할 수 있습니다", "~하시기 바랍니다" 등의 형식으로 작성해 주세요.
+
+        분석 내용:
+        {content}
+        """
+
     try:
         if model_key.startswith("Local"):
             # 로컬 LLM API 호출
@@ -374,7 +489,7 @@ def generate_business_opinion(summary_text):
     try:
         # 핵심 주제 추출
         topic_response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "당신은 텍스트에서 핵심 주제를 정확하게 추출하는 전문가입니다."},
                 {"role": "user", "content": prompt_for_topic}
@@ -403,7 +518,7 @@ def generate_business_opinion(summary_text):
         """
         
         opinion_response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "당신은 실무 경험이 풍부한 비즈니스 전문가입니다. 주어진 주제에 대해 간단명료하게 핵심적인 통찰과 실용적인 조언을 제공합니다."},
                 {"role": "user", "content": opinion_prompt}
@@ -565,9 +680,9 @@ def compare_applications(content1, content2, keyword, model_key, model_name):
     
     try:
         if "Local" in model_key:
-            return analyze_content(prompt, keyword, model_key, model_name)
+            return analyze_content(prompt, keyword, model_key, model_name, "Good to Great", "적용")
         else:
-            return analyze_content(prompt, keyword, model_key, model_name)
+            return analyze_content(prompt, keyword, model_key, model_name, "Good to Great", "적용")
     except Exception as e:
         st.error(f"비교 분석 중 오류 발생: {str(e)}")
         return "비교 분석 중 오류가 발생했습니다. 다시 시도해 주세요."
@@ -601,7 +716,7 @@ def show_advanced_application(book_title, keyword, model_key, model_name):
         # AI 분석 버튼
         if st.button("🤖 AI 분석"):
             with st.spinner("AI가 분석 중입니다..."):
-                analysis_result = analyze_content(selected_file['content'], keyword, model_key, model_name)
+                analysis_result = analyze_content(selected_file['content'], keyword, model_key, model_name, book_title, "적용 고급")
                 st.session_state.analysis_result = analysis_result
         
         # AI 분석 결과가 있으면 표시
@@ -803,7 +918,7 @@ def find_relevant_improvements(section, improvements):
     """
     
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo",  # 가벼운 모델 사용
+        model="gpt-4o-mini",  # 가벼운 모델 사용
         messages=[
             {"role": "system", "content": "당신은 비즈니스 분석 전문가입니다. 보고서 섹션과 관련된 개선사항을 찾습니다."},
             {"role": "user", "content": prompt}

@@ -130,8 +130,12 @@ def register_files():
     """파일 등록"""
     st.header("독서토론 파일 등록")
     
-    # 책 제목 입력 (기본값: 퍼스널 MBA)
-    book_title = st.text_input("책 제목", value="퍼스널 MBA")
+    # 책 제목 선택 (리스트 박스, 기본값: Good to Great)
+    book_title = st.selectbox(
+        "책 제목",
+        ["퍼스널 MBA", "Good to Great"],
+        index=1
+    )
     
     # 파일 선택
     col1, col2 = st.columns(2)

@@ -974,135 +974,6 @@ def update_decision_tree_tables():
         cursor.close()
         conn.close()
 
-def create_decision_tree_tables():
-    """비즈니스 의사결정 트리 테이블 생성"""
-    conn = connect_to_db()
-    cursor = conn.cursor()
-    
-    try:
-        # 외래 키 체크 비활성화
-        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-        
-        # 기존 테이블 삭제
-        cursor.execute("DROP TABLE IF EXISTS decision_outcomes")
-        cursor.execute("DROP TABLE IF EXISTS decision_options")
-        cursor.execute("DROP TABLE IF EXISTS decision_nodes")
-        cursor.execute("DROP TABLE IF EXISTS decision_trees")
-        
-        # 의사결정 트리 테이블
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS decision_trees (
-                tree_id INT AUTO_INCREMENT PRIMARY KEY,
-                title VARCHAR(255) NOT NULL,
-                description TEXT,
-                category VARCHAR(50),
-                discount_rate DECIMAL(5,2),
-                analysis_period INT,
-                created_by INT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                FOREIGN KEY (created_by) REFERENCES dot_user_credibility(user_id)
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
-
-        # 의사결정 노드 테이블
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS decision_nodes (
-                node_id INT AUTO_INCREMENT PRIMARY KEY,
-                tree_id INT NOT NULL,
-                parent_id INT,
-                node_type ENUM('decision', 'chance', 'outcome') NOT NULL,
-                question TEXT NOT NULL,
-                description TEXT,
-                market_size DECIMAL(20,2),
-                market_growth DECIMAL(5,2),
-                competition_level INT,
-                risk_level INT,
-                expected_value DECIMAL(15,2),
-                optimal_choice VARCHAR(255),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (tree_id) REFERENCES decision_trees(tree_id) ON DELETE CASCADE,
-                FOREIGN KEY (parent_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
-
-        # 선택지/시나리오 테이블
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS decision_options (
-                option_id INT AUTO_INCREMENT PRIMARY KEY,
-                decision_node_id INT NOT NULL,  # 컬럼명 변경
-                option_name VARCHAR(255) NOT NULL,
-                initial_investment DECIMAL(15,2),
-                operating_cost DECIMAL(15,2),
-                expected_revenue DECIMAL(15,2),
-                market_share DECIMAL(5,2),
-                probability DECIMAL(5,2),
-                revenue_impact DECIMAL(8,2),
-                npv DECIMAL(15,2),
-                roi DECIMAL(10,2),
-                payback_period DECIMAL(10,2),
-                path_probability DECIMAL(5,2),
-                path_value DECIMAL(15,2),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (decision_node_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
-
-        # 결과 노드 상세 정보 테이블
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS decision_outcomes (
-                outcome_id INT AUTO_INCREMENT PRIMARY KEY,
-                decision_node_id INT NOT NULL,  # 컬럼명 변경
-                final_revenue DECIMAL(15,2),
-                cumulative_profit DECIMAL(15,2),
-                final_market_share DECIMAL(5,2),
-                market_position VARCHAR(20),
-                success_rate DECIMAL(5,2),
-                strategic_fit INT,
-                growth_potential INT,
-                competitive_advantage TEXT,
-                risk_factors TEXT,
-                risk_description TEXT,
-                implications TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (decision_node_id) REFERENCES decision_nodes(node_id) ON DELETE CASCADE
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
-
-        # 외래 키 체크 다시 활성화
-        cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-        
-        conn.commit()
-        st.success("✅ 비즈니스 의사결정 트리 테이블이 생성되었습니다!")
-        
-    except Exception as e:
-        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
-        conn.rollback()
-    finally:
-        cursor.close()
-        conn.close()
-
-def drop_decision_tree_tables():
-    """의사결정 트리 테이블 삭제"""
-    conn = connect_to_db()
-    cursor = conn.cursor()
-    
-    try:
-        # 외래 키 제약 조건으로 인해 역순으로 삭제
-        cursor.execute("DROP TABLE IF EXISTS decision_options")
-        cursor.execute("DROP TABLE IF EXISTS decision_nodes")
-        cursor.execute("DROP TABLE IF EXISTS decision_trees")
-        
-        conn.commit()
-        st.success("✅ 기존 테이블이 삭제되었습니다.")
-        
-    except Exception as e:
-        st.error(f"테이블 삭제 중 오류가 발생했습니다: {str(e)}")
-        conn.rollback()
-    finally:
-        cursor.close()
-        conn.close()
-
 def reset_session_state():
     """세션 상태 초기화"""
     st.session_state['show_create_form'] = False
@@ -1133,16 +1004,16 @@ def main():
     if 'tree_created' not in st.session_state:
         st.session_state['tree_created'] = False
     
-    # DB 테이블 관리 버튼들
-    with st.sidebar:
-        st.write("### DB 관리")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("테이블 생성", type="primary"):
-                create_decision_tree_tables()
-        with col2:
-            if st.button("테이블 삭제", type="secondary"):
-                drop_decision_tree_tables()
+    # DB 테이블 관리 버튼 제거
+    # with st.sidebar:
+    #     st.write("### DB 관리")
+    #     col1, col2 = st.columns(2)
+    #     with col1:
+    #         if st.button("테이블 생성", type="primary"):
+    #             create_decision_tree_tables()
+    #     with col2:
+    #         if st.button("테이블 삭제", type="secondary"):
+    #             drop_decision_tree_tables()
     
     # 메뉴 선택
     menu = st.sidebar.radio(
