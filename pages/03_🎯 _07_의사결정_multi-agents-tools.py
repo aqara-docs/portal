@@ -21,7 +21,34 @@ openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
 # 페이지 설정
-st.set_page_config(page_title="의사결정 지원 시스템", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="의사결정 지원 시스템", page_icon="��", layout="wide")
+
+# === MCP-STYLE MODEL SELECTION & DEFAULTS ===
+OUTPUT_TOKEN_INFO = {
+    "claude-3-5-sonnet-latest": {"max_tokens": 8192},
+    "claude-3-5-haiku-latest": {"max_tokens": 8192},
+    "claude-3-7-sonnet-latest": {"max_tokens": 16384},
+    "gpt-4o": {"max_tokens": 8192},
+    "gpt-4o-mini": {"max_tokens": 8192},
+}
+
+# Model selection UI (MCP style)
+has_anthropic_key = os.environ.get("ANTHROPIC_API_KEY") is not None
+has_openai_key = os.environ.get("OPENAI_API_KEY") is not None
+available_models = []
+if has_anthropic_key:
+    available_models.extend([
+        "claude-3-7-sonnet-latest",
+        "claude-3-5-sonnet-latest",
+        "claude-3-5-haiku-latest",
+    ])
+if has_openai_key:
+    available_models.extend(["gpt-4o", "gpt-4o-mini"])
+if not available_models:
+    available_models = ["claude-3-7-sonnet-latest"]
+
+if 'selected_model' not in st.session_state:
+    st.session_state.selected_model = 'claude-3-7-sonnet-latest'
 
 def connect_to_db():
     """MySQL DB 연결"""
@@ -187,7 +214,7 @@ def read_markdown_file(uploaded_file):
         st.error(f"파일 읽기 오류: {str(e)}")
         return None
 
-def analyze_with_ai(title, description, options, reference_files=None, model_choice="claude-3-sonnet-20240229"):
+def analyze_with_ai(title, description, options, reference_files=None, model_choice="claude-3-7-sonnet-latest"):
     """AI 분석 수행"""
     try:
         base_prompt = f"""
@@ -196,7 +223,6 @@ def analyze_with_ai(title, description, options, reference_files=None, model_cho
 제목: {title}
 설명: {description}
 """
-
         if reference_files:
             base_prompt += "\n추가 참고 자료:\n"
             for file in reference_files:
@@ -206,7 +232,6 @@ def analyze_with_ai(title, description, options, reference_files=None, model_cho
 {file['content']}
 ---
 """
-
         base_prompt += f"""
 옵션들:
 {json.dumps([{
@@ -226,23 +251,22 @@ def analyze_with_ai(title, description, options, reference_files=None, model_cho
 
 분석시 제공된 모든 정보(설명 및 추가 참고 자료)를 종합적으로 고려해주세요.
 분석은 객관적이고 전문적인 관점에서 수행해주세요."""
-
-        if model_choice == "gpt-4o-mini":
+        # Model logic
+        if model_choice.startswith("gpt-4"):
             response = openai.chat.completions.create(
                 model=model_choice,
                 messages=[{"role": "user", "content": base_prompt}],
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=OUTPUT_TOKEN_INFO.get(model_choice, {"max_tokens": 2000})["max_tokens"]
             )
             return response.choices[0].message.content
         else:  # Claude 모델 사용
             response = anthropic_client.messages.create(
                 model=model_choice,
-                max_tokens=2000,
+                max_tokens=OUTPUT_TOKEN_INFO.get(model_choice, {"max_tokens": 2000})["max_tokens"],
                 messages=[{"role": "user", "content": base_prompt}]
             )
             return response.content[0].text
-
     except Exception as e:
         st.error(f"AI 분석 중 오류 발생: {str(e)}")
         return None
@@ -510,12 +534,10 @@ def get_agent_tools(agent_type):
     }
     return tools.get(agent_type, "")
 
-def analyze_with_agents(title, description, options, reference_files, active_agents, debug_mode=False, model_name="gpt-4o-mini"):
+def analyze_with_agents(title, description, options, reference_files, active_agents, debug_mode=False, model_name="claude-3-7-sonnet-latest"):
     """멀티 에이전트 분석 수행"""
     try:
         results = {}
-        
-        # 옵션 정보 간소화
         simplified_options = [{
             'name': opt['name'],
             'advantages': opt.get('advantages', ''),
@@ -523,50 +545,27 @@ def analyze_with_agents(title, description, options, reference_files, active_age
             'duration': opt['duration'],
             'priority': opt['priority']
         } for opt in options]
-
-        # 각 에이전트별 분석 수행
         for agent_type, is_active in active_agents.items():
             if not is_active or agent_type == 'integration_agent':
                 continue
-                
             if debug_mode:
                 st.write(f"🤖 {agent_type} 분석 시작...")
-            
-            # 에이전트별 특화 도구 가져오기
             agent_tools = get_agent_tools(agent_type)
-            
-            # 시장 및 법률 에이전트를 위한 실시간 검색 수행
             additional_info = ""
             if agent_type == 'market_agent':
                 market_search = perform_perplexity_search(
-                    f"""다음 주제에 대한 최신 시장 동향을 분석해주세요:
-제목: {title}
-설명: {description[:200]}
-분석 관점:
-1. 시장 규모와 성장성
-2. 주요 경쟁사 현황
-3. 최근 트렌드와 변화
-4. 잠재적 기회와 위험 요소""", 
+                    f"""다음 주제에 대한 최신 시장 동향을 분석해주세요:\n제목: {title}\n설명: {description[:200]}\n분석 관점:\n1. 시장 규모와 성장성\n2. 주요 경쟁사 현황\n3. 최근 트렌드와 변화\n4. 잠재적 기회와 위험 요소""",
                     debug_mode
                 )
                 if market_search:
                     additional_info = f"\n\n[실시간 시장 동향 분석]\n{market_search}"
             elif agent_type == 'legal_agent':
                 legal_search = perform_perplexity_search(
-                    f"""다음 주제와 관련된 법률 및 규제 사항을 검토해주세요:
-제목: {title}
-설명: {description[:200]}
-검토 관점:
-1. 관련 법규 및 규제 현황
-2. 필요한 인허가 사항
-3. 잠재적 법적 리스크
-4. 규제 준수를 위한 요구사항""", 
+                    f"""다음 주제와 관련된 법률 및 규제 사항을 검토해주세요:\n제목: {title}\n설명: {description[:200]}\n검토 관점:\n1. 관련 법규 및 규제 현황\n2. 필요한 인허가 사항\n3. 잠재적 법적 리스크\n4. 규제 준수를 위한 요구사항""",
                     debug_mode
                 )
                 if legal_search:
                     additional_info = f"\n\n[실시간 법률/규제 분석]\n{legal_search}"
-            
-            # 기본 프롬프트
             base_prompt = f"""
 당신은 {agent_type.replace('_', ' ').title()} 입니다.
 다음 의사결정 안건을 분석해주세요.
@@ -600,59 +599,53 @@ graph LR
 
 반드시 제공된 분석 도구들을 활용하여 구체적이고 정량적인 분석을 수행해주세요.
 """
-
-            # 상세 분석을 위한 추가 프롬프트
             detail_prompt = f"""
             옵션 상세:
             {json.dumps(options, ensure_ascii=False, indent=2)}
             """
-
             try:
-                # 기본 분석 수행
-                if model_name == "claude-3-5-sonnet-20241022":
+                if model_name.startswith("claude"):
                     response = anthropic_client.messages.create(
-                        model="claude-3-5-sonnet-20241022",
-                        max_tokens=2000,
+                        model=model_name,
+                        max_tokens=OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"],
                         messages=[{
                             "role": "user",
                             "content": base_prompt
                         }]
                     )
                     analysis_content = response.content[0].text
-                else:  # GPT 모델 사용
+                else:
                     response = openai.chat.completions.create(
                         model=model_name,
                         messages=[{
                             "role": "user",
                             "content": base_prompt
                         }],
-                        temperature=0.7
+                        temperature=0.7,
+                        max_tokens=OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"]
                     )
                     analysis_content = response.choices[0].message.content
-
-                # 상세 분석 수행
-                if model_name == "claude-3-5-sonnet-20241022":
+                if model_name.startswith("claude"):
                     detail_response = anthropic_client.messages.create(
-                        model="claude-3-5-sonnet-20241022",
-                        max_tokens=2000,
+                        model=model_name,
+                        max_tokens=OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"],
                         messages=[{
                             "role": "user",
                             "content": detail_prompt
                         }]
                     )
                     detail_content = detail_response.content[0].text
-                else:  # GPT 모델 사용
+                else:
                     detail_response = openai.chat.completions.create(
                         model=model_name,
                         messages=[{
                             "role": "user",
                             "content": detail_prompt
                         }],
-                        temperature=0.7
+                        temperature=0.7,
+                        max_tokens=OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"]
                     )
                     detail_content = detail_response.choices[0].message.content
-
-                # 분석 결과 결합
                 combined_analysis = f"""
                 기본 분석:
                 {analysis_content}
@@ -660,7 +653,6 @@ graph LR
                 상세 분석:
                 {detail_content}
                 """
-
                 results[agent_type] = {
                     'analysis': combined_analysis,
                     'recommendations': extract_recommendations(combined_analysis),
@@ -675,8 +667,6 @@ graph LR
                     'recommendations': [],
                     'risk_assessment': []
                 }
-
-        # 통합 에이전트 분석
         if active_agents.get('integration_agent', False):
             integration_prompt = f"""
             다음은 각 전문가 에이전트의 분석 결과입니다. 이를 종합적으로 분석하여 최종 권고안을 도출해주세요:
@@ -689,11 +679,10 @@ graph LR
             3. 주요 리스크 및 대응 방안
             4. 실행 로드맵
             """
-
-            if model_name == "claude-3-5-sonnet-20241022":
+            if model_name.startswith("claude"):
                 integration_response = anthropic_client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=2000,
+                    model=model_name,
+                    max_tokens=OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"],
                     messages=[{
                         "role": "user",
                         "content": integration_prompt
@@ -704,23 +693,22 @@ graph LR
                     'recommendations': extract_recommendations(integration_response.content[0].text),
                     'risk_assessment': extract_risk_assessment(integration_response.content[0].text)
                 }
-            else:  # GPT 모델 사용
+            else:
                 integration_response = openai.chat.completions.create(
                     model=model_name,
                     messages=[{
                         "role": "user",
                         "content": integration_prompt
                     }],
-                    temperature=0.7
+                    temperature=0.7,
+                    max_tokens=OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"]
                 )
                 results['integration'] = {
                     'analysis': integration_response.choices[0].message.content,
                     'recommendations': extract_recommendations(integration_response.choices[0].message.content),
                     'risk_assessment': extract_risk_assessment(integration_response.choices[0].message.content)
                 }
-
         return results
-
     except Exception as e:
         st.error(f"분석 중 오류 발생: {str(e)}")
         if debug_mode:
@@ -938,7 +926,7 @@ def display_mermaid_chart(markdown_text):
 def get_short_model_name(model_name):
     """긴 모델 이름을 짧은 버전으로 변환"""
     model_mapping = {
-        "claude-3-5-sonnet-20241022": "claude-3.5",
+        "claude-3-7-sonnet-latest": "claude-3.7",
         "gpt-4o-mini": "gpt-4o-mini"
     }
     return model_mapping.get(model_name, model_name)
@@ -994,13 +982,14 @@ def main():
         'integration_agent': True  # 항상 활성화
     }
 
-    # 모델 선택 추가
-    model_name = st.selectbox(
+    # 모델 선택 UI (Claude 3.7 디폴트, MCP 스타일)
+    st.session_state.selected_model = st.selectbox(
         "사용할 모델",
-        ["gpt-4o-mini", "claude-3-5-sonnet-20241022"],
-        index=0,  # gpt-4o-mini를 기본값으로
-        help="분석에 사용할 AI 모델을 선택하세요"
+        options=available_models,
+        index=available_models.index(st.session_state.selected_model) if st.session_state.selected_model in available_models else 0,
+        help="분석에 사용할 AI 모델을 선택하세요 (Claude는 ANTHROPIC_API_KEY 필요, OpenAI는 OPENAI_API_KEY 필요)"
     )
+    model_name = st.session_state.selected_model
 
     tab1, tab2 = st.tabs(["의사결정 안건 등록", "의사결정 현황"])
     

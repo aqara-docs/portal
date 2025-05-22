@@ -81,36 +81,69 @@ def get_table_schema(table_name):
         st.error(f"Error: {err}")
         return []
 
-def create_or_modify_table(table_name, columns, unique_keys):
-    """테이블 생성 또는 수정"""
+def create_or_modify_table(table_name, columns, unique_keys, mode="migrate"):
+    """테이블 생성 또는 수정 (mode: migrate=기존 데이터 보존, reset=기존 데이터 삭제)"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
         
-        # 기존 테이블 삭제
-        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        
-        # 새 테이블 생성
-        column_defs = []
-        for col in columns:
-            col_def = f"{col['name']} {col['type']}"
-            if col.get('not_null'):
-                col_def += " NOT NULL"
-            if col.get('default'):
-                col_def += f" DEFAULT {col['default']}"
-            if col.get('auto_increment'):
-                col_def += " AUTO_INCREMENT"
-            if col.get('primary_key'):
-                col_def += " PRIMARY KEY"
-            column_defs.append(col_def)
-        
-        # 유니크 키 추가
-        for key in unique_keys:
-            column_defs.append(f"UNIQUE KEY {key['name']} ({key['columns']})")
-        
-        create_table_sql = f"CREATE TABLE {table_name} ({', '.join(column_defs)})"
-        cursor.execute(create_table_sql)
-        
+        if mode == "reset":
+            # 기존 테이블 삭제
+            cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+            # 새 테이블 생성 (기존 코드와 동일)
+            column_defs = []
+            for col in columns:
+                col_def = f"{col['name']} {col['type']}"
+                if col.get('not_null'):
+                    col_def += " NOT NULL"
+                if col.get('default'):
+                    col_def += f" DEFAULT {col['default']}"
+                if col.get('auto_increment'):
+                    col_def += " AUTO_INCREMENT"
+                if col.get('primary_key'):
+                    col_def += " PRIMARY KEY"
+                column_defs.append(col_def)
+            for key in unique_keys:
+                column_defs.append(f"UNIQUE KEY {key['name']} ({key['columns']})")
+            create_table_sql = f"CREATE TABLE {table_name} ({', '.join(column_defs)})"
+            cursor.execute(create_table_sql)
+        else:
+            # migrate: 기존 데이터 보존, ALTER TABLE로 구조만 변경
+            cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+            table_exists = cursor.fetchone() is not None
+            if not table_exists:
+                # 테이블이 없으면 새로 생성
+                column_defs = []
+                for col in columns:
+                    col_def = f"{col['name']} {col['type']}"
+                    if col.get('not_null'):
+                        col_def += " NOT NULL"
+                    if col.get('default'):
+                        col_def += f" DEFAULT {col['default']}"
+                    if col.get('auto_increment'):
+                        col_def += " AUTO_INCREMENT"
+                    if col.get('primary_key'):
+                        col_def += " PRIMARY KEY"
+                    column_defs.append(col_def)
+                for key in unique_keys:
+                    column_defs.append(f"UNIQUE KEY {key['name']} ({key['columns']})")
+                create_table_sql = f"CREATE TABLE {table_name} ({', '.join(column_defs)})"
+                cursor.execute(create_table_sql)
+            else:
+                # 테이블이 있으면 ALTER TABLE로 컬럼 추가/수정
+                for col in columns:
+                    col_name = col['name']
+                    col_type = col['type']
+                    # 칼럼 존재 여부 확인
+                    cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE '{col_name}'")
+                    column_exists = cursor.fetchone() is not None
+                    if column_exists:
+                        # 기존 칼럼 수정
+                        cursor.execute(f"ALTER TABLE {table_name} MODIFY COLUMN {col_name} {col_type}")
+                    else:
+                        # 새 칼럼 추가
+                        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+                # 유니크 키 등 추가는 필요시 구현
         conn.commit()
         cursor.close()
         conn.close()
@@ -814,7 +847,8 @@ def create_logistics_tables(mode="migrate"):
                 is_certified BOOLEAN NOT NULL DEFAULT TRUE,
                 certificate_number VARCHAR(100),
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                FOREIGN KEY (product_id) REFERENCES products_logistics(product_id)
+                FOREIGN KEY (product_id) REFERENCES products_logistics(product_id),
+                UNIQUE KEY unique_product (product_id)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """)
 
@@ -993,7 +1027,7 @@ def create_logistics_tables(mode="migrate"):
         conn.close()
 
 def create_mcp_analysis_table():
-    """MCP 분석 결과 테이블 생성"""
+    """MCP 분석 결과 테이블 생성/수정"""
     conn = None
     cursor = None
     try:
@@ -1002,25 +1036,45 @@ def create_mcp_analysis_table():
             return False
         cursor = conn.cursor()
         
-        # 기존 테이블 삭제
-        cursor.execute("DROP TABLE IF EXISTS mcp_analysis_results")
+        # 테이블이 존재하는지 확인
+        cursor.execute("SHOW TABLES LIKE 'mcp_analysis_results'")
+        table_exists = cursor.fetchone() is not None
         
-        # 새 테이블 생성
-        cursor.execute("""
-            CREATE TABLE mcp_analysis_results (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                query TEXT NOT NULL,
-                analysis_result JSON NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
+        if not table_exists:
+            # 테이블이 없는 경우 새로 생성
+            cursor.execute("""
+                CREATE TABLE mcp_analysis_results (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    query LONGTEXT NOT NULL,
+                    title VARCHAR(255),
+                    analysis_result JSON NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """)
+        else:
+            # 테이블이 있는 경우 query 컬럼 타입 변경 및 title 컬럼 확인
+            cursor.execute("""
+                ALTER TABLE mcp_analysis_results 
+                MODIFY COLUMN query LONGTEXT NOT NULL
+            """)
+            
+            # title 컬럼이 있는지 확인
+            cursor.execute("SHOW COLUMNS FROM mcp_analysis_results LIKE 'title'")
+            title_exists = cursor.fetchone() is not None
+            
+            if not title_exists:
+                # title 컬럼이 없는 경우에만 추가
+                cursor.execute("""
+                    ALTER TABLE mcp_analysis_results 
+                    ADD COLUMN title VARCHAR(255) AFTER query
+                """)
         
         conn.commit()
         return True
         
     except Exception as e:
-        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+        st.error(f"테이블 생성/수정 중 오류가 발생했습니다: {str(e)}")
         return False
     finally:
         if cursor:
@@ -1174,6 +1228,66 @@ def drop_decision_tree_tables():
         cursor.close()
         conn.close()
 
+def create_meeting_records_table(mode="migrate"):
+    """회의록 테이블 생성/업데이트"""
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    
+    try:
+        if mode == "reset":
+            # 기존 테이블 삭제 후 새로 생성
+            cursor.execute("DROP TABLE IF EXISTS meeting_records")
+            
+            # 새 테이블 생성
+            cursor.execute("""
+                CREATE TABLE meeting_records (
+                    meeting_id INT AUTO_INCREMENT PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    date DATETIME NOT NULL,
+                    participants TEXT,
+                    audio_path VARCHAR(255),
+                    full_text LONGTEXT,
+                    summary LONGTEXT,
+                    action_items TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """)
+        else:
+            # 기존 테이블이 있는지 확인
+            cursor.execute("SHOW TABLES LIKE 'meeting_records'")
+            if cursor.fetchone():
+                # 기존 테이블의 컬럼 타입 변경
+                cursor.execute("""
+                    ALTER TABLE meeting_records 
+                    MODIFY COLUMN full_text LONGTEXT,
+                    MODIFY COLUMN summary LONGTEXT
+                """)
+            else:
+                # 테이블이 없는 경우 새로 생성
+                cursor.execute("""
+                    CREATE TABLE meeting_records (
+                        meeting_id INT AUTO_INCREMENT PRIMARY KEY,
+                        title VARCHAR(255) NOT NULL,
+                        date DATETIME NOT NULL,
+                        participants TEXT,
+                        audio_path VARCHAR(255),
+                        full_text LONGTEXT,
+                        summary LONGTEXT,
+                        action_items TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """)
+        
+        conn.commit()
+        return True, "회의록 테이블이 성공적으로 생성/업데이트되었습니다."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("DB 테이블 관리 시스템")
     
@@ -1184,7 +1298,9 @@ def main():
          "Rayleigh Skylights 테이블 생성", "자기소개서 테이블 생성", 
          "TOC 분석 테이블 생성", "기업 가치 평가 테이블 생성", 
          "주관식 질문 관련 테이블 생성", "물류 관리(PI/CI) 테이블 생성", 
-         "MCP 분석 테이블 생성", "의사결정 트리 테이블 생성"]
+         "MCP 분석 테이블 생성", "의사결정 트리 테이블 생성",
+         "회의록 테이블 생성/업데이트",
+         "decision_options 컬럼 추가(데이터 보호)"]
     )
     
     if menu == "테이블 목록":
@@ -1202,6 +1318,13 @@ def main():
         table_name = st.text_input("테이블 이름", help="생성할 테이블의 이름을 입력하세요.")
         
         if table_name:
+            # 생성/수정 모드 선택
+            mode = st.radio(
+                "테이블 작업 방식 선택",
+                ["구조만 업데이트(기존 데이터 유지)", "테이블 새로 생성(기존 데이터 삭제)"],
+                index=0
+            )
+            mode_value = "migrate" if mode == "구조만 업데이트(기존 데이터 유지)" else "reset"
             # 컬럼 정의
             st.subheader("컬럼 정의")
             num_columns = st.number_input("컬럼 수", min_value=1, value=1)
@@ -1243,7 +1366,7 @@ def main():
                     })
             
             if st.button("테이블 생성/수정", type="primary"):
-                if create_or_modify_table(table_name, columns, unique_keys):
+                if create_or_modify_table(table_name, columns, unique_keys, mode=mode_value):
                     st.success(f"테이블 '{table_name}'이(가) 성공적으로 생성/수정되었습니다!")
                     # 테이블 구조 확인
                     st.write("### 생성된 테이블 구조:")
@@ -1445,14 +1568,52 @@ def main():
 
     elif menu == "MCP 분석 테이블 생성":
         st.header("MCP 분석 테이블 생성")
+        
+        # 테이블 작업 방식 선택
+        mode = st.radio(
+            "테이블 작업 방식 선택",
+            ["구조만 업데이트(기존 데이터 유지)", "테이블 새로 생성(기존 데이터 삭제)"],
+            index=0
+        )
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("MCP 분석 테이블 생성", type="primary"):
-                if create_mcp_analysis_table():
-                    st.success("✅ MCP 분석 테이블이 생성되었습니다!")
+            if st.button("MCP 분석 테이블 생성/수정", type="primary"):
+                if mode == "테이블 새로 생성(기존 데이터 삭제)":
+                    # 기존 테이블 삭제 후 새로 생성
+                    try:
+                        conn = connect_to_db()
+                        if not conn:
+                            st.error("데이터베이스 연결에 실패했습니다.")
+                            return
+                        cursor = conn.cursor()
+                        cursor.execute("DROP TABLE IF EXISTS mcp_analysis_results")
+                        cursor.execute("""
+                            CREATE TABLE mcp_analysis_results (
+                                id INT AUTO_INCREMENT PRIMARY KEY,
+                                query LONGTEXT NOT NULL,
+                                title VARCHAR(255),
+                                analysis_result JSON NOT NULL,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                        """)
+                        conn.commit()
+                        st.success("✅ MCP 분석 테이블이 새로 생성되었습니다!")
+                    except Exception as e:
+                        st.error(f"테이블 생성 중 오류가 발생했습니다: {str(e)}")
+                    finally:
+                        if cursor:
+                            cursor.close()
+                        if conn:
+                            conn.close()
                 else:
-                    st.error("테이블 생성에 실패했습니다.")
+                    # 기존 데이터 유지하면서 구조만 업데이트
+                    if create_mcp_analysis_table():
+                        st.success("✅ MCP 분석 테이블이 성공적으로 업데이트되었습니다!")
+                    else:
+                        st.error("테이블 업데이트에 실패했습니다.")
         
         with col2:
             if st.button("MCP 분석 테이블 삭제", type="secondary"):
@@ -1484,6 +1645,98 @@ def main():
         with col2:
             if st.button("의사결정 트리 테이블 삭제", type="secondary"):
                 drop_decision_tree_tables()
+        # --- decision_options decision_node_id NULL 허용 기능 ---
+        st.markdown("---")
+        st.subheader("decision_options 테이블의 decision_node_id 컬럼 NULL 허용/DEFAULT NULL로 변경")
+        if st.button("decision_options decision_node_id NULL 허용", type="primary"):
+            try:
+                conn = connect_to_db()
+                cursor = conn.cursor()
+                # decision_options 테이블 존재 여부 확인
+                cursor.execute("SHOW TABLES LIKE 'decision_options'")
+                if cursor.fetchone():
+                    # decision_node_id 컬럼 존재 여부 확인
+                    cursor.execute("SHOW COLUMNS FROM decision_options LIKE 'decision_node_id'")
+                    if cursor.fetchone():
+                        cursor.execute("ALTER TABLE decision_options MODIFY COLUMN decision_node_id INT NULL DEFAULT NULL")
+                        conn.commit()
+                        st.success("decision_node_id 컬럼이 NULL 허용 및 DEFAULT NULL로 변경되었습니다.")
+                    else:
+                        st.warning("decision_node_id 컬럼이 존재하지 않습니다.")
+                else:
+                    st.warning("decision_options 테이블이 존재하지 않습니다.")
+                # 변경 후 테이블 구조 표시
+                schema = get_table_schema("decision_options")
+                if schema:
+                    import pandas as pd
+                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                    st.write("### decision_options 테이블 구조:")
+                    st.dataframe(schema_df)
+                cursor.close()
+                conn.close()
+            except Exception as e:
+                st.error(f"컬럼 변경 중 오류: {str(e)}")
+
+    elif menu == "회의록 테이블 생성/업데이트":
+        st.header("회의록 테이블 생성/업데이트")
+        # 테이블 작업 방식 선택
+        mode = st.radio(
+            "테이블 작업 방식 선택",
+            ["구조만 업데이트(기존 데이터 유지)", "테이블 새로 생성(기존 데이터 삭제)"],
+            index=0
+        )
+        if st.button("회의록 테이블 생성/업데이트"):
+            success, message = create_meeting_records_table(
+                mode="reset" if mode == "테이블 새로 생성(기존 데이터 삭제)" else "migrate"
+            )
+            if success:
+                st.success(message)
+                # 생성된 테이블 구조 표시
+                st.write("### 생성된 테이블 구조:")
+                schema = get_table_schema("meeting_records")
+                if schema:
+                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                    st.dataframe(schema_df)
+            else:
+                st.error(f"테이블 생성/업데이트 중 오류가 발생했습니다: {message}")
+
+    elif menu == "decision_options 컬럼 추가(데이터 보호)":
+        st.header("decision_options 테이블에 분석용 컬럼 추가 (데이터 보호)")
+        st.write("이 기능은 기존 데이터를 삭제하지 않고, 필요한 컬럼만 안전하게 추가합니다.")
+        if st.button("컬럼 추가/수정 실행", type="primary"):
+            try:
+                conn = connect_to_db()
+                cursor = conn.cursor()
+                # 각 컬럼 존재 여부 확인 후 없으면 추가
+                alter_sqls = [
+                    ("advantages", "TEXT"),
+                    ("disadvantages", "TEXT"),
+                    ("estimated_duration", "VARCHAR(255)"),
+                    ("priority", "INT"),
+                    ("additional_info", "TEXT")
+                ]
+                added = []
+                for col, coltype in alter_sqls:
+                    cursor.execute(f"SHOW COLUMNS FROM decision_options LIKE '{col}'")
+                    if not cursor.fetchone():
+                        cursor.execute(f"ALTER TABLE decision_options ADD COLUMN {col} {coltype}")
+                        added.append(col)
+                conn.commit()
+                if added:
+                    st.success(f"다음 컬럼이 추가되었습니다: {', '.join(added)}")
+                else:
+                    st.info("모든 컬럼이 이미 존재합니다. 변경 없음.")
+                # 변경 후 테이블 구조 표시
+                schema = get_table_schema("decision_options")
+                if schema:
+                    import pandas as pd
+                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                    st.write("### decision_options 테이블 구조:")
+                    st.dataframe(schema_df)
+                cursor.close()
+                conn.close()
+            except Exception as e:
+                st.error(f"컬럼 추가/수정 중 오류: {str(e)}")
 
 if __name__ == "__main__":
     main() 

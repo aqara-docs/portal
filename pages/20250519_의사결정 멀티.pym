@@ -9,6 +9,7 @@ import json
 import base64
 import requests
 import graphviz
+import traceback
 
 # 환경 변수 로드
 load_dotenv()
@@ -20,34 +21,7 @@ openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
 # 페이지 설정
-st.set_page_config(page_title="의사결정 지원 시스템", page_icon="��", layout="wide")
-
-# === MCP-STYLE MODEL SELECTION & DEFAULTS ===
-OUTPUT_TOKEN_INFO = {
-    "claude-3-5-sonnet-latest": {"max_tokens": 8192},
-    "claude-3-5-haiku-latest": {"max_tokens": 8192},
-    "claude-3-7-sonnet-latest": {"max_tokens": 16384},
-    "gpt-4o": {"max_tokens": 8192},
-    "gpt-4o-mini": {"max_tokens": 8192},
-}
-
-# Model selection UI (MCP style)
-has_anthropic_key = os.environ.get("ANTHROPIC_API_KEY") is not None
-has_openai_key = os.environ.get("OPENAI_API_KEY") is not None
-available_models = []
-if has_anthropic_key:
-    available_models.extend([
-        "claude-3-7-sonnet-latest",
-        "claude-3-5-sonnet-latest",
-        "claude-3-5-haiku-latest",
-    ])
-if has_openai_key:
-    available_models.extend(["gpt-4o", "gpt-4o-mini"])
-if not available_models:
-    available_models = ["claude-3-7-sonnet-latest"]
-
-if 'selected_model' not in st.session_state:
-    st.session_state.selected_model = 'claude-3-7-sonnet-latest'
+st.set_page_config(page_title="의사결정 지원 시스템", page_icon="🎯", layout="wide")
 
 def connect_to_db():
     """MySQL DB 연결"""
@@ -213,17 +187,16 @@ def read_markdown_file(uploaded_file):
         st.error(f"파일 읽기 오류: {str(e)}")
         return None
 
-def analyze_with_ai(title, description, options, reference_files=None, model_choice=None):
+def analyze_with_ai(title, description, options, reference_files=None, model_choice="claude-3-sonnet-20240229"):
     """AI 분석 수행"""
     try:
-        if model_choice is None:
-            model_choice = st.session_state.selected_model
         base_prompt = f"""
 다음 의사결정 안건을 분석해주세요:
 
 제목: {title}
 설명: {description}
 """
+
         if reference_files:
             base_prompt += "\n추가 참고 자료:\n"
             for file in reference_files:
@@ -233,6 +206,7 @@ def analyze_with_ai(title, description, options, reference_files=None, model_cho
 {file['content']}
 ---
 """
+
         base_prompt += f"""
 옵션들:
 {json.dumps([{
@@ -252,22 +226,23 @@ def analyze_with_ai(title, description, options, reference_files=None, model_cho
 
 분석시 제공된 모든 정보(설명 및 추가 참고 자료)를 종합적으로 고려해주세요.
 분석은 객관적이고 전문적인 관점에서 수행해주세요."""
-        max_tokens = OUTPUT_TOKEN_INFO.get(model_choice, {"max_tokens": 2000})["max_tokens"]
-        if model_choice.startswith("claude"):
-            response = anthropic_client.messages.create(
-                model=model_choice,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": base_prompt}]
-            )
-            return response.content[0].text
-        else:
+
+        if model_choice == "gpt-4o-mini":
             response = openai.chat.completions.create(
                 model=model_choice,
                 messages=[{"role": "user", "content": base_prompt}],
                 temperature=0.7,
-                max_tokens=max_tokens
+                max_tokens=2000
             )
             return response.choices[0].message.content
+        else:  # Claude 모델 사용
+            response = anthropic_client.messages.create(
+                model=model_choice,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": base_prompt}]
+            )
+            return response.content[0].text
+
     except Exception as e:
         st.error(f"AI 분석 중 오류 발생: {str(e)}")
         return None
@@ -330,23 +305,214 @@ def get_reference_files(case_id):
         cursor.close()
         conn.close()
 
-def analyze_with_agents(title, description, options, reference_files, active_agents, debug_mode=False, model_name=None):
+def perform_perplexity_search(query, debug_mode=False):
+    """Perplexity API를 사용한 검색 수행"""
+    api_key = os.getenv('PERPLEXITY_API_KEY')
+    if not api_key:
+        st.error("Perplexity API 키가 설정되지 않았습니다.")
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    url = "https://api.perplexity.ai/chat/completions"
+    
+    data = {
+        "model": "sonar",
+        "messages": [
+            {
+                "role": "system",
+                "content": "Be precise, professional, and analytical in your responses. Always include sources when available."
+            },
+            {
+                "role": "user",
+                "content": query
+            }
+        ]
+    }
+    
+    if debug_mode:
+        st.write("=== API 요청 디버그 정보 ===")
+        st.write("URL:", url)
+        st.write("Headers:", {k: v if k != 'Authorization' else f'Bearer {api_key[:8]}...' for k, v in headers.items()})
+        st.write("Request Data:", json.dumps(data, indent=2, ensure_ascii=False))
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        
+        if debug_mode:
+            st.write("\n=== API 응답 디버그 정보 ===")
+            st.write(f"Status Code: {response.status_code}")
+            st.write("Response Headers:", dict(response.headers))
+            try:
+                response_data = response.json()
+                st.write("Response JSON:", json.dumps(response_data, indent=2, ensure_ascii=False))
+            except:
+                st.write("Raw Response:", response.text)
+        
+        if response.status_code != 200:
+            error_msg = f"API 오류 (상태 코드: {response.status_code})"
+            try:
+                error_data = response.json()
+                if 'error' in error_data:
+                    error_msg += f"\n오류 내용: {error_data['error']}"
+            except:
+                error_msg += f"\n응답 내용: {response.text}"
+            st.error(error_msg)
+            return None
+        
+        result = response.json()
+        
+        # 응답에서 텍스트와 출처 추출
+        if 'choices' in result and len(result['choices']) > 0:
+            content = result['choices'][0]['message']['content']
+            
+            # 출처 정보가 있는 경우 별도로 표시
+            sources = []
+            if 'sources' in result['choices'][0]['message']:
+                sources = result['choices'][0]['message']['sources']
+            
+            # 출처 정보가 본문에 포함된 경우 (URL이나 참조 형식으로)
+            source_section = "\n\n**출처:**"
+            if sources:
+                source_section += "\n" + "\n".join([f"- {source}" for source in sources])
+            elif "[" in content and "]" in content:  # 본문에 참조 형식으로 포함된 경우
+                import re
+                citations = re.findall(r'\[(.*?)\]', content)
+                if citations:
+                    source_section += "\n" + "\n".join([f"- {citation}" for citation in citations])
+            
+            # URL 형식의 출처 추출
+            urls = re.findall(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[^\s)"\']', content)
+            if urls:
+                if source_section == "\n\n**출처:**":
+                    source_section += "\n" + "\n".join([f"- {url}" for url in urls])
+            
+            # 출처 정보가 있는 경우에만 추가
+            if source_section != "\n\n**출처:**":
+                return content + source_section
+            return content
+            
+        return None
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"Perplexity API 요청 실패: {str(e)}")
+        if debug_mode:
+            st.error(f"상세 오류: {traceback.format_exc()}")
+        return None
+    except Exception as e:
+        st.error(f"예상치 못한 오류 발생: {str(e)}")
+        if debug_mode:
+            st.error(f"상세 오류: {traceback.format_exc()}")
+        return None
+
+def get_agent_tools(agent_type):
+    """에이전트별 특화 도구 반환"""
+    tools = {
+        'financial_agent': """
+재무 분석 도구:
+1. ROI 계산기: 투자수익률 = (순이익 - 초기투자) / 초기투자 × 100
+2. NPV 계산: 순현재가치 = Σ(미래현금흐름 / (1 + 할인율)^t)
+3. 손익분기점 분석: BEP = 고정비용 / (단위당 매출 - 단위당 변동비)
+4. 현금흐름 분석: 영업활동, 투자활동, 재무활동 현금흐름 구분
+5. 재무비율 분석: 유동성, 수익성, 안정성 비율 계산
+
+분석시 위 도구들을 활용하여 구체적인 수치와 함께 분석해주세요.
+""",
+        'legal_agent': f"""
+법률 검토 도구:
+1. 규제 준수성 체크리스트
+   - 관련 법규 및 규제 식별
+   - 인허가 요건 확인
+   - 의무사항 점검
+2. 계약 위험도 평가 매트릭스
+3. 법적 책임 범위 분석
+4. 지적재산권 검토 도구
+5. 규제 변화 영향도 평가
+6. 실시간 법률 검색: Perplexity API를 통한 최신 법률/규제 정보 조회
+
+각 도구를 활용하여 법적 리스크를 구체적으로 분석해주세요.
+실시간 검색 기능을 활용하여 최신 법률 및 규제 동향을 분석에 반영해주세요.
+""",
+        'market_agent': f"""
+시장 분석 도구:
+1. PEST 분석: 정치, 경제, 사회, 기술 요인 분석
+2. 5-Forces 분석: 산업 내 경쟁 구조 분석
+3. SWOT 분석: 강점, 약점, 기회, 위협 요인 분석
+4. 시장 세분화 도구: 고객 그룹 분류 및 특성 분석
+5. 경쟁사 매핑: 주요 경쟁사 포지셔닝 분석
+6. TAM-SAM-SOM 분석: 시장 규모 추정
+7. 실시간 시장 검색: Perplexity API를 통한 최신 시장 동향 조사
+
+각 분석 도구를 활용하여 시장 기회와 위험을 구체적으로 평가해주세요.
+실시간 검색 기능을 활용하여 최신 시장 동향을 분석에 반영해주세요.
+""",
+        'risk_agent': """
+리스크 관리 도구:
+1. 리스크 매트릭스: 발생가능성과 영향도 평가
+2. 리스크 히트맵: 리스크 우선순위 시각화
+3. 시나리오 분석: 최선/최악/기본 시나리오 분석
+4. 민감도 분석: 주요 변수별 영향도 분석
+5. 리스크 완화 전략 템플릿
+6. 비상 대응 계획 수립 도구
+
+각 도구를 활용하여 종합적인 리스크 평가와 대응 방안을 제시해주세요.
+""",
+        'tech_agent': """
+기술 분석 도구:
+1. 기술 성숙도 평가(TRL) 매트릭스
+2. 기술 로드맵 작성 도구
+3. 기술 격차 분석(Gap Analysis)
+4. 기술 의존성 매핑
+5. 구현 복잡도 평가
+6. 기술 부채 분석
+7. 확장성 평가 도구
+
+각 도구를 활용하여 기술적 실현 가능성과 제약사항을 분석해주세요.
+""",
+        'hr_agent': """
+인사/조직 분석 도구:
+1. 조직 영향도 평가 매트릭스
+2. 인력 수요 예측 모델
+3. 스킬 갭 분석 도구
+4. 조직 문화 영향도 평가
+5. 변화 관리 준비도 평가
+6. 교육/훈련 니즈 분석
+
+각 도구를 활용하여 인적 자원과 조직적 측면의 영향을 분석해주세요.
+""",
+        'operation_agent': """
+운영 분석 도구:
+1. 프로세스 매핑 도구
+2. 운영 효율성 평가 매트릭스
+3. 자원 할당 최적화 모델
+4. 병목 구간 분석
+5. 품질 관리 도구
+6. 운영 비용 분석
+7. 생산성 측정 도구
+
+각 도구를 활용하여 운영상의 효율성과 실행 가능성을 분석해주세요.
+""",
+        'strategy_agent': """
+전략 분석 도구:
+1. 전략적 적합성 평가 매트릭스
+2. 비즈니스 모델 캔버스
+3. 가치 사슬 분석
+4. 포트폴리오 분석(BCG 매트릭스)
+5. 시나리오 플래닝
+6. 전략 실행 로드맵
+7. 핵심 성공 요인(CSF) 분석
+
+각 도구를 활용하여 전략적 타당성과 장기적 영향을 분석해주세요.
+"""
+    }
+    return tools.get(agent_type, "")
+
+def analyze_with_agents(title, description, options, reference_files, active_agents, debug_mode=False, model_name="gpt-4o-mini"):
     """멀티 에이전트 분석 수행"""
     try:
-        if model_name is None:
-            model_name = st.session_state.selected_model
-        # 에이전트별 프롬프트 템플릿 (간소화)
-        agent_prompts = {
-            'financial_agent': "재무 전문가 관점에서 재무적 영향, ROI, 현금 흐름, 리스크를 분석해주세요.",
-            'legal_agent': "법률 전문가 관점에서 법적 준수사항, 리스크, 필요 절차를 검토해주세요.",
-            'market_agent': "시장 분석가 관점에서 시장성, 경쟁력, 성장 가능성을 평가해주세요.",
-            'risk_agent': "리스크 관리자 관점에서 잠재적 위험과 대응 방안을 제시해주세요.",
-            'tech_agent': "기술 전문가 관점에서 기술적 실현 가능성과 요구사항을 검토해주세요.",
-            'hr_agent': "인사/조직 전문가 관점에서 조직 영향과 필요 인력을 분석해주세요.",
-            'operation_agent': "운영 전문가 관점에서 실행 가능성과 운영 효율성을 평가해주세요.",
-            'strategy_agent': "전략 전문가 관점에서 전략적 적합성과 장기적 영향을 분석해주세요."
-        }
-
         results = {}
         
         # 옵션 정보 간소화
@@ -366,33 +532,74 @@ def analyze_with_agents(title, description, options, reference_files, active_age
             if debug_mode:
                 st.write(f"🤖 {agent_type} 분석 시작...")
             
+            # 에이전트별 특화 도구 가져오기
+            agent_tools = get_agent_tools(agent_type)
+            
+            # 시장 및 법률 에이전트를 위한 실시간 검색 수행
+            additional_info = ""
+            if agent_type == 'market_agent':
+                market_search = perform_perplexity_search(
+                    f"""다음 주제에 대한 최신 시장 동향을 분석해주세요:
+제목: {title}
+설명: {description[:200]}
+분석 관점:
+1. 시장 규모와 성장성
+2. 주요 경쟁사 현황
+3. 최근 트렌드와 변화
+4. 잠재적 기회와 위험 요소""", 
+                    debug_mode
+                )
+                if market_search:
+                    additional_info = f"\n\n[실시간 시장 동향 분석]\n{market_search}"
+            elif agent_type == 'legal_agent':
+                legal_search = perform_perplexity_search(
+                    f"""다음 주제와 관련된 법률 및 규제 사항을 검토해주세요:
+제목: {title}
+설명: {description[:200]}
+검토 관점:
+1. 관련 법규 및 규제 현황
+2. 필요한 인허가 사항
+3. 잠재적 법적 리스크
+4. 규제 준수를 위한 요구사항""", 
+                    debug_mode
+                )
+                if legal_search:
+                    additional_info = f"\n\n[실시간 법률/규제 분석]\n{legal_search}"
+            
             # 기본 프롬프트
             base_prompt = f"""
-            {agent_prompts.get(agent_type, '전문가로서 분석해주세요:')}
+당신은 {agent_type.replace('_', ' ').title()} 입니다.
+다음 의사결정 안건을 분석해주세요.
 
-            제목: {title}
-            설명: {description[:1000]}...
+제목: {title}
+설명: {description[:1000]}...
 
-            [특별 분석 지침]
-            이번 분석에서는 다음 사항을 특히 중점적으로 고려해주세요:
-            {description[1000:] if len(description) > 1000 else '일반적인 관점에서 분석해주세요.'}
+[분석 도구]
+{agent_tools}
 
-            옵션 개요:
-            {json.dumps(simplified_options, ensure_ascii=False, indent=2)}
+[특별 분석 지침]
+이번 분석에서는 다음 사항을 특히 중점적으로 고려해주세요:
+{description[1000:] if len(description) > 1000 else '일반적인 관점에서 분석해주세요.'}
+{additional_info}
 
-            분석 결과에는 다음과 같은 형식의 flowchart를 포함해주세요:
+옵션 개요:
+{json.dumps(simplified_options, ensure_ascii=False, indent=2)}
 
-            ```mermaid
-            graph LR
-                A[주요 옵션] --> B[영향 1]
-                A --> C[영향 2]
-                B --> D[결과 1]
-                C --> E[결과 2]
-            ```
+분석 결과에는 다음과 같은 형식의 flowchart를 포함해주세요:
 
-            위 형식을 참고하여 실제 분석 내용에 맞는 flowchart를 생성해주세요.
-            각 노드는 명확한 설명을 포함해야 합니다.
-            """
+```mermaid
+graph LR
+    A[주요 옵션] --> B[영향 1]
+    A --> C[영향 2]
+    B --> D[결과 1]
+    C --> E[결과 2]
+```
+
+위 형식을 참고하여 실제 분석 내용에 맞는 flowchart를 생성해주세요.
+각 노드는 명확한 설명을 포함해야 합니다.
+
+반드시 제공된 분석 도구들을 활용하여 구체적이고 정량적인 분석을 수행해주세요.
+"""
 
             # 상세 분석을 위한 추가 프롬프트
             detail_prompt = f"""
@@ -400,91 +607,125 @@ def analyze_with_agents(title, description, options, reference_files, active_age
             {json.dumps(options, ensure_ascii=False, indent=2)}
             """
 
-            # 기본 분석 수행
-            response = openai.chat.completions.create(
-                model=model_name,
-                messages=[{
-                    "role": "user",
-                    "content": base_prompt
-                }],
-                temperature=0.7
-            )
+            try:
+                # 기본 분석 수행
+                if model_name == "claude-3-5-sonnet-20241022":
+                    response = anthropic_client.messages.create(
+                        model="claude-3-5-sonnet-20241022",
+                        max_tokens=2000,
+                        messages=[{
+                            "role": "user",
+                            "content": base_prompt
+                        }]
+                    )
+                    analysis_content = response.content[0].text
+                else:  # GPT 모델 사용
+                    response = openai.chat.completions.create(
+                        model=model_name,
+                        messages=[{
+                            "role": "user",
+                            "content": base_prompt
+                        }],
+                        temperature=0.7
+                    )
+                    analysis_content = response.choices[0].message.content
 
-            # 상세 분석 수행
-            detail_response = openai.chat.completions.create(
-                model=model_name,
-                messages=[{
-                    "role": "user",
-                    "content": detail_prompt
-                }],
-                temperature=0.7
-            )
+                # 상세 분석 수행
+                if model_name == "claude-3-5-sonnet-20241022":
+                    detail_response = anthropic_client.messages.create(
+                        model="claude-3-5-sonnet-20241022",
+                        max_tokens=2000,
+                        messages=[{
+                            "role": "user",
+                            "content": detail_prompt
+                        }]
+                    )
+                    detail_content = detail_response.content[0].text
+                else:  # GPT 모델 사용
+                    detail_response = openai.chat.completions.create(
+                        model=model_name,
+                        messages=[{
+                            "role": "user",
+                            "content": detail_prompt
+                        }],
+                        temperature=0.7
+                    )
+                    detail_content = detail_response.choices[0].message.content
 
-            # 분석 결과 결합
-            combined_analysis = f"""
-            # 기본 분석
-            {response.choices[0].message.content}
+                # 분석 결과 결합
+                combined_analysis = f"""
+                기본 분석:
+                {analysis_content}
 
-            # 상세 분석
-            {detail_response.choices[0].message.content}
+                상세 분석:
+                {detail_content}
+                """
+
+                results[agent_type] = {
+                    'analysis': combined_analysis,
+                    'recommendations': extract_recommendations(combined_analysis),
+                    'risk_assessment': extract_risk_assessment(combined_analysis)
+                }
+            except Exception as e:
+                st.error(f"{agent_type} 분석 중 오류 발생: {str(e)}")
+                if debug_mode:
+                    st.write(f"오류 상세: {traceback.format_exc()}")
+                results[agent_type] = {
+                    'analysis': f"분석 실패: {str(e)}",
+                    'recommendations': [],
+                    'risk_assessment': []
+                }
+
+        # 통합 에이전트 분석
+        if active_agents.get('integration_agent', False):
+            integration_prompt = f"""
+            다음은 각 전문가 에이전트의 분석 결과입니다. 이를 종합적으로 분석하여 최종 권고안을 도출해주세요:
+
+            {json.dumps(results, ensure_ascii=False, indent=2)}
+
+            다음 형식으로 응답해주세요:
+            1. 종합 분석
+            2. 최종 권고안
+            3. 주요 리스크 및 대응 방안
+            4. 실행 로드맵
             """
 
-            results[agent_type] = {
-                'analysis': combined_analysis,
-                'recommendation': generate_recommendation(agent_type, simplified_options, model_name),
-                'risk_assessment': generate_risk_assessment(agent_type, simplified_options, model_name)
-            }
-
-        # 통합 매니저 분석 (요약된 결과만 사용)
-        if debug_mode:
-            st.write("🤖 통합 매니저 분석 시작...")
-
-        # 각 에이전트의 핵심 분석만 추출
-        summary_results = {
-            agent: {
-                'key_points': result['analysis'][:500],  # 핵심 포인트만 추출
-                'recommendation': result['recommendation'][:200]  # 추천 사항 요약
-            } for agent, result in results.items()
-        }
-
-        integration_prompt = f"""
-        통합 매니저로서 다음 전문가들의 핵심 의견을 종합하여 최종 의견을 제시해주세요:
-
-        {json.dumps(summary_results, ensure_ascii=False, indent=2)}
-
-        다음 형식으로 종합 분석을 제공해주세요:
-        1. 각 전문가의 주요 의견 요약
-        2. 의견 간 상충점
-        3. 최종 추천안
-        """
-
-        integration_max_tokens = OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"]
-        if model_name.startswith("claude"):
-            integration_response = anthropic_client.messages.create(
-                model=model_name,
-                max_tokens=integration_max_tokens,
-                messages=[{"role": "user", "content": integration_prompt}]
-            )
-            integration_content = integration_response.content[0].text
-        else:
-            integration_response = openai.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": integration_prompt}],
-                temperature=0.7,
-                max_tokens=integration_max_tokens
-            )
-            integration_content = integration_response.choices[0].message.content
-        results['integration_agent'] = {
-            'analysis': integration_content,
-            'recommendation': "통합 분석 기반 추천",
-            'risk_assessment': "종합적 리스크 평가"
-        }
+            if model_name == "claude-3-5-sonnet-20241022":
+                integration_response = anthropic_client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=2000,
+                    messages=[{
+                        "role": "user",
+                        "content": integration_prompt
+                    }]
+                )
+                results['integration'] = {
+                    'analysis': integration_response.content[0].text,
+                    'recommendations': extract_recommendations(integration_response.content[0].text),
+                    'risk_assessment': extract_risk_assessment(integration_response.content[0].text)
+                }
+            else:  # GPT 모델 사용
+                integration_response = openai.chat.completions.create(
+                    model=model_name,
+                    messages=[{
+                        "role": "user",
+                        "content": integration_prompt
+                    }],
+                    temperature=0.7
+                )
+                results['integration'] = {
+                    'analysis': integration_response.choices[0].message.content,
+                    'recommendations': extract_recommendations(integration_response.choices[0].message.content),
+                    'risk_assessment': extract_risk_assessment(integration_response.choices[0].message.content)
+                }
 
         return results
 
     except Exception as e:
-        st.error(f"AI 분석 중 오류 발생: {str(e)}")
-        return None
+        st.error(f"분석 중 오류 발생: {str(e)}")
+        if debug_mode:
+            st.write(f"오류 상세: {traceback.format_exc()}")
+        return {"error": str(e)}
 
 def delete_ai_analysis(case_id):
     """기존 AI 분석 결과 삭제"""
@@ -517,10 +758,9 @@ def format_options_for_analysis(options):
         'additional_info': opt.get('additional_info', '')
     } for opt in options]
 
-def generate_recommendation(agent_type, options, model_name=None):
+def generate_recommendation(agent_type, options):
+    """에이전트별 추천 의견 생성"""
     try:
-        if model_name is None:
-            model_name = st.session_state.selected_model
         prompt = f"""
         {agent_type.replace('_', ' ').title()} 관점에서 다음 옵션들 중 
         가장 추천할 만한 옵션과 그 이유를 설명해주세요:
@@ -541,30 +781,21 @@ def generate_recommendation(agent_type, options, model_name=None):
             B --> D[주요 이유 2]
         ```
         """
-        max_tokens = OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"]
-        if model_name.startswith("claude"):
-            response = anthropic_client.messages.create(
-                model=model_name,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return response.content[0].text
-        else:
-            response = openai.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=max_tokens
-            )
-            return response.choices[0].message.content
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content
     except Exception as e:
         st.error(f"추천 의견 생성 중 오류 발생: {str(e)}")
         return "추천 의견을 생성할 수 없습니다."
 
-def generate_risk_assessment(agent_type, options, model_name=None):
+def generate_risk_assessment(agent_type, options):
+    """에이전트별 위험도 평가 생성"""
     try:
-        if model_name is None:
-            model_name = st.session_state.selected_model
         prompt = f"""
         {agent_type.replace('_', ' ').title()} 관점에서 다음 옵션들의 
         위험 요소를 분석하고 대응 방안을 제시해주세요:
@@ -586,22 +817,14 @@ def generate_risk_assessment(agent_type, options, model_name=None):
             C --> E[대응 방안 2]
         ```
         """
-        max_tokens = OUTPUT_TOKEN_INFO.get(model_name, {"max_tokens": 2000})["max_tokens"]
-        if model_name.startswith("claude"):
-            response = anthropic_client.messages.create(
-                model=model_name,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return response.content[0].text
-        else:
-            response = openai.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=max_tokens
-            )
-            return response.choices[0].message.content
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content
     except Exception as e:
         st.error(f"위험도 평가 생성 중 오류 발생: {str(e)}")
         return "위험도 평가를 생성할 수 없습니다."
@@ -643,8 +866,56 @@ def mermaid_to_graphviz(mermaid_code):
         st.error(f"차트 변환 중 오류 발생: {str(e)}")
         return None
 
+def extract_recommendations(text):
+    """텍스트에서 추천 사항 추출"""
+    recommendations = []
+    lines = text.split('\n')
+    in_recommendations = False
+    
+    for line in lines:
+        line = line.strip()
+        # 추천 사항 섹션 시작 확인
+        if '추천' in line or 'recommendation' in line.lower():
+            in_recommendations = True
+            continue
+        # 다음 섹션 시작 확인
+        if line and line.startswith('#') or line.startswith('=='):
+            in_recommendations = False
+        # 추천 사항 수집
+        if in_recommendations and line and not line.startswith('#'):
+            recommendations.append(line)
+    
+    # 추천 사항이 없으면 전체 텍스트 반환
+    return '\n'.join(recommendations) if recommendations else text
+
+def extract_risk_assessment(text):
+    """텍스트에서 위험 평가 추출"""
+    risks = []
+    lines = text.split('\n')
+    in_risks = False
+    
+    for line in lines:
+        line = line.strip()
+        # 위험 평가 섹션 시작 확인
+        if '위험' in line or 'risk' in line.lower():
+            in_risks = True
+            continue
+        # 다음 섹션 시작 확인
+        if line and line.startswith('#') or line.startswith('=='):
+            in_risks = False
+        # 위험 평가 수집
+        if in_risks and line and not line.startswith('#'):
+            risks.append(line)
+    
+    # 위험 평가가 없으면 전체 텍스트 반환
+    return '\n'.join(risks) if risks else text
+
 def display_mermaid_chart(markdown_text):
     """Mermaid 차트가 포함된 마크다운 텍스트를 표시"""
+    if not isinstance(markdown_text, str):
+        st.warning("차트 데이터가 문자열 형식이 아닙니다.")
+        return
+        
     import re
     mermaid_pattern = r"```mermaid\n(.*?)\n```"
     
@@ -663,6 +934,14 @@ def display_mermaid_chart(markdown_text):
             else:
                 # 변환 실패 시 코드 표시
                 st.code(part, language="mermaid")
+
+def get_short_model_name(model_name):
+    """긴 모델 이름을 짧은 버전으로 변환"""
+    model_mapping = {
+        "claude-3-5-sonnet-20241022": "claude-3.5",
+        "gpt-4o-mini": "gpt-4o-mini"
+    }
+    return model_mapping.get(model_name, model_name)
 
 def main():
     st.title("🎯 의사결정 지원 시스템")
@@ -715,14 +994,13 @@ def main():
         'integration_agent': True  # 항상 활성화
     }
 
-    # 모델 선택 UI (Claude 3.7 디폴트, MCP 스타일)
-    st.session_state.selected_model = st.selectbox(
+    # 모델 선택 추가
+    model_name = st.selectbox(
         "사용할 모델",
-        options=available_models,
-        index=available_models.index(st.session_state.selected_model) if st.session_state.selected_model in available_models else 0,
-        help="분석에 사용할 AI 모델을 선택하세요 (Claude는 ANTHROPIC_API_KEY 필요, OpenAI는 OPENAI_API_KEY 필요)"
+        ["gpt-4o-mini", "claude-3-5-sonnet-20241022"],
+        index=0,  # gpt-4o-mini를 기본값으로
+        help="분석에 사용할 AI 모델을 선택하세요"
     )
-    model_name = st.session_state.selected_model
 
     tab1, tab2 = st.tabs(["의사결정 안건 등록", "의사결정 현황"])
     
@@ -826,13 +1104,23 @@ def main():
                             
                             # 각 에이전트의 분석 결과 저장
                             for agent_type, analysis in analysis_results.items():
-                                save_ai_analysis(
-                                    st.session_state.current_case_id,
-                                    f"AI {agent_type}",
-                                    analysis['analysis'],
-                                    analysis['recommendation'],
-                                    analysis['risk_assessment']
-                                )
+                                if isinstance(analysis, dict):
+                                    save_ai_analysis(
+                                        st.session_state.current_case_id,
+                                        f"AI {agent_type} ({get_short_model_name(model_name)})",
+                                        analysis.get('analysis', ''),
+                                        analysis.get('recommendations', ''),
+                                        analysis.get('risk_assessment', '')
+                                    )
+                                else:
+                                    # 문자열인 경우 전체를 분석 내용으로 처리
+                                    save_ai_analysis(
+                                        st.session_state.current_case_id,
+                                        f"AI {agent_type} ({get_short_model_name(model_name)})",
+                                        str(analysis),
+                                        extract_recommendations(str(analysis)),
+                                        extract_risk_assessment(str(analysis))
+                                    )
         
         # AI 분석 결과 표시 - 에이전트별 탭으로 구성
         if st.session_state.ai_analysis_results:
@@ -855,7 +1143,7 @@ def main():
                     display_mermaid_chart(analysis['analysis'])
                     
                     st.markdown("#### 추천 의견")
-                    display_mermaid_chart(analysis['recommendation'])
+                    display_mermaid_chart(analysis['recommendations'])
                     
                     st.markdown("#### 위험도 평가")
                     display_mermaid_chart(analysis['risk_assessment'])
@@ -892,11 +1180,12 @@ def main():
                         key=f"instructions_{case['case_id']}"
                     )
                     
-                    # 분석 결과 저장 여부 선택 - 고유한 key 추가
-                    save_analysis = st.checkbox(
-                        "분석 결과를 DB에 저장", 
+                    # 분석 결과 저장 설정을 위한 체크박스
+                    save_to_db = st.checkbox(
+                        "재분석 결과를 DB에 자동 저장",
                         value=False,
-                        key=f"save_analysis_{case['case_id']}"  # 고유한 key 추가
+                        key=f"save_to_db_{case['case_id']}",
+                        help="체크하면 재분석 시 결과가 자동으로 DB에 저장됩니다."
                     )
                     
                     # AI 재분석 버튼
@@ -917,7 +1206,7 @@ def main():
                             
                             analysis_results = analyze_with_agents(
                                 case['title'],
-                                modified_description,  # 수정된 설명 사용
+                                modified_description,
                                 formatted_options,
                                 reference_files,
                                 active_agents,
@@ -926,6 +1215,43 @@ def main():
                             )
                             
                             if analysis_results:
+                                # DB 저장이 선택된 경우 자동 저장 수행
+                                if save_to_db:
+                                    with st.spinner("분석 결과를 DB에 저장중..."):
+                                        # 기존 분석 결과 삭제
+                                        delete_ai_analysis(case['case_id'])
+                                        st.info("기존 분석 결과를 삭제하고 새로운 분석을 저장합니다...")
+                                        
+                                        for agent_type, analysis in analysis_results.items():
+                                            try:
+                                                if isinstance(analysis, dict):
+                                                    success = save_ai_analysis(
+                                                        case['case_id'],
+                                                        f"AI {agent_type} ({get_short_model_name(model_name)}) - {additional_instructions[:30]}...",
+                                                        analysis.get('analysis', ''),
+                                                        analysis.get('recommendations', ''),
+                                                        analysis.get('risk_assessment', '')
+                                                    )
+                                                else:
+                                                    success = save_ai_analysis(
+                                                        case['case_id'],
+                                                        f"AI {agent_type} ({get_short_model_name(model_name)}) - {additional_instructions[:30]}...",
+                                                        str(analysis),
+                                                        extract_recommendations(str(analysis)),
+                                                        extract_risk_assessment(str(analysis))
+                                                    )
+                                                
+                                                if success:
+                                                    st.success(f"✅ {agent_type} 분석 결과가 저장되었습니다.")
+                                                else:
+                                                    st.error(f"❌ {agent_type} 분석 결과 저장에 실패했습니다.")
+                                            except Exception as e:
+                                                st.error(f"❌ {agent_type} 분석 결과 저장 중 오류 발생: {str(e)}")
+                                        
+                                        st.success("✅ 모든 AI 분석이 DB에 저장되었습니다!")
+                                else:
+                                    st.info("💡 분석 결과가 화면에만 표시됩니다. DB에는 저장되지 않습니다.")
+                                
                                 # 분석 결과 표시
                                 st.write("### 새로운 분석 결과")
                                 st.write(f"**분석 지침:** {additional_instructions}")
@@ -947,30 +1273,10 @@ def main():
                                         display_mermaid_chart(analysis['analysis'])
                                         
                                         st.markdown("#### 추천 의견")
-                                        display_mermaid_chart(analysis['recommendation'])
+                                        display_mermaid_chart(analysis['recommendations'])
                                         
                                         st.markdown("#### 위험도 평가")
                                         display_mermaid_chart(analysis['risk_assessment'])
-                                
-                                # 사용자가 선택한 경우에만 DB에 저장
-                                if save_analysis:
-                                    for agent_type, analysis in analysis_results.items():
-                                        # model_name 길이 제한
-                                        model_name_str = f"AI {agent_type} ({model_name})"
-                                        if additional_instructions.strip():
-                                            model_name_str = f"{model_name_str} - {additional_instructions[:20]}..."
-                                        
-                                        # 최대 50자로 제한
-                                        model_name_str = model_name_str[:50]
-                                        
-                                        save_ai_analysis(
-                                            case['case_id'],
-                                            model_name_str,
-                                            analysis['analysis'],
-                                            analysis['recommendation'],
-                                            analysis['risk_assessment']
-                                        )
-                                    st.success("✅ 새로운 AI 분석이 DB에 저장되었습니다!")
                                 
                                 st.success("✅ AI 분석이 완료되었습니다!")
                 
@@ -1003,10 +1309,13 @@ def main():
                     **단점:**
                     {opt['disadvantages']}
                     
-                    **예상 기간:** {opt['estimated_duration']}
-                    {f"**추가 정보:**\n{opt['additional_info']}" if opt.get('additional_info') else ''}
-                    ---
-                    """)
+                    **예상 기간:** {opt['estimated_duration']}""")
+                    
+                    if opt.get('additional_info'):
+                        st.markdown("**추가 정보:**")
+                        st.markdown(opt['additional_info'])
+                    
+                    st.markdown("---")
                 
                 # AI 분석 결과 표시
                 analyses = get_ai_analysis(case['case_id'])
@@ -1026,11 +1335,13 @@ def main():
                             st.markdown("**분석 내용:**")
                             display_mermaid_chart(analysis['analysis_content'])
                             
-                            if analysis['recommendation']:
+                            # 안전하게 recommendations 키 확인
+                            if isinstance(analysis, dict) and analysis.get('recommendations'):
                                 st.markdown("**추천 의견:**")
-                                display_mermaid_chart(analysis['recommendation'])
+                                display_mermaid_chart(analysis['recommendations'])
                             
-                            if analysis['risk_assessment']:
+                            # 안전하게 risk_assessment 키 확인
+                            if isinstance(analysis, dict) and analysis.get('risk_assessment'):
                                 st.markdown("**위험도 평가:**")
                                 display_mermaid_chart(analysis['risk_assessment'])
                 
@@ -1088,3 +1399,4 @@ def main():
 
 if __name__ == "__main__":
     main() 
+    

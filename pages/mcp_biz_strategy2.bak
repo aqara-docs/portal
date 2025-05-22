@@ -38,6 +38,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import Dict, List, TypedDict, Annotated, Sequence
 import logging
 import concurrent.futures
+import importlib.util
 
 # 환경 변수 로드
 load_dotenv()
@@ -2025,75 +2026,6 @@ def create_download_link(content, filename):
     href = f'<a href="data:text/plain;base64,{b64}" download="{filename}">다운로드 {filename}</a>'
     return href
 
-def initialize_session_state():
-    """세션 상태 초기화"""
-    # 기본 세션 상태 구조 정의
-    default_state = {
-        "current_analysis_id": None,  # 현재 선택된 분석 ID
-        "saved_analyses": [],         # 저장된 분석 목록
-        "analysis_results": {},       # 현재 분석 결과
-        "active_agents": {            # 활성화된 에이전트
-            'financial_agent': True,
-            'market_agent': True,
-            'tech_agent': True,
-            'risk_agent': True,
-            'legal_agent': True,
-            'hr_agent': True,
-            'operation_agent': True,
-            'strategy_agent': True,
-            'integration_agent': True
-        },
-        "save_status": {              # 저장 상태 관리
-            "success": False,
-            "message": "",
-            "message_type": "info"
-        }
-    }
-
-    # analysis_state가 없으면 새로 생성
-    if "analysis_state" not in st.session_state:
-        st.session_state.analysis_state = default_state
-    else:
-        # 기존 세션 상태와 새로운 구조 병합
-        current_state = st.session_state.analysis_state
-        
-        # 누락된 키가 있으면 기본값으로 추가
-        for key, default_value in default_state.items():
-            if key not in current_state:
-                current_state[key] = default_value
-        
-        # active_agents가 있는 경우 누락된 에이전트 추가
-        if "active_agents" in current_state:
-            for agent, default_value in default_state["active_agents"].items():
-                if agent not in current_state["active_agents"]:
-                    current_state["active_agents"][agent] = default_value
-        
-        # save_status가 없는 경우 추가
-        if "save_status" not in current_state:
-            current_state["save_status"] = default_state["save_status"]
-        
-        # 기존 메시지 상태를 새로운 구조로 마이그레이션
-        if "save_message" in current_state and "save_message_type" in current_state:
-            current_state["save_status"] = {
-                "success": current_state.get("save_success", False),
-                "message": current_state["save_message"],
-                "message_type": current_state["save_message_type"]
-            }
-            # 기존 필드 제거
-            for key in ["save_message", "save_message_type", "save_success"]:
-                if key in current_state:
-                    del current_state[key]
-        
-        st.session_state.analysis_state = current_state
-
-def update_session_state(key, value, message=None, message_type="info"):
-    """세션 상태 업데이트 헬퍼 함수"""
-    if key in st.session_state.analysis_state:
-        st.session_state.analysis_state[key] = value
-        if message:
-            st.session_state.analysis_state["save_message"] = message
-            st.session_state.analysis_state["save_message_type"] = message_type
-
 def save_analysis_to_db(query, analysis_results, update_existing=False):
     """분석 결과를 DB에 저장"""
     conn = None
@@ -2101,35 +2033,55 @@ def save_analysis_to_db(query, analysis_results, update_existing=False):
     try:
         conn = connect_to_db()
         if not conn:
-            st.session_state.analysis_state["save_status"] = {
-                "success": False,
-                "message": "데이터베이스 연결에 실패했습니다.",
-                "message_type": "error"
-            }
             return False
             
         cursor = conn.cursor()
         
+        # 마크다운 보고서 생성
+        md_report = create_markdown_report(analysis_results)
+        
         # JSON으로 변환할 결과 준비
         json_results = json.dumps(analysis_results, ensure_ascii=False)
         
-        if update_existing and analysis_results.get('metadata', {}).get('original_id'):
-            # 기존 분석 결과 업데이트
+        if update_existing:
+            # 기존 분석 결과 검색
             cursor.execute("""
-                UPDATE mcp_analysis_results
-                SET query = %s,
-                    analysis_result = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (query, json_results, analysis_results['metadata']['original_id']))
+                SELECT id FROM mcp_analysis_results 
+                WHERE query = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (query,))
             
-            if cursor.rowcount == 0:
-                # 업데이트할 레코드가 없으면 새로 삽입
+            result = cursor.fetchone()
+            if result:
+                # 기존 분석 결과 업데이트
+                cursor.execute("""
+                    UPDATE mcp_analysis_results
+                    SET analysis_result = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (json_results, result[0]))
+                # 세션 상태에 저장 성공 메시지와 저장된 결과 기록
+                st.session_state.save_success = True
+                st.session_state.saved_analysis_results = analysis_results
+                st.session_state.saved_analysis_id = result[0]
+                # 성공 메시지 표시 (페이지 리프레시 없이)
+                st.success(f"기존 분석 결과(ID: {result[0]})를 업데이트했습니다.")
+            else:
+                # 결과가 없으면 새 레코드 삽입
                 cursor.execute("""
                     INSERT INTO mcp_analysis_results 
                     (query, analysis_result)
                     VALUES (%s, %s)
                 """, (query, json_results))
+                # 새로 생성된 ID 가져오기
+                cursor.execute("SELECT LAST_INSERT_ID()")
+                new_id = cursor.fetchone()[0]
+                # 세션 상태에 저장 성공 메시지와 저장된 결과 기록
+                st.session_state.save_success = True
+                st.session_state.saved_analysis_results = analysis_results
+                st.session_state.saved_analysis_id = new_id
+                # 성공 메시지 표시 (페이지 리프레시 없이)
+                st.success("새 분석 결과를 DB에 저장했습니다.")
         else:
             # 새 분석 결과 삽입
             cursor.execute("""
@@ -2137,33 +2089,20 @@ def save_analysis_to_db(query, analysis_results, update_existing=False):
                 (query, analysis_result)
                 VALUES (%s, %s)
             """, (query, json_results))
-        
-        # 새로 생성된 ID 가져오기
-        cursor.execute("SELECT LAST_INSERT_ID()")
-        new_id = cursor.fetchone()[0]
-        
-        # 세션 상태 업데이트
-        st.session_state.analysis_state["current_analysis_id"] = new_id
-        st.session_state.analysis_state["analysis_results"] = analysis_results
-        st.session_state.analysis_state["save_status"] = {
-            "success": True,
-            "message": "기존 분석 결과를 업데이트했습니다." if update_existing else "새 분석 결과를 저장했습니다.",
-            "message_type": "success"
-        }
-        
-        # 저장된 분석 목록 새로고침
-        st.session_state.analysis_state["saved_analyses"] = load_saved_analyses()
-        
+            # 새로 생성된 ID 가져오기
+            cursor.execute("SELECT LAST_INSERT_ID()")
+            new_id = cursor.fetchone()[0]
+            # 세션 상태에 저장 성공 메시지와 저장된 결과 기록
+            st.session_state.save_success = True
+            st.session_state.saved_analysis_results = analysis_results
+            st.session_state.saved_analysis_id = new_id
+            # 성공 메시지 표시 (페이지 리프레시 없이)
+            st.success("분석 결과를 DB에 저장했습니다.")
+            
         conn.commit()
         return True
     except Exception as e:
-        st.session_state.analysis_state["save_status"] = {
-            "success": False,
-            "message": f"DB 저장 중 오류가 발생했습니다: {str(e)}",
-            "message_type": "error"
-        }
-        if conn:
-            conn.rollback()
+        st.error(f"DB 저장 중 오류가 발생했습니다: {str(e)}")
         return False
     finally:
         if cursor:
@@ -2182,7 +2121,7 @@ def load_saved_analyses():
             
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
-            SELECT id, query, analysis_result, created_at 
+            SELECT id, query, created_at 
             FROM mcp_analysis_results 
             ORDER BY created_at DESC
         """)
@@ -2192,15 +2131,6 @@ def load_saved_analyses():
         # datetime 객체를 문자열로 변환
         for result in results:
             result['created_at'] = result['created_at'].strftime('%Y-%m-%d %H:%M')
-            # analysis_result가 None인 경우 빈 딕셔너리로 초기화
-            if result['analysis_result'] is None:
-                result['analysis_result'] = '{}'
-            # analysis_result가 문자열인 경우 그대로 유지
-            elif isinstance(result['analysis_result'], str):
-                pass
-            # 그 외의 경우 JSON 문자열로 변환
-            else:
-                result['analysis_result'] = json.dumps(result['analysis_result'], ensure_ascii=False)
             
         return results
     except Exception as e:
@@ -2270,37 +2200,57 @@ def delete_saved_analysis(analysis_id):
         if conn:
             conn.close()
 
+def init_database():
+    """데이터베이스 테이블 초기화"""
+    try:
+        conn = connect_to_db()
+        if not conn:
+            return False, "데이터베이스 연결에 실패했습니다."
+            
+        cursor = conn.cursor()
+        
+        # mcp_analysis_results 테이블 생성
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mcp_analysis_results (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                query TEXT NOT NULL,
+                analysis_result JSON,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        
+        conn.commit()
+        return True, "데이터베이스 초기화가 완료되었습니다."
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return False, f"데이터베이스 초기화 중 오류 발생: {str(e)}"
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
 def main():
     """Main application"""
-    st.title("🎯 MCP 기반 사업 전략 분석")
-    
-    # 디버그 모드 설정
-    debug_mode = st.sidebar.checkbox(
-        "디버그 모드",
-        help="에이전트와 태스크의 실행 과정을 자세히 표시합니다.",
-    # 세션 상태 초기화
-    initialize_session_state()
-    
-    # 저장 상태 메시지 표시 (안전하게 접근)
-    save_status = st.session_state.analysis_state.get("save_status", {
-        "success": False,
-        "message": "",
-        "message_type": "info"
-    })
-    
-    if save_status.get("message"):
-        if save_status["message_type"] == "success":
-            st.success(save_status["message"])
-        elif save_status["message_type"] == "error":
-            st.error(save_status["message"])
-        else:
-            st.info(save_status["message"])
-        # 메시지 표시 후 초기화
-        st.session_state.analysis_state["save_status"]["message"] = ""
+    # 데이터베이스 초기화
+    success, message = init_database()
+    if not success:
+        st.error(message)
+        st.stop()
 
-    # 저장된 분석 결과 목록 로드 (세션에 없을 경우에만)
-    if not st.session_state.analysis_state.get("saved_analyses"):
-        st.session_state.analysis_state["saved_analyses"] = load_saved_analyses()
+    # 저장 성공 상태 확인
+    if "save_success" in st.session_state and st.session_state.save_success:
+        st.success("분석 결과가 성공적으로 저장되었습니다.")
+        # 저장 성공 상태 초기화
+        st.session_state.save_success = False
+
+    # 분석 결과 저장 상태 초기화
+    if "saved_analysis_results" not in st.session_state:
+        st.session_state.saved_analysis_results = {}
 
     tab1, tab2 = st.tabs(["기본 분석 및 저장", "멀티 에이전트 상세 분석"])
 
@@ -2313,53 +2263,53 @@ def main():
         
         # AI 에이전트 설정
         with st.expander("🤖 AI 에이전트 설정", expanded=True):
+            st.subheader("활성화할 에이전트")
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                st.session_state.analysis_state["active_agents"]["financial_agent"] = st.checkbox(
-                    "재무 전문가", 
-                    value=st.session_state.analysis_state["active_agents"]["financial_agent"]
-                )
-                st.session_state.analysis_state["active_agents"]["market_agent"] = st.checkbox(
-                    "시장 분석가", 
-                    value=st.session_state.analysis_state["active_agents"]["market_agent"]
-                )
-                st.session_state.analysis_state["active_agents"]["tech_agent"] = st.checkbox(
-                    "기술 전문가", 
-                    value=st.session_state.analysis_state["active_agents"]["tech_agent"]
-                )
-            
+                financial_agent = st.checkbox("재무 분석가", value=True)
+                market_agent = st.checkbox("시장 분석가", value=True)
+                tech_agent = st.checkbox("기술 분석가", value=True)
+                
             with col2:
-                st.session_state.analysis_state["active_agents"]["risk_agent"] = st.checkbox(
-                    "리스크 관리자", 
-                    value=st.session_state.analysis_state["active_agents"]["risk_agent"]
-                )
-                st.session_state.analysis_state["active_agents"]["legal_agent"] = st.checkbox(
-                    "법률 전문가", 
-                    value=st.session_state.analysis_state["active_agents"]["legal_agent"]
-                )
-                st.session_state.analysis_state["active_agents"]["hr_agent"] = st.checkbox(
-                    "인사 전문가", 
-                    value=st.session_state.analysis_state["active_agents"]["hr_agent"]
-                )
-            
+                risk_agent = st.checkbox("위험 관리 전문가", value=True)
+                legal_agent = st.checkbox("법률 전문가", value=True)
+                hr_agent = st.checkbox("인적 자원 전문가", value=True)
+                
             with col3:
-                st.session_state.analysis_state["active_agents"]["operation_agent"] = st.checkbox(
-                    "운영 전문가", 
-                    value=st.session_state.analysis_state["active_agents"]["operation_agent"]
-                )
-                st.session_state.analysis_state["active_agents"]["strategy_agent"] = st.checkbox(
-                    "전략 전문가", 
-                    value=st.session_state.analysis_state["active_agents"]["strategy_agent"]
-                )
-                st.session_state.analysis_state["active_agents"]["integration_agent"] = st.checkbox(
-                    "통합 매니저", 
-                    value=True, 
-                    disabled=True
-                )
+                operation_agent = st.checkbox("운영 전문가", value=True)
+                strategy_agent = st.checkbox("전략 컨설턴트", value=True)
+                integration_agent = st.checkbox("통합 분석 매니저", value=True, disabled=True)
 
+            # 활성화된 에이전트 정보 저장
+            active_agents = {
+                'financial_agent': financial_agent,
+                'market_agent': market_agent,
+                'tech_agent': tech_agent,
+                'risk_agent': risk_agent,
+                'legal_agent': legal_agent,
+                'hr_agent': hr_agent,
+                'operation_agent': operation_agent,
+                'strategy_agent': strategy_agent,
+                'integration_agent': True  # 항상 활성화
+            }
+        
         try:
-            if not st.session_state.analysis_state["saved_analyses"]:
+            # DB에서 저장된 분석 결과 조회
+            conn = connect_to_db()
+            if not conn:
+                st.error("데이터베이스 연결에 실패했습니다.")
+                return
+                
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT id, query, analysis_result, created_at 
+                FROM mcp_analysis_results 
+                ORDER BY created_at DESC
+            """)
+            saved_analyses = cursor.fetchall()
+            
+            if not saved_analyses:
                 st.info("저장된 분석 결과가 없습니다. 먼저 기본 분석을 수행하고 저장해주세요.")
             else:
                 # 분석 결과 선택
@@ -2367,31 +2317,19 @@ def main():
                 with col1:
                     selected_analysis = st.selectbox(
                         "상세 분석할 데이터 선택",
-                        st.session_state.analysis_state["saved_analyses"],
-                        format_func=lambda x: f"{x['query'][:100]}... ({x['created_at']})",
-                        key="analysis_selector"
+                        saved_analyses,
+                        format_func=lambda x: f"{x['query'][:100]}... ({x['created_at'].strftime('%Y-%m-%d %H:%M')})"
                     )
-                    if selected_analysis:
-                        st.session_state.analysis_state["current_analysis_id"] = selected_analysis['id']
                 
                 with col2:
                     if st.button("🗑️ 선택한 분석 삭제", type="secondary", help="선택한 분석을 데이터베이스에서 삭제합니다"):
-                        if delete_saved_analysis(selected_analysis['id']):
-                            st.session_state.analysis_state["save_status"] = {
-                                "success": True,
-                                "message": "분석이 성공적으로 삭제되었습니다.",
-                                "message_type": "success"
-                            }
-                            # 저장된 분석 목록 새로고침
-                            st.session_state.analysis_state["saved_analyses"] = load_saved_analyses()
-                            st.session_state.analysis_state["current_analysis_id"] = None
+                        try:
+                            cursor.execute('DELETE FROM mcp_analysis_results WHERE id = %s', (selected_analysis['id'],))
+                            conn.commit()
+                            st.success("분석이 성공적으로 삭제되었습니다.")
                             st.rerun()
-                        else:
-                            st.session_state.analysis_state["save_status"] = {
-                                "success": False,
-                                "message": "분석 삭제 중 오류가 발생했습니다.",
-                                "message_type": "error"
-                            }
+                        except Exception as e:
+                            st.error(f"삭제 중 오류가 발생했습니다: {str(e)}")
 
                 if selected_analysis:
                     st.write("### 선택된 분석")
@@ -2412,204 +2350,362 @@ def main():
                         placeholder="상세 분석을 위한 지시사항을 입력하세요..."
                     )
 
-                    # 상세 분석 실행 버튼
-                    if st.button("🔍 상세 분석 실행", type="primary"):
-                        # 진행 상태 표시를 위한 placeholder
-                        status_placeholder = st.empty()
-                        text_placeholder = st.empty()
-                        tool_placeholder = st.empty()
-                        result_area = st.container()
-
-                        with status_placeholder:
-                            st.info("🔄 상세 분석을 시작합니다...")
-
-                        try:
-                            # 원본 분석과 지시사항을 결합한 쿼리 생성
-                            combined_query = f"""
-                            [멀티에이전트] 다음 내용에 대해 상세 분석해주세요:
-
-                            원본 질문: {selected_analysis['query']}
-                            기존 분석 결과: {selected_analysis['analysis_result']}
-
-                            추가 분석 지시사항:
-                            {analysis_instruction}
-                            """
-
-                            # 상세 분석 실행
-                            results = asyncio.run(process_multi_agent_query(
-                                combined_query,
-                                text_placeholder,
-                                tool_placeholder,
-                                active_agents=st.session_state.analysis_state["active_agents"],
-                                model_name=st.session_state.selected_model
-                            ))
-
-                            # 진행 상태 표시 제거
-                            status_placeholder.empty()
-                            text_placeholder.empty()
-                            tool_placeholder.empty()
-
-                            # 결과가 있는 경우 (성공 또는 일부 결과)
-                            if results and not (isinstance(results, dict) and "error" in results and len(results) == 1):
+                    if st.button("상세 분석 시작", type="primary"):
+                        if not analysis_instruction:
+                            st.warning("상세 분석을 위한 지시사항을 입력해주세요.")
+                        else:
+                            # 분석 결과를 표시할 컨테이너 생성
+                            result_area = st.container()
+                            
+                            # 캐시된 분석 결과가 있는지 확인
+                            has_cached_results = (
+                                "current_multi_agent_results" in st.session_state and 
+                                "current_multi_agent_query" in st.session_state and
+                                "current_analysis_instruction" in st.session_state and
+                                "current_selected_analysis_id" in st.session_state and
+                                st.session_state.current_selected_analysis_id == selected_analysis['id'] and
+                                st.session_state.current_analysis_instruction == analysis_instruction
+                            )
+                            
+                            if has_cached_results:
+                                # 캐시된 결과 사용
                                 with result_area:
-                                    st.success("✅ 상세 분석이 완료되었습니다.")
-
-                                    # 메인 분석 탭과 개별 에이전트 탭 생성
-                                    main_tabs = st.tabs(["종합 보고서", "개별 에이전트 보고서"])
-
-                                    # 저장 버튼을 탭 외부로 이동 (분석 결과가 있을 때만 표시)
-                                    st.markdown("---")
-                                    st.subheader("💾 분석 결과 저장")
-                                    col_save1, col_save2 = st.columns([1, 2])
-                                    with col_save1:
-                                        save_as_new = st.checkbox("새 분석으로 저장", value=True,
-                                                                help="체크하면 새 분석 결과로 저장하고, 체크하지 않으면 기존 분석 결과를 업데이트합니다.",
-                                                                key="save_as_new_checkbox")
-                                    with col_save2:
-                                        if st.button("💾 모든 분석 결과 저장", type="primary", key="save_all_results"):
-                                            # 저장할 데이터 준비
-                                            save_query = f"{selected_analysis['query']} [추가 분석: {analysis_instruction}]"
-                                            save_results = {
-                                                'integration_agent': results.get('integration_agent', {}),
-                                                'individual_agents': {
-                                                    agent: results.get(agent, {})
-                                                    for agent in st.session_state.analysis_state["active_agents"]
-                                                    if agent in results and agent != 'integration_agent'
-                                                },
-                                                'metadata': {
-                                                    'active_agents': st.session_state.analysis_state["active_agents"],
-                                                    'analysis_instruction': analysis_instruction,
-                                                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                                    'original_id': selected_analysis['id'] if not save_as_new else None
-                                                }
-                                            }
-                                            
-                                            if save_analysis_to_db(save_query, save_results, not save_as_new):
-                                                st.rerun()
-
-                                    # 종합 보고서 탭
-                                    with main_tabs[0]:
-                                        if 'integration_agent' in results:
-                                            st.markdown("## 📊 최종 통합 분석")
-                                            integration_result = results.get('integration_agent', '')
-                                            if isinstance(integration_result, dict):
-                                                # 각 섹션별로 표시
-                                                sections = [
-                                                    ('executive_summary', '개요 (Executive Summary)'),
-                                                    ('situation_analysis', '현황 분석 및 문제 정의'),
-                                                    ('analysis', '종합 분석'),
-                                                    ('recommendation', '핵심 추천 사항'),
-                                                    ('implementation_plan', '실행 계획'),
-                                                    ('risk_assessment', '통합 위험 평가 및 관리'),
-                                                    ('conclusion', '결론 및 다음 단계')
-                                                ]
-                                                
-                                                for section_key, section_title in sections:
-                                                    if section_key in integration_result and integration_result[section_key]:
-                                                        st.markdown(f"### {section_title}")
-                                                        st.markdown(integration_result[section_key])
-                                            else:
-                                                st.markdown(str(integration_result))
-                                            
-                                            # 마크다운 다운로드 기능
-                                            st.markdown("---")
-                                            st.subheader("📥 보고서 다운로드")
-                                            md_report = create_markdown_report(results)
-                                            st.markdown(create_download_link(md_report, "multi_agent_analysis_report.md"), unsafe_allow_html=True)
-                                        else:
-                                            st.info("통합 분석 결과가 없습니다.")
-
-                                    # 개별 에이전트 보고서 탭
-                                    with main_tabs[1]:
-                                        # 활성화된 에이전트만 필터링
-                                        filtered_agents = {
-                                            agent: info for agent, info in AGENT_ROLES.items()
-                                            if agent in st.session_state.analysis_state["active_agents"] 
-                                            and st.session_state.analysis_state["active_agents"][agent]
-                                            and agent in results 
-                                            and agent != "integration_agent"
-                                        }
-                                        
-                                        if filtered_agents:
-                                            # 에이전트 서브탭 생성
-                                            agent_tabs = st.tabs([
-                                                f"{info['name']}" 
-                                                for agent, info in filtered_agents.items()
-                                            ])
-                                            
-                                            # 각 에이전트 탭에 결과 표시
-                                            for tab, (agent_type, info) in zip(agent_tabs, filtered_agents.items()):
-                                                with tab:
-                                                    agent_result = results.get(agent_type, {})
-                                                    
-                                                    if not agent_result:
-                                                        st.info(f"{info['name']} 분석 결과가 없습니다.")
-                                                        continue
-                                                        
-                                                    # 분석 결과 표시
-                                                    st.markdown(f"### {info['name']} 분석")
-                                                    if isinstance(agent_result, dict):
-                                                        if agent_result.get('analysis'):
-                                                            st.markdown(agent_result['analysis'])
-                                                        
-                                                        # 추천 사항 표시
-                                                        if agent_result.get('recommendation'):
-                                                            st.markdown("### 💡 추천 사항")
-                                                            st.markdown(agent_result['recommendation'])
-                                                        
-                                                        # 위험도 평가 표시
-                                                        if agent_result.get('risk_assessment'):
-                                                            st.markdown("### ⚠️ 위험 평가")
-                                                            st.markdown(agent_result['risk_assessment'])
-                                                        
-                                                        # 개별 에이전트 보고서 다운로드
-                                                        st.markdown("---")
-                                                        st.markdown("### 📥 에이전트 보고서 다운로드")
-                                                        individual_report = f"# {info['name']} 분석 보고서\n\n"
-                                                        
-                                                        if agent_result.get('analysis'):
-                                                            individual_report += f"## 분석\n\n{agent_result['analysis']}\n\n"
-                                                        if agent_result.get('recommendation'):
-                                                            individual_report += f"## 추천 사항\n\n{agent_result['recommendation']}\n\n"
-                                                        if agent_result.get('risk_assessment'):
-                                                            individual_report += f"## 위험 평가\n\n{agent_result['risk_assessment']}\n\n"
-                                                        
-                                                        st.markdown(
-                                                            create_download_link(
-                                                                individual_report, 
-                                                                f"{info['name']}_analysis_report.md"
-                                                            ),
-                                                            unsafe_allow_html=True
-                                                        )
-                                                    else:
-                                                        # 문자열인 경우 직접 표시
-                                                        st.markdown(str(agent_result))
-                                                        
-                                                        # 문자열 결과도 다운로드 가능하게
-                                                        st.markdown("---")
-                                                        individual_report = f"# {info['name']} 분석 보고서\n\n{str(agent_result)}"
-                                                        st.markdown(
-                                                            create_download_link(
-                                                                individual_report, 
-                                                                f"{info['name']}_analysis_report.md"
-                                                            ),
-                                                            unsafe_allow_html=True
-                                                        )
-                                        else:
-                                            st.info("활성화된 에이전트의 분석 결과가 없습니다.")
+                                    st.success("✅ 저장된 분석 결과를 표시합니다.")
+                                    results = st.session_state.current_multi_agent_results
+                                    combined_query = st.session_state.current_multi_agent_query
                             else:
-                                st.error("분석 결과가 없거나 오류가 발생했습니다.")
-                        except Exception as e:
-                            st.error(f"상세 분석 중 오류가 발생했습니다: {str(e)}")
-                            import traceback
-                            st.error(f"상세 에러: {traceback.format_exc()}")
+                                # 새로운 분석 실행
+                                with st.spinner("멀티 에이전트 상세 분석 중..."):
+                                    try:
+                                        # 원본 분석과 지시사항을 결합
+                                        combined_query = f"""
+                                        [멀티에이전트] 다음 내용에 대해 상세 분석해주세요:
+
+                                        원본 질문: {selected_analysis['query']}
+                                        기존 분석 결과: {selected_analysis['analysis_result']}
+
+                                        추가 분석 지시사항:
+                                        {analysis_instruction}
+                                        """
+                                        
+                                        # 진행 상태 표시용 플레이스홀더
+                                        status_placeholder = st.empty()
+                                        text_placeholder = st.empty()
+                                        tool_placeholder = st.empty()
+                                        
+                                        status_placeholder.info("멀티 에이전트 분석을 시작합니다... (완전한 분석에는 약 10-15분이 소요됩니다)")
+                                        
+                                        # 실제 멀티 에이전트 분석 실행
+                                        results = None
+                                        
+                                        status_placeholder.info("멀티 에이전트 분석을 시작합니다... (완전한 분석에는 약 10-15분이 소요됩니다)")
+                                        
+                                        # 모델 이름 출력
+                                        text_placeholder.markdown(f"🤖 사용 모델: **{st.session_state.selected_model}**")
+                                        text_placeholder.markdown(f"⏱️ 최대 분석 시간: **{st.session_state.timeout_seconds}초**")
+                                        
+                                        results = st.session_state.event_loop.run_until_complete(
+                                            process_multi_agent_query(
+                                                combined_query,
+                                                text_placeholder=text_placeholder,
+                                                tool_placeholder=tool_placeholder,
+                                                timeout_seconds=st.session_state.timeout_seconds,
+                                                active_agents=active_agents,
+                                                debug_mode=True,
+                                                model_name=st.session_state.selected_model
+                                            )
+                                        )
+                                        
+                                        # 분석 결과를 세션 상태에 저장
+                                        if results and not (isinstance(results, dict) and "error" in results and len(results) == 1):
+                                            st.session_state.current_multi_agent_results = results
+                                            st.session_state.current_multi_agent_query = combined_query
+                                            st.session_state.current_analysis_instruction = analysis_instruction
+                                            st.session_state.current_selected_analysis_id = selected_analysis['id']
+                                        
+                                        # 진행 상태 표시 제거
+                                        status_placeholder.empty()
+                                        text_placeholder.empty()
+                                        tool_placeholder.empty()
+                                        
+                                        # 결과가 있는 경우 (성공 또는 일부 결과)
+                                        if results and not (isinstance(results, dict) and "error" in results and len(results) == 1):
+                                            with result_area:
+                                                st.success("✅ 상세 분석이 완료되었습니다.")
+                                                
+                                                # 메인 분석 탭과 개별 에이전트 탭 생성
+                                                main_tabs = st.tabs(["종합 보고서", "개별 에이전트 보고서"])
+                                                
+                                                # 종합 보고서 탭
+                                                with main_tabs[0]:
+                                                    if 'integration_agent' in results:
+                                                        st.markdown("## 📊 최종 통합 분석")
+                                                        integration_result = results.get('integration_agent', '')
+                                                        if isinstance(integration_result, dict):
+                                                            # 각 섹션별로 표시
+                                                            sections = [
+                                                                ('executive_summary', '개요 (Executive Summary)'),
+                                                                ('situation_analysis', '현황 분석 및 문제 정의'),
+                                                                ('analysis', '종합 분석'),
+                                                                ('recommendation', '핵심 추천 사항'),
+                                                                ('implementation_plan', '실행 계획'),
+                                                                ('risk_assessment', '통합 위험 평가 및 관리'),
+                                                                ('conclusion', '결론 및 다음 단계')
+                                                            ]
+                                                            
+                                                            for section_key, section_title in sections:
+                                                                if section_key in integration_result and integration_result[section_key]:
+                                                                    st.markdown(f"### {section_title}")
+                                                                    st.markdown(integration_result[section_key])
+                                                        else:
+                                                            st.markdown(str(integration_result))
+                                                            
+                                                        # 마크다운 다운로드 기능 추가
+                                                        st.markdown("---")
+                                                        st.subheader("📥 보고서 다운로드 및 저장")
+                                                        md_report = create_markdown_report(results)
+                                                        
+                                                        col1, col2 = st.columns([1, 2])
+                                                        with col1:
+                                                            st.markdown(create_download_link(md_report, "multi_agent_analysis_report.md"), unsafe_allow_html=True)
+                                                        
+                                                        # DB에 결과 저장/업데이트 옵션
+                                                        with col2:
+                                                            col_a, col_b = st.columns(2)
+                                                            with col_a:
+                                                                save_as_new = st.checkbox("새 분석으로 저장", value=True,
+                                                                                        help="체크하면 새 분석 결과로 저장하고, 체크하지 않으면 기존 분석 결과를 업데이트합니다.")
+                                                            
+                                                            with col_b:
+                                                                if st.button("💾 저장", type="primary", key="save_button"):
+                                                                    with st.spinner("결과를 DB에 저장하는 중..."):
+                                                                        # 추가 지시사항 포함한 쿼리 생성
+                                                                        save_query = f"{selected_analysis['query']} [추가 분석: {analysis_instruction}]"
+                                                                        
+                                                                        if save_as_new:
+                                                                            # 새로운 분석 결과로 저장
+                                                                            save_success = save_analysis_to_db(save_query, results, False)
+                                                                            if save_success:
+                                                                                # 세션 상태에 저장 성공 상태와 결과 기록
+                                                                                st.session_state.save_success = True
+                                                                                st.session_state.saved_analysis_results = results
+                                                                                st.session_state.saved_analysis_id = st.session_state.get('saved_analysis_id')
+                                                                                # 성공 메시지는 세션 상태를 통해 표시
+                                                                                st.session_state.save_message = "새 분석 결과가 DB에 성공적으로 저장되었습니다."
+                                                                                st.session_state.save_message_type = "success"
+                                                                            else:
+                                                                                st.session_state.save_message = "DB 저장 중 오류가 발생했습니다."
+                                                                                st.session_state.save_message_type = "error"
+                                                                        else:
+                                                                            # 기존 분석 결과 업데이트
+                                                                            try:
+                                                                                # 기존 분석 결과 ID 가져오기
+                                                                                analysis_id = selected_analysis['id']
+                                                                                
+                                                                                # JSON으로 변환할 결과 준비
+                                                                                json_results = json.dumps(results, ensure_ascii=False)
+                                                                                
+                                                                                # DB 연결 및 업데이트
+                                                                                update_conn = connect_to_db()
+                                                                                if not update_conn:
+                                                                                    st.session_state.save_message = "데이터베이스 연결에 실패했습니다."
+                                                                                    st.session_state.save_message_type = "error"
+                                                                                else:
+                                                                                    update_cursor = update_conn.cursor()
+                                                                                    update_cursor.execute("""
+                                                                                        UPDATE mcp_analysis_results
+                                                                                        SET analysis_result = %s, 
+                                                                                            query = %s,
+                                                                                            updated_at = CURRENT_TIMESTAMP
+                                                                                        WHERE id = %s
+                                                                                    """, (json_results, save_query, analysis_id))
+                                                                                    
+                                                                                    update_conn.commit()
+                                                                                    update_cursor.close()
+                                                                                    update_conn.close()
+                                                                                    
+                                                                                    # 세션 상태에 저장 성공 상태와 결과 기록
+                                                                                    st.session_state.save_success = True
+                                                                                    st.session_state.saved_analysis_results = results
+                                                                                    st.session_state.saved_analysis_id = analysis_id
+                                                                                    st.session_state.save_message = f"기존 분석 결과(ID: {analysis_id})가 업데이트되었습니다."
+                                                                                    st.session_state.save_message_type = "success"
+                                                                            except Exception as e:
+                                                                                st.session_state.save_message = f"업데이트 중 오류가 발생했습니다: {str(e)}"
+                                                                                st.session_state.save_message_type = "error"
+                                                    else:
+                                                        st.info("통합 분석 결과가 없습니다.")
+                                                
+                                                # 개별 에이전트 보고서 탭
+                                                with main_tabs[1]:
+                                                    # 필터링된 에이전트 목록 생성 (통합 에이전트 제외)
+                                                    filtered_agents = {
+                                                        agent: info for agent, info in AGENT_ROLES.items()
+                                                        if agent in active_agents and active_agents[agent] and 
+                                                        agent in results and agent != "integration_agent"
+                                                    }
+                                                    
+                                                    if filtered_agents:
+                                                        # 에이전트 서브탭 생성
+                                                        agent_tabs = st.tabs([
+                                                            f"{info['name']}" 
+                                                            for agent, info in filtered_agents.items()
+                                                        ])
+                                                        
+                                                        # 각 에이전트 탭에 결과 표시
+                                                        for tab, (agent_type, info) in zip(agent_tabs, filtered_agents.items()):
+                                                            with tab:
+                                                                agent_result = results.get(agent_type, {})
+                                                                
+                                                                if not agent_result:
+                                                                    st.info(f"{info['name']} 분석 결과가 없습니다.")
+                                                                    continue
+                                                                    
+                                                                # 분석 결과 표시
+                                                                st.markdown(f"### {info['name']} 분석")
+                                                                if isinstance(agent_result, dict):
+                                                                    if agent_result.get('analysis'):
+                                                                        st.markdown(agent_result['analysis'])
+                                                                    else:
+                                                                        st.markdown(str(agent_result))
+                                                                    
+                                                                    # 추천 사항 표시
+                                                                    if agent_result.get('recommendation'):
+                                                                        st.markdown("### 💡 추천 사항")
+                                                                        st.markdown(agent_result['recommendation'])
+                                                                    
+                                                                    # 위험도 평가 표시
+                                                                    if agent_result.get('risk_assessment'):
+                                                                        st.markdown("### ⚠️ 위험 평가")
+                                                                        st.markdown(agent_result['risk_assessment'])
+                                                                    
+                                                                    # 개별 에이전트 보고서 다운로드
+                                                                    st.markdown("---")
+                                                                    st.markdown("### 📥 에이전트 보고서 다운로드")
+                                                                    individual_report = f"# {info['name']} 분석 보고서\n\n"
+                                                                    
+                                                                    if agent_result.get('analysis'):
+                                                                        individual_report += f"## 분석\n\n{agent_result['analysis']}\n\n"
+                                                                    if agent_result.get('recommendation'):
+                                                                        individual_report += f"## 추천 사항\n\n{agent_result['recommendation']}\n\n"
+                                                                    if agent_result.get('risk_assessment'):
+                                                                        individual_report += f"## 위험 평가\n\n{agent_result['risk_assessment']}\n\n"
+                                                                    
+                                                                    st.markdown(
+                                                                        create_download_link(
+                                                                            individual_report, 
+                                                                            f"{info['name']}_analysis_report.md"
+                                                                        ),
+                                                                        unsafe_allow_html=True
+                                                                    )
+                                                                else:
+                                                                    # 문자열인 경우 직접 표시
+                                                                    st.markdown(str(agent_result))
+                                                                    
+                                                                    # 문자열 결과도 다운로드 가능하게
+                                                                    st.markdown("---")
+                                                                    individual_report = f"# {info['name']} 분석 보고서\n\n{str(agent_result)}"
+                                                                    st.markdown(
+                                                                        create_download_link(
+                                                                            individual_report, 
+                                                                            f"{info['name']}_analysis_report.md"
+                                                                        ),
+                                                                        unsafe_allow_html=True
+                                                                    )
+                                                    else:
+                                                        st.info("활성화된 에이전트의 분석 결과가 없습니다.")
+                                                
+                                                # 개별 에이전트 탭에도 저장 기능 추가
+                                                st.markdown("---")
+                                                st.subheader("📥 전체 보고서 저장")
+                                                md_report = create_markdown_report(results)
+                                                
+                                                col1, col2 = st.columns([1, 2])
+                                                with col1:
+                                                    st.markdown(create_download_link(md_report, "multi_agent_analysis_report.md"), unsafe_allow_html=True)
+                                                
+                                                # DB에 결과 저장/업데이트 옵션
+                                                with col2:
+                                                    col_a, col_b = st.columns(2)
+                                                    with col_a:
+                                                        save_as_new_tab2 = st.checkbox("새 분석으로 저장 (탭2)", value=True,
+                                                                        help="체크하면 새 분석 결과로 저장하고, 체크하지 않으면 기존 분석 결과를 업데이트합니다.")
+                                                    
+                                                    with col_b:
+                                                        if st.button("💾 저장 (탭2)", type="primary", key="save_results_tab2"):
+                                                            with st.spinner("결과를 DB에 저장하는 중..."):
+                                                                # 추가 지시사항 포함한 쿼리 생성
+                                                                save_query2 = f"{selected_analysis['query']} [추가 분석: {analysis_instruction}]"
+                                                                
+                                                                if save_as_new_tab2:
+                                                                    # 새로운 분석 결과로 저장
+                                                                    save_success = save_analysis_to_db(save_query2, results, False)
+                                                                    if save_success:
+                                                                        st.success("새 분석 결과가 DB에 성공적으로 저장되었습니다.")
+                                                                        # 저장된 결과를 세션에 보관
+                                                                        if "saved_analysis_results" not in st.session_state:
+                                                                            st.session_state.saved_analysis_results = {}
+                                                                        st.session_state.saved_analysis_results[save_query2] = results
+                                                                    else:
+                                                                        st.error("DB 저장 중 오류가 발생했습니다.")
+                                                                else:
+                                                                    # 기존 분석 결과 업데이트
+                                                                    try:
+                                                                        # 기존 분석 결과 ID 가져오기
+                                                                        analysis_id = selected_analysis['id']
+                                                                        
+                                                                        # JSON으로 변환할 결과 준비
+                                                                        json_results = json.dumps(results, ensure_ascii=False)
+                                                                        
+                                                                        # DB 연결 및 업데이트
+                                                                        update_conn = connect_to_db()
+                                                                        if not update_conn:
+                                                                            st.error("데이터베이스 연결에 실패했습니다.")
+                                                                        else:
+                                                                            update_cursor = update_conn.cursor()
+                                                                            update_cursor.execute("""
+                                                                                UPDATE mcp_analysis_results
+                                                                                SET analysis_result = %s, 
+                                                                                    query = %s,
+                                                                                    updated_at = CURRENT_TIMESTAMP
+                                                                                WHERE id = %s
+                                                                            """, (json_results, save_query2, analysis_id))
+                                                                            
+                                                                            update_conn.commit()
+                                                                            update_cursor.close()
+                                                                            update_conn.close()
+                                                                            
+                                                                            st.success(f"기존 분석 결과(ID: {analysis_id})가 업데이트되었습니다.")
+                                                                            # 저장된 결과를 세션에 보관
+                                                                            if "saved_analysis_results" not in st.session_state:
+                                                                                st.session_state.saved_analysis_results = {}
+                                                                            st.session_state.saved_analysis_results[save_query2] = results
+                                                                    except Exception as e:
+                                                                        st.error(f"분석 결과 업데이트 중 오류 발생: {str(e)}")
+                                        else:
+                                            st.error("분석 결과가 없거나 오류가 발생했습니다.")
+                                    except Exception as e:
+                                        st.error(f"상세 분석 중 오류가 발생했습니다: {str(e)}")
+                                        import traceback
+                                        st.error(f"상세 에러: {traceback.format_exc()}")
 
         except Exception as e:
-            st.session_state.analysis_state["save_status"] = {
-                "success": False,
-                "message": f"분석 결과 조회 중 오류가 발생했습니다: {str(e)}",
-                "message_type": "error"
-            }
+            st.error(f"분석 결과 조회 중 오류가 발생했습니다: {str(e)}")
+        finally:
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
+
+    # 저장 메시지 표시 (세션 상태에서)
+    if "save_message" in st.session_state:
+        if st.session_state.save_message_type == "success":
+            st.success(st.session_state.save_message)
+        else:
+            st.error(st.session_state.save_message)
+        # 메시지 표시 후 세션 상태에서 제거
+        del st.session_state.save_message
+        del st.session_state.save_message_type
 
 if __name__ == "__main__":
     main()

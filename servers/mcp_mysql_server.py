@@ -19,11 +19,13 @@ if len(sys.argv) > 1:
     PORT = int(sys.argv[1])
 
 # MySQL 연결 설정
+# Hardcoded as requested
 default_config = {
     "host": "localhost",
     "port": 3306,
-    "user": "root",
-    "password": ""
+    "user": "iotuser",
+    "password": "iot12345",
+    "database": "newbiz"
 }
 
 class MCPHandler(BaseHTTPRequestHandler):
@@ -74,7 +76,8 @@ class MCPHandler(BaseHTTPRequestHandler):
             return self._handle_error(400, "Missing query parameter")
         
         query = params["query"]
-        db_config = params.get("db_config", default_config)
+        # Always use the hardcoded config, ignore any db_config in params
+        db_config = default_config
         
         try:
             conn = mysql.connector.connect(**db_config)

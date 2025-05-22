@@ -101,34 +101,27 @@ def get_suppliers():
         cursor.execute("SELECT * FROM suppliers ORDER BY supplier_id")
         suppliers = cursor.fetchall()
         
-        # 2. 공급업체가 없는 경우 기본 공급업체 등록
-        if not suppliers:
-            default_suppliers = [
-                {"supplier_name": "YUER", "contact_person": "YUER", "email": "yuer@example.com", "phone": "123-456-7890", "address": "YUER Address"},
-                {"supplier_name": "Signcomplex", "contact_person": "Signcomplex", "email": "signcomplex@example.com", "phone": "123-456-7891", "address": "Signcomplex Address"},
-                {"supplier_name": "Keyun", "contact_person": "Keyun", "email": "keyun@example.com", "phone": "123-456-7892", "address": "Keyun Address"},
-                {"supplier_name": "LEDYi", "contact_person": "LEDYi", "email": "ledyi@example.com", "phone": "123-456-7893", "address": "LEDYi Address"},
-                {"supplier_name": "Wellmax", "contact_person": "Wellmax", "email": "wellmax@example.com", "phone": "123-456-7894", "address": "Wellmax Address"},
-                {"supplier_name": "FSL", "contact_person": "FSL", "email": "fsl@example.com", "phone": "123-456-7895", "address": "FSL Address"}
-            ]
-            
-            # 기본 공급업체 등록
-            for supplier in default_suppliers:
-                cursor.execute("""
-                    INSERT INTO suppliers 
-                    (supplier_name, contact_person, email, phone, address)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (
-                    supplier['supplier_name'],
-                    supplier['contact_person'],
-                    supplier['email'],
-                    supplier['phone'],
-                    supplier['address']
-                ))
-            
+        # Ewinlight가 없으면 추가
+        ewinlight_exists = any(s['supplier_name'] == 'Ewinlight' for s in suppliers)
+        if not ewinlight_exists:
+            cursor.execute(
+                "INSERT INTO suppliers (supplier_name, contact_person, email, phone, address) VALUES (%s, %s, %s, %s, %s)",
+                ("Ewinlight", "Ewinlight", "ewinlight@example.com", "123-456-7896", "Ewinlight Address")
+            )
             conn.commit()
-            
-            # 등록된 공급업체 다시 조회
+            # 다시 조회
+            cursor.execute("SELECT * FROM suppliers ORDER BY supplier_id")
+            suppliers = cursor.fetchall()
+        
+        # Acrel가 없으면 추가
+        acrel_exists = any(s['supplier_name'] == 'Acrel' for s in suppliers)
+        if not acrel_exists:
+            cursor.execute(
+                "INSERT INTO suppliers (supplier_name, contact_person, email, phone, address) VALUES (%s, %s, %s, %s, %s)",
+                ("Acrel", "Acrel", "acrel@example.com", "123-456-7897", "Acrel Address")
+            )
+            conn.commit()
+            # 다시 조회
             cursor.execute("SELECT * FROM suppliers ORDER BY supplier_id")
             suppliers = cursor.fetchall()
         
@@ -148,11 +141,12 @@ def get_products(supplier_id=None):
     try:
         if supplier_id:
             cursor.execute("""
-                SELECT p.*, 
+                SELECT p.product_id, p.supplier_id, p.model_name, p.moq, p.lead_time, p.notes, p.created_at, p.updated_at, s.supplier_name,
                        COALESCE(i.stock, 0) as current_stock,
                        i.is_certified, 
                        i.certificate_number
                 FROM products_logistics p
+                JOIN suppliers s ON p.supplier_id = s.supplier_id
                 LEFT JOIN (
                     SELECT product_id, stock, is_certified, certificate_number
                     FROM inventory_logistics
@@ -162,11 +156,12 @@ def get_products(supplier_id=None):
             """, (supplier_id,))
         else:
             cursor.execute("""
-                SELECT p.*, 
+                SELECT p.product_id, p.supplier_id, p.model_name, p.moq, p.lead_time, p.notes, p.created_at, p.updated_at, s.supplier_name,
                        COALESCE(i.stock, 0) as current_stock,
                        i.is_certified, 
                        i.certificate_number
                 FROM products_logistics p
+                JOIN suppliers s ON p.supplier_id = s.supplier_id
                 LEFT JOIN (
                     SELECT product_id, stock, is_certified, certificate_number
                     FROM inventory_logistics
@@ -315,7 +310,6 @@ def create_pi(pi_data, items_data):
                     issue_date = %s,
                     expected_delivery_date = %s,
                     total_amount = %s,
-                    currency = %s,
                     payment_terms = %s,
                     shipping_terms = %s,
                     project_name = %s,
@@ -325,8 +319,7 @@ def create_pi(pi_data, items_data):
                 pi_data['supplier_id'],
                 pi_data['issue_date'],
                 pi_data['expected_delivery_date'],
-                pi_data['total_amount'],
-                pi_data['currency'],
+                0,  # total_amount
                 pi_data['payment_terms'],
                 pi_data['shipping_terms'],
                 pi_data.get('project_name', ''),
@@ -337,7 +330,7 @@ def create_pi(pi_data, items_data):
             
             # 기존 PI 항목 조회
             cursor.execute("""
-                SELECT pi_items.*, 
+                SELECT pi_items.pi_item_id, pi_items.product_id, pi_items.quantity, 
                        COALESCE(SUM(ci_items.quantity), 0) as received_qty
                 FROM pi_items
                 LEFT JOIN ci_items ON pi_items.pi_item_id = ci_items.pi_item_id
@@ -359,8 +352,8 @@ def create_pi(pi_data, items_data):
                         WHERE pi_item_id = %s
                     """, (
                         item['quantity'],
-                        item['unit_price'],
-                        item['total_price'],
+                        0,  # unit_price
+                        0,  # total_price
                         existing_item['pi_item_id']
                     ))
                 else:
@@ -371,7 +364,8 @@ def create_pi(pi_data, items_data):
                         VALUES (%s, %s, %s, %s, %s)
                     """, (
                         pi_id, item['product_id'], item['quantity'],
-                        item['unit_price'], item['total_price']
+                        0,  # unit_price
+                        0   # total_price
                     ))
             
             # 더 이상 필요하지 않은 항목은 수량을 0으로 설정
@@ -388,15 +382,15 @@ def create_pi(pi_data, items_data):
             cursor.execute("""
                 INSERT INTO proforma_invoices 
                 (pi_number, supplier_id, issue_date, expected_delivery_date, 
-                 total_amount, currency, payment_terms, shipping_terms, 
+                 total_amount, payment_terms, shipping_terms, 
                  project_name, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 pi_data['pi_number'], pi_data['supplier_id'],
                 pi_data['issue_date'], pi_data['expected_delivery_date'],
-                pi_data['total_amount'], pi_data['currency'],
-                pi_data['payment_terms'], pi_data['shipping_terms'],
-                pi_data.get('project_name', ''), pi_data['notes']
+                0,  # total_amount
+                pi_data['payment_terms'],
+                pi_data['shipping_terms'], pi_data.get('project_name', ''), pi_data['notes']
             ))
             pi_id = cursor.lastrowid
 
@@ -408,7 +402,8 @@ def create_pi(pi_data, items_data):
                     VALUES (%s, %s, %s, %s, %s)
                 """, (
                     pi_id, item['product_id'], item['quantity'],
-                    item['unit_price'], item['total_price']
+                    0,  # unit_price
+                    0   # total_price
                 ))
         
         conn.commit()
@@ -423,7 +418,7 @@ def create_pi(pi_data, items_data):
 def update_pi(pi_id, pi_data, items_data):
     """PI 수정"""
     conn = connect_to_db()
-    cursor = conn.cursor()
+    cursor = conn.cursor(dictionary=True)
     try:
         # 1. PI 기본 정보 업데이트
         cursor.execute("""
@@ -431,7 +426,6 @@ def update_pi(pi_id, pi_data, items_data):
             SET issue_date = %s,
                 expected_delivery_date = %s,
                 total_amount = %s,
-                currency = %s,
                 payment_terms = %s,
                 shipping_terms = %s,
                 notes = %s
@@ -439,8 +433,7 @@ def update_pi(pi_id, pi_data, items_data):
         """, (
             pi_data['issue_date'],
             pi_data['expected_delivery_date'],
-            pi_data['total_amount'],
-            pi_data['currency'],
+            0,  # total_amount
             pi_data['payment_terms'],
             pi_data['shipping_terms'],
             pi_data['notes'],
@@ -449,11 +442,11 @@ def update_pi(pi_id, pi_data, items_data):
         
         # 2. 기존 PI 항목 조회
         cursor.execute("""
-            SELECT pi_item_id, product_id, quantity, 
+            SELECT pi_items.pi_item_id, pi_items.product_id, pi_items.quantity, 
                    COALESCE(SUM(ci_items.quantity), 0) as received_qty
             FROM pi_items
             LEFT JOIN ci_items ON pi_items.pi_item_id = ci_items.pi_item_id
-            WHERE pi_id = %s
+            WHERE pi_items.pi_id = %s
             GROUP BY pi_items.pi_item_id
         """, (pi_id,))
         existing_items = {item['product_id']: item for item in cursor.fetchall()}
@@ -474,8 +467,8 @@ def update_pi(pi_id, pi_data, items_data):
                     WHERE pi_item_id = %s
                 """, (
                     item['quantity'],
-                    item['unit_price'],
-                    item['total_price'],
+                    0,  # unit_price
+                    0,  # total_price
                     existing_item['pi_item_id']
                 ))
                 del existing_items[item['product_id']]
@@ -488,7 +481,8 @@ def update_pi(pi_id, pi_data, items_data):
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, (
                     pi_id, item['product_id'], item['quantity'],
-                    item['unit_price'], item['total_price'],
+                    0,  # unit_price
+                    0,  # total_price
                     item['expected_production_date']
                 ))
         
@@ -509,7 +503,7 @@ def update_pi(pi_id, pi_data, items_data):
 
 # --- CI 관련 함수들 ---
 def create_ci(ci_data, items_data):
-    """CI 생성 및 재고 등록"""
+    """CI 생성 및 재고 등록 (FIFO로 여러 PI 미입고분 자동 소진)"""
     conn = connect_to_db()
     cursor = conn.cursor()
     try:
@@ -517,41 +511,53 @@ def create_ci(ci_data, items_data):
         cursor.execute("""
             INSERT INTO commercial_invoices 
             (ci_number, pi_id, supplier_id, shipping_date, arrival_date,
-             total_amount, currency, shipping_details, notes)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+             total_amount, shipping_details, notes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             ci_data['ci_number'], ci_data.get('pi_id'),
             ci_data['supplier_id'], ci_data['shipping_date'],
-            ci_data['arrival_date'], ci_data['total_amount'],
-            ci_data['currency'], ci_data['shipping_details'],
-            ci_data['notes']
+            ci_data['arrival_date'], 0,  # total_amount
+            ci_data['shipping_details'], ci_data['notes']
         ))
         ci_id = cursor.lastrowid
         
-        # 2. CI 항목 저장 및 재고 등록
+        # 2. FIFO 매칭: 동일 제품의 미입고 PI 항목을 오래된 순으로 소진
+        from decimal import Decimal
         for item in items_data:
-            # CI 항목 저장
-            cursor.execute("""
-                INSERT INTO ci_items 
-                (ci_id, pi_item_id, product_id, quantity, unit_price, 
-                 total_price, shipping_date, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                ci_id, item.get('pi_item_id'), item['product_id'],
-                item['quantity'], item['unit_price'], item['total_price'],
-                ci_data['shipping_date'], item['notes']
-            ))
-            
-            # 재고 등록
-            update_stock(
-                product_id=item['product_id'],
-                quantity_change=item['quantity'],
-                change_type='입고',
-                reference_number=ci_data['ci_number'],
-                notes=f"CI 등록: {ci_data['ci_number']}",
-                destination=ci_data.get('shipping_details', '')
-            )
-        
+            product_id = item['product_id']
+            total_quantity = int(item['quantity'])
+            unit_price = 0  # 무조건 0
+            total_price = 0  # 무조건 0
+            notes = item.get('notes', '')
+            supplier_id = ci_data['supplier_id']
+            # 미입고 PI 항목 조회 (오래된 순)
+            pending_items = get_pending_pi_items(supplier_id)
+            pending_items = [pi for pi in pending_items if pi['product_id'] == product_id and (pi['ordered_qty'] - pi['received_qty']) > 0]
+            pending_items.sort(key=lambda x: x['issue_date'])
+            remaining_qty = total_quantity
+            for pi_item in pending_items:
+                if remaining_qty == 0:
+                    break
+                available = int(pi_item['ordered_qty'] - pi_item['received_qty'])
+                to_receive = min(remaining_qty, available)
+                if to_receive > 0:
+                    cursor.execute("""
+                        INSERT INTO ci_items 
+                        (ci_id, pi_item_id, product_id, quantity, unit_price, total_price, shipping_date, notes)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        ci_id, pi_item['pi_item_id'], product_id, to_receive, 0, 0, ci_data['shipping_date'], notes
+                    ))
+                    # 재고 등록
+                    update_stock(
+                        product_id=product_id,
+                        quantity_change=to_receive,
+                        change_type='입고',
+                        reference_number=ci_data['ci_number'],
+                        notes=f"CI 등록: {ci_data['ci_number']}",
+                        destination=ci_data.get('shipping_details', '')
+                    )
+                    remaining_qty -= to_receive
         conn.commit()
         return True, ci_id
     except Exception as e:
@@ -684,15 +690,12 @@ def get_pending_pi_items(supplier_id=None):
             JOIN suppliers s ON pi.supplier_id = s.supplier_id
             JOIN products_logistics p ON pi_items.product_id = p.product_id
             LEFT JOIN ci_items ON pi_items.pi_item_id = ci_items.pi_item_id
-            WHERE pi_items.quantity > COALESCE(SUM(ci_items.quantity), 0)
         """
         params = []
         if supplier_id:
-            query += " AND pi.supplier_id = %s"
+            query += " WHERE pi.supplier_id = %s"
             params.append(supplier_id)
-        
-        query += " GROUP BY pi_items.pi_item_id ORDER BY pi.expected_delivery_date"
-        
+        query += " GROUP BY pi_items.pi_item_id HAVING ordered_qty > received_qty ORDER BY pi.expected_delivery_date"
         cursor.execute(query, params)
         return cursor.fetchall()
     finally:
@@ -847,11 +850,9 @@ def update_product(product_id, product_data):
         # 1. 제품 정보 업데이트
         cursor.execute("""
             UPDATE products_logistics 
-            SET unit_price = %s,
-                notes = %s
+            SET notes = %s
             WHERE product_id = %s
         """, (
-            product_data['unit_price'],
             product_data['notes'],
             product_id
         ))
@@ -877,13 +878,57 @@ def update_product(product_id, product_data):
         cursor.close()
         conn.close()
 
+# --- 재고 보정 함수 ---
+def correct_inventory_records():
+    """모든 제품에 대해 inventory_logistics에 1개의 레코드가 있도록 보정 (중복 제거 포함)"""
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    try:
+        # 1. 중복된 product_id에 대해 inventory_id가 가장 큰(최근) 레코드만 남기고 삭제
+        cursor.execute('''
+            DELETE il1 FROM inventory_logistics il1
+            INNER JOIN inventory_logistics il2
+              ON il1.product_id = il2.product_id
+              AND il1.inventory_id < il2.inventory_id;
+        ''')
+        # 2. 누락된 product_id에 대해 0 재고로 추가
+        cursor.execute('''
+            INSERT INTO inventory_logistics (product_id, stock, is_certified)
+            SELECT p.product_id, 0, FALSE
+            FROM products_logistics p
+            LEFT JOIN inventory_logistics i ON p.product_id = i.product_id
+            WHERE i.product_id IS NULL
+        ''')
+        conn.commit()
+        return True, "재고 보정이 완료되었습니다. (중복 제거 및 누락된 제품의 재고가 0으로 추가됨)"
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     st.title("📦 재고 관리 시스템")
+    
+    # 인증 기능 (간단한 비밀번호 보호)
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+        if password == os.getenv('ADMIN_PASSWORD', 'mds0118!'):  # 환경 변수에서 비밀번호 가져오기
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            if password:  # 비밀번호가 입력된 경우에만 오류 메시지 표시
+                st.error("관리자 권한이 필요합니다")
+            st.stop()
     
     # 사이드바 메뉴
     menu = st.sidebar.selectbox(
         "메뉴 선택",
-        ["재고 현황", "입고 관리", "출고 관리", "재고 조정", "재고 분석", "PI 관리", "제품 관리"]
+        ["재고 현황", "입고 관리", "출고 관리", "재고 조정", "재고 분석", "PI 관리", "제품 관리", "재고 이력"]
     )
     
     if menu == "재고 현황":
@@ -929,39 +974,47 @@ def main():
         
         # 제품 목록 조회
         products = get_products(selected_supplier['supplier_id'] if selected_supplier['supplier_id'] else None)
+        # 키워드 검색 입력란 추가
+        keyword = st.text_input('키워드 검색 (모델명, 인증서번호, 비고 등)', key='inventory_keyword')
+        if keyword:
+            keyword_lower = keyword.lower()
+            products = [p for p in products if (
+                keyword_lower in str(p.get('model_name', '')).lower() or
+                keyword_lower in str(p.get('certificate_number', '')).lower() or
+                keyword_lower in str(p.get('notes', '')).lower()
+            )]
+        # 재고가 있는 제품만 보기 체크박스 추가
+        show_only_in_stock = st.checkbox('재고가 있는 제품만 보기', value=False)
+        if show_only_in_stock:
+            products = [p for p in products if p['current_stock'] > 0]
         if products:
-            # 재고 상태별 색상 지정
+            # 재고현황 표에서 모델명, supplier_name, 현재 재고만 보이도록 DataFrame 컬럼 제한
+            df = pd.DataFrame(products)
+            df = df[['model_name', 'supplier_name', 'current_stock']]
             def highlight_status(row):
                 if row['current_stock'] == 0:
-                    return ['background-color: #b71c1c; color: white'] * len(row)  # 진한 빨간색
+                    return ['background-color: #b71c1c; color: white'] * len(row)
                 return [''] * len(row)
-            
-            # 데이터프레임 표시
-            df = pd.DataFrame(products)
             st.dataframe(
                 df.style.apply(highlight_status, axis=1),
                 column_config={
                     "model_name": "모델명",
-                    "current_stock": st.column_config.NumberColumn(
-                        "현재 재고",
-                        help="현재 재고 수량",
-                        format="%d개"
-                    ),
-                    "is_certified": st.column_config.Column(
-                        "인증 상태",
-                        help="제품 인증 상태",
-                        width="small"
-                    ),
-                    "certificate_number": "인증서 번호",
-                    "unit_price": st.column_config.NumberColumn(
-                        "단가",
-                        format="%.2f"
-                    )
+                    "supplier_name": "공급업체",
+                    "current_stock": st.column_config.NumberColumn("현재 재고", format="%d개")
                 },
                 hide_index=True
             )
         else:
             st.info("등록된 제품이 없습니다.")
+        
+        # 재고 보정 버튼 추가
+        if st.button('재고 DB 보정 실행', type='secondary'):
+            success, msg = correct_inventory_records()
+            if success:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(f"재고 보정 중 오류: {msg}")
     
     elif menu == "입고 관리":
         st.header("📥 입고 관리")
@@ -1026,11 +1079,6 @@ def main():
                                     "선적일",
                                     value=date.today()
                                 )
-                                currency = st.selectbox(
-                                    "통화",
-                                    ["USD", "CNY", "EUR"],
-                                    index=["USD", "CNY", "EUR"].index(pi_info['currency'])
-                                )
                             with col2:
                                 arrival_date = st.date_input(
                                     "입고일",
@@ -1060,14 +1108,6 @@ def main():
                                     )
                                 
                                 with col3:
-                                    unit_price = st.number_input(
-                                        "단가",
-                                        min_value=0.0,
-                                        value=float(item['unit_price']),
-                                        format="%.2f",
-                                        step=0.01,
-                                        key=f"ci_price_{item['pi_item_id']}"
-                                    )
                                     item_notes = st.text_input(
                                         "항목 비고",
                                         key=f"ci_item_note_{item['pi_item_id']}"
@@ -1078,8 +1118,6 @@ def main():
                                         'pi_item_id': item['pi_item_id'],
                                         'product_id': item['product_id'],
                                         'quantity': quantity,
-                                        'unit_price': unit_price,
-                                        'total_price': quantity * unit_price,
                                         'notes': item_notes
                                     })
                             
@@ -1092,15 +1130,12 @@ def main():
                         if submitted and ci_number and items_data:
                             try:
                                 # CI 데이터 준비
-                                total_amount = sum(item['total_price'] for item in items_data)
                                 ci_data = {
                                     'ci_number': ci_number,
                                     'pi_id': pi_info['pi_id'],
                                     'supplier_id': pi_info['supplier_id'],
                                     'shipping_date': shipping_date,
                                     'arrival_date': arrival_date,
-                                    'total_amount': total_amount,
-                                    'currency': currency,
                                     'shipping_details': shipping_details,
                                     'notes': notes
                                 }
@@ -1256,17 +1291,11 @@ def main():
         # 선택된 공급업체 정보 가져오기
         selected_supplier = next((s for s in suppliers if s['supplier_id'] == selected_supplier_id), None)
         
-        # 디버깅: 선택된 공급업체 정보 표시
-        if selected_supplier:
-            st.write(f"Debug - Selected Supplier: {selected_supplier['supplier_name']} (ID: {selected_supplier['supplier_id']})")
-            st.write(f"Debug - Raw selected supplier data: {selected_supplier}")
-        
         # 제품 목록 가져오기
         products = []
         if selected_supplier:
             # 제품 목록 조회 시 재고 정보도 함께 가져오기
             products = get_products(selected_supplier['supplier_id'])
-            st.write(f"Debug - Number of products found: {len(products) if products else 0}")
             
             if products:
                 # 각 제품의 재고 정보를 최신 상태로 업데이트
@@ -1281,10 +1310,6 @@ def main():
                         continue
                 
                 products = updated_products  # 업데이트된 제품 목록으로 교체
-                
-                st.write("Debug - Available products with updated stock:")
-                for p in products:
-                    st.write(f"- {p['model_name']} (ID: {p['product_id']}, Stock: {p['current_stock']}개)")
         
         # 출고 폼
         with st.form("outbound_form"):
@@ -1313,12 +1338,6 @@ def main():
                         stock_info = get_stock(selected_product['product_id'])
                         current_stock = stock_info['stock']
                         st.info(f"현재 재고: {current_stock}개")
-                        
-                        # 디버깅 정보 표시
-                        st.write("Debug - 선택된 제품 정보:")
-                        st.write(f"- 제품 ID: {selected_product['product_id']}")
-                        st.write(f"- 모델명: {selected_product['model_name']}")
-                        st.write(f"- 현재 재고: {current_stock}개")
                 else:
                     st.warning("현재 재고가 있는 제품이 없습니다.")
             
@@ -1357,28 +1376,17 @@ def main():
         # 폼 제출 후 처리
         if submitted and selected_product and current_stock > 0:
             try:
-                # 디버깅을 위한 정보 출력
-                st.write("Debug - 출고 처리 시작:")
-                st.write(f"- 제품 ID: {selected_product['product_id']}")
-                st.write(f"- 출고 수량: {quantity}")
-                st.write(f"- 현재 재고: {current_stock}")
-                st.write(f"- 참조 번호: {reference_number}")
-                
                 # 재고 업데이트 전 최종 확인
                 final_stock_check = get_stock(selected_product['product_id'])
-                st.write(f"- 최종 재고 확인: {final_stock_check['stock']}개")
-                
                 if final_stock_check['stock'] < quantity:
                     st.error("재고가 부족합니다. 다른 사용자가 재고를 변경했을 수 있습니다.")
                     return
-                
                 # 재고 업데이트 실행
                 conn = connect_to_db()
                 cursor = conn.cursor()
                 try:
                     # 트랜잭션 시작
                     conn.start_transaction()
-                    
                     # 1. 재고 업데이트
                     new_stock = current_stock - quantity
                     cursor.execute("""
@@ -1386,7 +1394,6 @@ def main():
                         SET stock = %s
                         WHERE product_id = %s
                     """, (new_stock, selected_product['product_id']))
-                    
                     # 2. 재고 이력 기록
                     cursor.execute("""
                         INSERT INTO inventory_transactions 
@@ -1402,7 +1409,6 @@ def main():
                         datetime.now(),
                         destination
                     ))
-                    
                     # 트랜잭션 커밋
                     conn.commit()
                     st.success("재고가 성공적으로 출고되었습니다.")
@@ -1416,7 +1422,6 @@ def main():
                     conn.close()
             except Exception as e:
                 st.error(f"출고 처리 중 오류가 발생했습니다: {str(e)}")
-                st.write("Debug - 오류 상세 정보:", e)
     
     elif menu == "재고 조정":
         st.header("⚖️ 재고 조정")
@@ -1619,6 +1624,13 @@ def main():
         
         # 공급업체별 재고 현황 차트
         supplier_df = pd.DataFrame(stats['suppliers'])
+        # low_stock 컬럼이 없으면 0으로 추가
+        if 'low_stock' not in supplier_df.columns:
+            supplier_df['low_stock'] = 0
+        # 컬럼 타입을 모두 int로 변환
+        for col in ['total_stock', 'out_of_stock', 'low_stock']:
+            if col in supplier_df.columns:
+                supplier_df[col] = pd.to_numeric(supplier_df[col], errors='coerce').fillna(0).astype(int)
         fig = px.bar(
             supplier_df,
             x='supplier_name',
@@ -1653,6 +1665,16 @@ def main():
                 format_func=lambda x: x['supplier_name']
             )
             
+            # 기존 PI 선택 드롭다운 추가
+            pi_list = get_pi_list(selected_supplier['supplier_id']) if selected_supplier else []
+            existing_pi_numbers = [pi['pi_number'] for pi in pi_list]
+            selected_existing_pi = st.selectbox(
+                "수정할 기존 PI 선택 (신규 등록 시 선택하지 마세요)",
+                options=[None] + existing_pi_numbers,
+                format_func=lambda x: x if x else "신규 등록"
+            )
+            pi_info = get_pi_by_number(selected_existing_pi) if selected_existing_pi else None
+            
             if selected_supplier:
                 # 선택된 공급업체의 제품 목록 가져오기 (폼 밖에서)
                 products = get_products(selected_supplier['supplier_id'])
@@ -1663,85 +1685,86 @@ def main():
                         st.subheader("PI 기본 정보")
                         col1, col2 = st.columns(2)
                         with col1:
-                            pi_number = st.text_input("PI 번호")
-                            issue_date = st.date_input("발행일")
-                            currency = st.selectbox("통화", ["USD", "CNY", "EUR"])
+                            pi_number = st.text_input("PI 번호", value=pi_info['pi_number'] if pi_info else "")
+                            issue_date = st.date_input("발행일", value=pi_info['issue_date'] if pi_info else date.today())
+                            currency = st.selectbox(
+                                "통화",
+                                ["USD", "CNY", "EUR"],
+                                index=["USD", "CNY", "EUR"].index(pi_info['currency']) if pi_info and 'currency' in pi_info and pi_info['currency'] in ["USD", "CNY", "EUR"] else 0
+                            )
                         with col2:
-                            expected_delivery_date = st.date_input("예상 납기일")
-                            payment_terms = st.text_area("지불 조건")
-                            shipping_terms = st.text_area("선적 조건")
+                            expected_delivery_date = st.date_input("예상 납기일", value=pi_info['expected_delivery_date'] if pi_info else date.today())
+                            payment_terms = st.text_area("지불 조건", value=pi_info['payment_terms'] if pi_info else "")
+                            shipping_terms = st.text_area("선적 조건", value=pi_info['shipping_terms'] if pi_info else "")
                         
                         # 주문 항목
                         st.subheader("주문 항목")
-                        
-                        # 제품 갯수 입력
+                        if pi_info:
+                            # 기존 PI 항목 정보로 채우기
+                            existing_items = {item['product_id']: item for item in pi_info['items']}
+                        else:
+                            existing_items = {}
                         item_count = st.number_input(
                             "주문 항목 수",
                             min_value=1,
-                            max_value=10,
-                            value=1,
+                            max_value=30,
+                            value=len(existing_items) if existing_items else 1,
                             step=1,
-                            help="주문할 제품의 갯수를 입력하세요 (최대 10개)"
+                            help="주문할 제품의 갯수를 입력하세요 (최대 30개)"
                         )
-                        
-                        # 제품 선택, 수량, 단가를 나란히 배치
                         items_data = []
                         total_amount = 0
                         has_valid_items = False
-                        
                         for i in range(item_count):
                             st.markdown(f"### 주문 항목 {i+1}")
                             col1, col2, col3 = st.columns(3)
+                            # 기존 항목 정보 가져오기
+                            if pi_info and i < len(pi_info['items']):
+                                existing_item = pi_info['items'][i]
+                                default_product_id = existing_item['product_id']
+                                default_quantity = existing_item['quantity']
+                            else:
+                                existing_item = None
+                                default_product_id = 0
+                                default_quantity = 1
                             with col1:
                                 selected_product = st.selectbox(
                                     "제품 선택",
                                     options=[(0, "제품을 선택하세요")] + [(p['product_id'], p['model_name']) for p in products],
                                     format_func=lambda x: x[1],
-                                    key=f"product_{i}"
+                                    key=f"product_{i}_edit" if pi_info else f"product_{i}",
+                                    index=next((j+1 for j, p in enumerate(products) if p['product_id'] == default_product_id), 0) if pi_info else 0
                                 )
                             with col2:
                                 quantity = st.number_input(
                                     "수량",
                                     min_value=1,
-                                    value=1,
+                                    value=default_quantity,
                                     step=1,
-                                    key=f"quantity_{i}"
+                                    key=f"quantity_{i}_edit" if pi_info else f"quantity_{i}"
                                 )
-                            with col3:
-                                unit_price = st.number_input(
-                                    "단가",
-                                    min_value=0.0,
-                                    value=0.0,
-                                    format="%.2f",
-                                    step=0.01,
-                                    key=f"price_{i}"
-                                )
-                            
                             # 각 항목의 유효성 검사 및 총액 계산
-                            if selected_product[0] != 0 and unit_price > 0 and quantity > 0:
-                                item_total = quantity * unit_price
+                            if selected_product[0] != 0 and quantity > 0:
+                                item_total = quantity * float(existing_item['unit_price']) if existing_item else 0.0
                                 st.text(f"항목 총액: {item_total:.2f}")
                                 total_amount += item_total
                                 has_valid_items = True
-                                
                                 items_data.append({
                                     'product_id': selected_product[0],
-                                    'quantity': int(quantity),  # 정수로 변환
-                                    'unit_price': float(unit_price),  # float로 변환
-                                    'total_price': float(item_total)  # float로 변환
+                                    'quantity': int(quantity),
+                                    'total_price': float(item_total)
                                 })
                             elif selected_product[0] != 0:
                                 st.warning("수량과 단가를 모두 입력해주세요.")
-                        
                         # 전체 총액 표시
                         if has_valid_items:
                             st.markdown(f"### 전체 주문 금액: {total_amount:.2f} {currency}")
-                        
-                        notes = st.text_area("비고")
-                        
+                        notes = st.text_area("비고", value=pi_info['notes'] if pi_info else "")
                         # 제출 버튼
-                        submitted = st.form_submit_button("PI 등록")
-                        
+                        if pi_info:
+                            submitted = st.form_submit_button("PI 수정")
+                        else:
+                            submitted = st.form_submit_button("PI 등록")
                         # 폼 제출 처리
                         if submitted:
                             if not items_data:
@@ -1755,22 +1778,24 @@ def main():
                                         'supplier_id': selected_supplier['supplier_id'],
                                         'issue_date': issue_date,
                                         'expected_delivery_date': expected_delivery_date,
-                                        'total_amount': total_amount,
-                                        'currency': currency,
                                         'payment_terms': payment_terms,
                                         'shipping_terms': shipping_terms,
                                         'notes': notes
                                     }
-                                    
-                                    success, result = create_pi(pi_data, items_data)
+                                    if pi_info:
+                                        # 수정
+                                        success, result = update_pi(pi_info['pi_id'], pi_data, items_data)
+                                    else:
+                                        # 신규 등록
+                                        success, result = create_pi(pi_data, items_data)
                                     if success:
-                                        st.success("PI가 성공적으로 등록되었습니다.")
+                                        st.success("PI가 성공적으로 저장되었습니다.")
                                         time.sleep(1)
                                         st.rerun()
                                     else:
-                                        st.error(f"PI 등록 중 오류가 발생했습니다: {result}")
+                                        st.error(f"PI 저장 중 오류가 발생했습니다: {result}")
                                 except Exception as e:
-                                    st.error(f"PI 등록 중 오류가 발생했습니다: {str(e)}")
+                                    st.error(f"PI 저장 중 오류가 발생했습니다: {str(e)}")
                 else:
                     st.warning("선택한 공급업체에 등록된 제품이 없습니다.")
         
@@ -1792,46 +1817,24 @@ def main():
             if pi_list:
                 # 데이터프레임 변환
                 df = pd.DataFrame(pi_list)
+                df = df.drop(columns=['total_amount', 'currency'], errors='ignore')
                 df['입고율'] = (df['total_received_qty'] / df['total_ordered_qty'] * 100).round(1)
-                
-                # 상태별 색상 지정
                 def highlight_received(row):
                     if row['입고율'] == 100:
-                        return ['background-color: #1b5e20; color: white'] * len(row)  # 진한 초록색
+                        return ['background-color: #1b5e20; color: white'] * len(row)
                     elif row['입고율'] > 0:
-                        return ['background-color: #e65100; color: white'] * len(row)  # 진한 주황색
+                        return ['background-color: #e65100; color: white'] * len(row)
                     return [''] * len(row)
-                
                 st.dataframe(
                     df.style.apply(highlight_received, axis=1),
                     column_config={
                         "pi_number": "PI 번호",
                         "supplier_name": "공급업체",
-                        "issue_date": st.column_config.DateColumn(
-                            "발행일",
-                            format="YYYY-MM-DD"
-                        ),
-                        "expected_delivery_date": st.column_config.DateColumn(
-                            "예상 납기일",
-                            format="YYYY-MM-DD"
-                        ),
-                        "total_amount": st.column_config.NumberColumn(
-                            "총액",
-                            format="%.2f"
-                        ),
-                        "currency": "통화",
-                        "total_ordered_qty": st.column_config.NumberColumn(
-                            "주문 수량",
-                            format="%d개"
-                        ),
-                        "total_received_qty": st.column_config.NumberColumn(
-                            "입고 수량",
-                            format="%d개"
-                        ),
-                        "입고율": st.column_config.NumberColumn(
-                            "입고율",
-                            format="%.1f%%"
-                        ),
+                        "issue_date": st.column_config.DateColumn("발행일", format="YYYY-MM-DD"),
+                        "expected_delivery_date": st.column_config.DateColumn("예상 납기일", format="YYYY-MM-DD"),
+                        "total_ordered_qty": st.column_config.NumberColumn("주문 수량", format="%d개"),
+                        "total_received_qty": st.column_config.NumberColumn("입고 수량", format="%d개"),
+                        "입고율": st.column_config.NumberColumn("입고율", format="%.1f%%"),
                         "items_summary": "주문 항목",
                         "payment_terms": "지불 조건",
                         "shipping_terms": "선적 조건",
@@ -1861,12 +1864,6 @@ def main():
                                     "발행일",
                                     value=pi_info['issue_date'],
                                     key="edit_issue_date"
-                                )
-                                currency = st.selectbox(
-                                    "통화",
-                                    ["USD", "CNY", "EUR"],
-                                    index=["USD", "CNY", "EUR"].index(pi_info['currency']),
-                                    key="edit_currency"
                                 )
                             with col2:
                                 expected_delivery_date = st.date_input(
@@ -1911,14 +1908,6 @@ def main():
                                         key=f"edit_quantity_{i}"
                                     )
                                 with col2:
-                                    unit_price = st.number_input(
-                                        "단가",
-                                        min_value=0.0,
-                                        value=float(existing_item['unit_price'] if existing_item else product['unit_price']),
-                                        format="%.2f",
-                                        key=f"edit_price_{i}"
-                                    )
-                                with col3:
                                     expected_prod_date = st.date_input(
                                         "예상 생산일",
                                         value=existing_item['expected_production_date'] if existing_item else date.today() + timedelta(days=product['lead_time']),
@@ -1929,8 +1918,6 @@ def main():
                                     items_data.append({
                                         'product_id': product['product_id'],
                                         'quantity': quantity,
-                                        'unit_price': unit_price,
-                                        'total_price': quantity * unit_price,
                                         'expected_production_date': expected_prod_date
                                     })
                             
@@ -1948,12 +1935,9 @@ def main():
                             if not items_data:
                                 st.error("최소 하나 이상의 제품을 주문해야 합니다.")
                             else:
-                                total_amount = sum(item['total_price'] for item in items_data)
                                 pi_data = {
                                     'issue_date': issue_date,
                                     'expected_delivery_date': expected_delivery_date,
-                                    'total_amount': total_amount,
-                                    'currency': currency,
                                     'payment_terms': payment_terms,
                                     'shipping_terms': shipping_terms,
                                     'notes': notes
@@ -2012,6 +1996,7 @@ def main():
                     pi['total_pending_qty'] = sum(item['quantity'] - item['received_qty'] for item in pending_items)
                     pi['max_delay_days'] = max(
                         (date.today() - item['expected_production_date']).days
+                        if item['expected_production_date'] is not None else 0
                         for item in pending_items
                     )
                     pending_pis.append(pi)
@@ -2041,7 +2026,12 @@ def main():
             
             # 정렬 적용
             if sort_by == "입고 예정일":
-                pending_pis.sort(key=lambda x: min(item['expected_production_date'] for item in x['pending_items']))
+                pending_pis.sort(
+                    key=lambda x: min(
+                        (item['expected_production_date'] for item in x['pending_items'] if item['expected_production_date'] is not None),
+                        default=date.max
+                    )
+                )
             elif sort_by == "지연일수":
                 pending_pis.sort(key=lambda x: x['max_delay_days'], reverse=True)
             elif sort_by == "미입고 수량":
@@ -2050,16 +2040,16 @@ def main():
             if pending_pis:
                 # 미입고 현황 요약
                 total_pending_pis = len(pending_pis)
-                total_pending_items = sum(pi['total_pending_qty'] for pi in pending_pis)
-                delayed_items = sum(1 for pi in pending_pis if pi['max_delay_days'] > 0)
+                total_pending_items = int(sum(int(pi['total_pending_qty']) for pi in pending_pis))
+                delayed_items = int(sum(1 for pi in pending_pis if pi['max_delay_days'] > 0))
                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("미입고 PI 수", total_pending_pis)
+                    st.metric("미입고 PI 수", int(total_pending_pis))
                 with col2:
-                    st.metric("미입고 항목 수", total_pending_items)
+                    st.metric("미입고 항목 수", int(total_pending_items))
                 with col3:
-                    st.metric("지연 항목 수", delayed_items, 
+                    st.metric("지연 항목 수", int(delayed_items), 
                              delta=f"{delayed_items}개 지연" if delayed_items > 0 else None,
                              delta_color="inverse")
                 
@@ -2080,7 +2070,10 @@ def main():
                         pending_items_data = []
                         for item in pi['pending_items']:
                             pending_qty = item['quantity'] - item['received_qty']
-                            delay_days = (date.today() - item['expected_production_date']).days
+                            if item['expected_production_date'] is not None:
+                                delay_days = (date.today() - item['expected_production_date']).days
+                            else:
+                                delay_days = 0
                             status = "지연" if delay_days > 0 else "예정"
                             
                             pending_items_data.append({
@@ -2169,21 +2162,12 @@ def main():
                     col1, col2 = st.columns(2)
                     with col1:
                         model_name = st.text_input("모델명")
-                        # 모델명이 입력되면 자동으로 기존 데이터 조회
                         existing_product = None
                         if model_name and selected_supplier:
                             existing_product = get_product_by_model(model_name, selected_supplier['supplier_id'])
                             if existing_product:
                                 st.info(f"기존 제품 정보를 불러왔습니다.")
-                        
-                        # 기존 데이터가 있으면 해당 값으로, 없으면 기본값으로 설정
-                        unit_price = st.number_input(
-                            "단가",
-                            min_value=0.0,
-                            format="%.2f",
-                            value=float(existing_product['unit_price']) if existing_product else 0.0
-                        )
-                    
+                        # 단가 입력란 제거됨
                     with col2:
                         is_certified = st.checkbox(
                             "인증 제품",
@@ -2211,7 +2195,6 @@ def main():
                             if existing_product:
                                 # 기존 제품 수정
                                 product_data = {
-                                    'unit_price': unit_price,
                                     'is_certified': is_certified,
                                     'certificate_number': certificate_number if is_certified else None,
                                     'notes': notes
@@ -2225,12 +2208,11 @@ def main():
                                     # 1. 제품 등록
                                     cursor.execute("""
                                         INSERT INTO products_logistics 
-                                        (supplier_id, model_name, unit_price, notes)
-                                        VALUES (%s, %s, %s, %s)
+                                        (supplier_id, model_name, notes)
+                                        VALUES (%s, %s, %s)
                                     """, (
                                         selected_supplier['supplier_id'],
                                         model_name,
-                                        unit_price,
                                         notes
                                     ))
                                     product_id = cursor.lastrowid
@@ -2293,10 +2275,6 @@ def main():
                         column_config={
                             "model_name": "모델명",
                             "supplier_name": "공급업체",
-                            "unit_price": st.column_config.NumberColumn(
-                                "단가",
-                                format="%.2f"
-                            ),
                             "current_stock": st.column_config.NumberColumn(
                                 "현재 재고",
                                 format="%d개"
@@ -2310,8 +2288,77 @@ def main():
                         },
                         hide_index=True
                     )
+
+                    # 제품별 삭제 버튼 추가
+                    st.subheader("제품 삭제")
+                    for product in products:
+                        with st.expander(f"{product['model_name']} (공급업체: {product['supplier_name']})"):
+                            st.write(f"현재 재고: {product['current_stock']}개")
+                            st.write(f"비고: {product['notes']}")
+                            if st.button("제품 삭제", key=f"delete_product_{product['product_id']}"):
+                                # 삭제 확인
+                                if st.warning(f"정말로 이 제품을 삭제하시겠습니까? (모든 재고 정보도 함께 삭제됩니다)"):
+                                    try:
+                                        conn = connect_to_db()
+                                        cursor = conn.cursor()
+                                        # 재고 정보 먼저 삭제
+                                        cursor.execute("DELETE FROM inventory_logistics WHERE product_id = %s", (product['product_id'],))
+                                        # 제품 정보 삭제
+                                        cursor.execute("DELETE FROM products_logistics WHERE product_id = %s", (product['product_id'],))
+                                        conn.commit()
+                                        cursor.close()
+                                        conn.close()
+                                        st.success("제품이 성공적으로 삭제되었습니다.")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"제품 삭제 중 오류가 발생했습니다: {str(e)}")
                 else:
                     st.info("등록된 제품이 없습니다.")
+
+    elif menu == "재고 이력":
+        st.header("📜 재고 입출고 이력")
+        conn = connect_to_db()
+        # 기간 필터
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("시작일", value=date.today() - timedelta(days=30))
+        with col2:
+            end_date = st.date_input("종료일", value=date.today())
+        # 검색어 입력
+        search_term = st.text_input("검색어 (제품명, 변경유형, 참조번호, 비고 등)")
+        # 쿼리 작성
+        query = '''
+            SELECT t.date, p.model_name, t.change_type, t.quantity, t.reference_number, t.notes, t.destination
+            FROM inventory_transactions t
+            JOIN products_logistics p ON t.product_id = p.product_id
+            WHERE DATE(t.date) >= %s AND DATE(t.date) <= %s
+        '''
+        params = [start_date, end_date]
+        if search_term:
+            query += ''' AND (
+                p.model_name LIKE %s OR
+                t.change_type LIKE %s OR
+                t.reference_number LIKE %s OR
+                t.notes LIKE %s OR
+                t.destination LIKE %s
+            )'''
+            for _ in range(5):
+                params.append(f"%{search_term}%")
+        query += " ORDER BY t.date DESC"
+        df = pd.read_sql(query, conn, params=params)
+        conn.close()
+        st.dataframe(df, use_container_width=True)
+        # 엑셀 다운로드
+        if not df.empty:
+            csv = df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                "엑셀 다운로드",
+                csv,
+                f"재고이력_{start_date}_{end_date}.csv",
+                "text/csv",
+                key='download-xlsx'
+            )
 
 if __name__ == "__main__":
     main() 
