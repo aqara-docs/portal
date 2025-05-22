@@ -39,6 +39,11 @@ from typing import Dict, List, TypedDict, Annotated, Sequence
 import logging
 import concurrent.futures
 import importlib.util
+from langgraph.prebuilt import create_react_agent
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from myutils import astream_graph, random_uuid
 
 # 환경 변수 로드
 load_dotenv()
@@ -122,6 +127,23 @@ load_dotenv(override=True)
 # config.json 파일 경로 설정
 CONFIG_FILE_PATH = "config.json"
 
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('환경변수(ADMIN_PASSWORD)가 설정되어 있지 않습니다. .env 파일을 확인하세요.')
+    st.stop()
+
+if not st.session_state.authenticated:
+    password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    if password == admin_pw:
+        st.session_state.authenticated = True
+        st.rerun()
+    else:
+        if password:  # 비밀번호가 입력된 경우에만 오류 메시지 표시
+            st.error("관리자 권한이 필요합니다")
+        st.stop()
 # JSON 설정 파일 로드 함수
 def load_config_from_json():
     """
@@ -241,7 +263,7 @@ if "session_initialized" not in st.session_state:
     st.session_state.history = []  # 대화 기록 저장 리스트
     st.session_state.mcp_client = None  # MCP 클라이언트 객체 저장 공간
     st.session_state.timeout_seconds = 1800  # 응답 생성 제한 시간(초), 기본값 1800초(30분)
-    st.session_state.selected_model = "claude-3-7-sonnet-latest"  # 기본 모델 선택
+    st.session_state.selected_model = "gpt-4o-mini"  # 기본 모델 선택
     st.session_state.recursion_limit = 100  # 재귀 호출 제한, 기본값 100
     st.session_state.active_agents = {  # 활성화된 에이전트 목록
         "analyst": True,
@@ -2626,6 +2648,7 @@ def main():
         del st.session_state.save_message
         del st.session_state.save_message_type
 
+
+
 if __name__ == "__main__":
     main()
-    

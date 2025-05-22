@@ -19,6 +19,10 @@ from langchain.document_loaders import (
 import tempfile
 import requests
 import json
+from openai import OpenAI
+import anthropic
+from langchain_openai import OpenAI as LangOpenAI
+from langchain_anthropic import ChatAnthropic
 
 load_dotenv()
 
@@ -27,6 +31,26 @@ st.set_page_config(page_title="Vote 결과", page_icon="📊", layout="wide")
 
 # Page header
 st.title("투표 결과")
+
+# 인증 기능 (간단한 비밀번호 보호)
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('환경변수(ADMIN_PASSWORD)가 설정되어 있지 않습니다. .env 파일을 확인하세요.')
+    st.stop()
+
+if not st.session_state.authenticated:
+    password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    if password == admin_pw:
+        st.session_state.authenticated = True
+        st.rerun()
+    else:
+        if password:  # 비밀번호가 입력된 경우에만 오류 메시지 표시
+            st.error("관리자 권한이 필요합니다")
+        st.stop()
+
 
 # MySQL 연결 설정
 def connect_to_db():
@@ -109,19 +133,73 @@ def get_question_results(question_id):
         cursor.close()
         conn.close()
 
+def ai_vote_llm(question, options, model_name, context=None):
+    """LLM 투표 (OpenAI/Anthropic/Ollama 자동 선택)"""
+    prompt = f"""
+당신은 투표 시스템의 참여자입니다. 아래 질문과 선택지를 신중히 분석하고 가장 적절한 답을 선택하세요.
+
+질문: {question}
+
+선택지:
+{options}
+"""
+    if context:
+        prompt += f"\n[참고 문맥]\n{context}\n"
+    prompt += """
+다음 JSON 형식으로 정확히 답변하세요:
+{
+  "selection": <선택한 번호>,
+  "reasoning": "<선택한 이유에 대한 상세 설명>",
+  "reference": "<참고한 문맥 내용 요약 또는 '문맥 없음'>"
+}
+"""
+    if model_name.startswith('gpt'):
+        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800,
+            temperature=0.1
+        )
+        return response.choices[0].message.content
+    elif model_name.startswith('claude'):
+        client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.1, max_tokens=800)
+        response = client.invoke([
+            {"role": "user", "content": prompt}
+        ])
+        return response.content if hasattr(response, 'content') else str(response)
+    else:
+        # Ollama fallback
+        return ask_llm(question, options, model_name, context or "")
+
 def get_available_models():
-    """Ollama에서 사용 가능한 모델 목록 반환"""
-    return [
-        "deepseek-r1:70b",  # 42GB - 가장 큰 모델
-        "deepseek-r1:32b",  # 19GB
-        "deepseek-r1:14b",  # 9.0GB
-        "phi4:latest",      # 9.1GB
-        "gemma2:latest",    # 5.4GB
-        "llama3.1:latest",  # 4.9GB
-        "mistral:latest",   # 4.1GB
-        "llama2:latest",    # 3.8GB
-        "llama3.2:latest"   # 2.0GB
-    ]
+    """사용 가능한 LLM 모델 목록 반환 (OpenAI/Anthropic/Ollama)"""
+    models = []
+    has_anthropic_key = os.environ.get('ANTHROPIC_API_KEY') is not None
+    if has_anthropic_key:
+        models.extend([
+            'claude-3-7-sonnet-latest',
+            'claude-3-5-sonnet-latest',
+            'claude-3-5-haiku-latest',
+        ])
+    has_openai_key = os.environ.get('OPENAI_API_KEY') is not None
+    if has_openai_key:
+        models.extend(['gpt-4o', 'gpt-4o-mini'])
+    # Ollama 기본 모델
+    models.extend([
+        "deepseek-r1:70b",
+        "deepseek-r1:32b",
+        "deepseek-r1:14b",
+        "phi4:latest",
+        "gemma2:latest",
+        "llama3.1:latest",
+        "mistral:latest",
+        "llama2:latest",
+        "llama3.2:latest"
+    ])
+    # gpt-4o-mini가 있으면 디폴트, 없으면 첫 번째
+    default_model = 'gpt-4o-mini' if 'gpt-4o-mini' in models else (models[0] if models else None)
+    return models, default_model
 
 def get_llm_vote(question_id, model_name):
     """LLM의 투표 결과와 이유 가져오기"""
@@ -302,9 +380,6 @@ def ask_llm(question, options, model_name, context=""):
 def parse_llm_response(response_text):
     """LLM 응답을 파싱하여 선택 번호와 이유 추출"""
     try:
-        # 디버깅을 위한 원본 응답 출력
-        st.write("디버그 - 원본 응답:", response_text)
-        
         # JSON 형식 찾기
         import re
         import json
@@ -349,11 +424,16 @@ def parse_llm_response(response_text):
         raise ValueError(f"응답 파싱 실패: {str(e)}\n원본 응답: {response_text}")
 
 def save_llm_vote(question_id, option_id, model_name, reasoning, weight):
-    """LLM의 투표 결과를 DB에 저장"""
+    """LLM의 투표 결과를 DB에 저장 (중복 방지)"""
     conn = connect_to_db()
     cursor = conn.cursor()
-    
     try:
+        # 기존 LLM 투표 삭제
+        cursor.execute(
+            "DELETE FROM vote_llm_responses WHERE question_id = %s AND llm_model = %s",
+            (question_id, model_name)
+        )
+        # 새 투표 저장
         cursor.execute("""
             INSERT INTO vote_llm_responses 
             (question_id, option_id, llm_model, reasoning, weight)
@@ -441,7 +521,6 @@ def get_combined_results(question_id, apply_weights=False):
             """, (question_id, question_id, question_id))
         
         results = cursor.fetchall()
-        print("Combined Results:", results)  # Debugging output
         return results
     finally:
         cursor.close()
@@ -544,8 +623,12 @@ def get_subjective_llm_vote(question_id, model_name):
     conn = connect_to_db()
     cursor = conn.cursor(dictionary=True)
     result = None
-    
     try:
+        # Ensure parameters are scalar, not list
+        if isinstance(question_id, list):
+            question_id = question_id[0]
+        if isinstance(model_name, list):
+            model_name = model_name[0]
         cursor.execute("""
             SELECT response_text, reasoning
             FROM subjective_llm_responses
@@ -553,15 +636,12 @@ def get_subjective_llm_vote(question_id, model_name):
             ORDER BY voted_at DESC
             LIMIT 1
         """, (question_id, model_name))
-        
         result = cursor.fetchone()
-        
     except mysql.connector.Error as err:
         st.error(f"LLM 답변 결과 조회 중 오류 발생: {err}")
     finally:
         cursor.close()
         conn.close()
-    
     return result
 
 def save_subjective_llm_response(question_id, model_name, response_text, reasoning, weight):
@@ -713,9 +793,6 @@ def main():
             results, voters = get_question_results(selected_question['question_id'])
             
             if results:
-                # Print the column names for debugging
-                print("Column Names:", results[0].keys())  # Debugging output
-
                 # Create DataFrame with correct column names
                 df_results = pd.DataFrame(results).astype({
                     'vote_count': 'int64',
@@ -788,95 +865,96 @@ def main():
             st.write("---")
             st.write("## 🤖 LLM 투표")
             
-            col1, col2 = st.columns([1, 2])
+            models, default_model = get_available_models()
+            if 'selected_model' not in st.session_state:
+                st.session_state.selected_model = default_model
+            selected_model = st.selectbox(
+                "LLM 모델 선택",
+                models,
+                index=models.index(st.session_state.selected_model) if st.session_state.selected_model in models else 0
+            )
+            st.session_state.selected_model = selected_model
             
-            with col1:
-                selected_model = st.selectbox(
-                    "LLM 모델 선택",
-                    get_available_models()
+            # LLM 투표 가중치 설정
+            llm_weight = st.slider(
+                "LLM 투표 가중치",
+                min_value=1,
+                max_value=10,
+                value=1,
+                help="LLM의 투표가 몇 명의 투표와 동일한 가중치를 가질지 설정합니다."
+            )
+            
+            # RAG 사용 여부 선택
+            use_rag = st.checkbox("문서 참조 사용 (RAG)", 
+                                help="선택한 문서를 참조하여 답변합니다.")
+            
+            if use_rag:
+                # 파일 입력 방식 선택
+                input_method = st.radio(
+                    "참조 문서 입력 방식",
+                    ["파일 업로드", "디렉토리 경로"]
                 )
                 
-                # LLM 투표 가중치 설정
-                llm_weight = st.slider(
-                    "LLM 투표 가중치",
-                    min_value=1,
-                    max_value=10,
-                    value=1,
-                    help="LLM의 투표가 몇 명의 투표와 동일한 가중치를 가질지 설정합니다."
-                )
-                
-                # RAG 사용 여부 선택
-                use_rag = st.checkbox("문서 참조 사용 (RAG)", 
-                                    help="선택한 문서를 참조하여 답변합니다.")
-                
-                if use_rag:
-                    # 파일 입력 방식 선택
-                    input_method = st.radio(
-                        "참조 문서 입력 방식",
-                        ["파일 업로드", "디렉토리 경로"]
+                context = ""
+                if input_method == "파일 업로드":
+                    uploaded_files = st.file_uploader(
+                        "참조할 파일 선택 (여러 파일 가능)",
+                        accept_multiple_files=True,
+                        type=['txt', 'md', 'pdf']
                     )
                     
-                    context = ""
-                    if input_method == "파일 업로드":
-                        uploaded_files = st.file_uploader(
-                            "참조할 파일 선택 (여러 파일 가능)",
-                            accept_multiple_files=True,
-                            type=['txt', 'md', 'pdf']
-                        )
-                        
-                        if uploaded_files:
-                            with st.spinner("파일 처리 중..."):
-                                documents = load_files(uploaded_files)
-                                if documents:
-                                    vectorstore = create_vectorstore(documents)
-                                    
-                    else:  # 디렉토리 경로
-                        doc_directory = st.text_input(
-                            "참조할 문서 디렉토리 경로",
-                            help="마크다운/텍스트/PDF 파일이 있는 디렉토리"
-                        )
-                        
-                        if doc_directory and os.path.exists(doc_directory):
-                            with st.spinner("디렉토리 처리 중..."):
-                                documents = load_documents(doc_directory)
-                                if documents:
-                                    vectorstore = create_vectorstore(documents)
+                    if uploaded_files:
+                        with st.spinner("파일 처리 중..."):
+                            documents = load_files(uploaded_files)
+                            if documents:
+                                vectorstore = create_vectorstore(documents)
+                                
+                else:  # 디렉토리 경로
+                    doc_directory = st.text_input(
+                        "참조할 문서 디렉토리 경로",
+                        help="마크다운/텍스트/PDF 파일이 있는 디렉토리"
+                    )
+                    
+                    if doc_directory and os.path.exists(doc_directory):
+                        with st.spinner("디렉토리 처리 중..."):
+                            documents = load_documents(doc_directory)
+                            if documents:
+                                vectorstore = create_vectorstore(documents)
+            
+            # LLM 투표 버튼
+            if st.button("LLM 투표 실행"):
+                options = get_question_options(selected_question['question_id'])
+                options_text = "\n".join([f"{i+1}. {opt['option_text']}" 
+                                        for i, opt in enumerate(options)])
                 
-                # LLM 투표 버튼
-                if st.button("LLM 투표 실행"):
-                    options = get_question_options(selected_question['question_id'])
-                    options_text = "\n".join([f"{i+1}. {opt['option_text']}" 
-                                            for i, opt in enumerate(options)])
-                    
-                    context = ""
-                    if use_rag and 'vectorstore' in locals():
-                        with st.spinner("관련 문맥 검색 중..."):
-                            context = get_relevant_context(
-                                vectorstore,
-                                selected_question['description'],
-                                options_text
-                            )
-                            if context:
-                                st.write("### 참조한 문맥:")
-                                st.write(context)
-                    
-                    # LLM에게 물어보기
-                    with st.spinner("LLM 응답 대기 중..."):
-                        llm_response = ask_llm(
+                context = ""
+                if use_rag and 'vectorstore' in locals():
+                    with st.spinner("관련 문맥 검색 중..."):
+                        context = get_relevant_context(
+                            vectorstore,
                             selected_question['description'],
-                            options_text,
-                            selected_model,
-                            context if use_rag else ""
+                            options_text
                         )
+                        if context:
+                            st.write("### 참조한 문맥:")
+                            st.write(context)
+                
+                # LLM에게 물어보기
+                with st.spinner("LLM 응답 대기 중..."):
+                    llm_response = ai_vote_llm(
+                        selected_question['description'],
+                        options_text,
+                        selected_model,
+                        context if use_rag else ""
+                    )
+                
+                # 응답 파싱 및 저장
+                try:
+                    selection, reasoning = parse_llm_response(llm_response)
                     
-                    # 응답 파싱 및 저장
-                    try:
-                        selection, reasoning = parse_llm_response(llm_response)
-                        
-                        if selection < 1 or selection > len(options):
-                            st.error(f"LLM이 잘못된 선택지 번호를 반환했습니다: {selection}")
-                            return
-                        
+                    if selection < 1 or selection > len(options):
+                        st.error(f"LLM이 잘못된 선택지 번호를 반환했습니다: {selection}")
+                    else:
                         save_llm_vote(
                             selected_question['question_id'],
                             options[selection - 1]['option_id'],
@@ -884,22 +962,26 @@ def main():
                             reasoning,
                             llm_weight
                         )
+                        st.session_state['last_llm_vote'] = {
+                            'selection': selection,
+                            'reasoning': reasoning,
+                            'option_text': options[selection - 1]['option_text'],
+                            'model': selected_model,
+                            'weight': llm_weight
+                        }
                         st.success(f"LLM 투표가 가중치 {llm_weight}로 저장되었습니다!")
-                        st.rerun()
-                        
-                    except ValueError as e:
-                        st.error(str(e))
-                    except Exception as e:
-                        st.error(f"LLM 응답 처리 중 오류 발생: {e}")
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"LLM 응답 처리 중 오류 발생: {e}")
             
-            with col2:
-                # 기존 LLM 투표 결과 표시
-                llm_vote = get_llm_vote(selected_question['question_id'], selected_model)
-                if llm_vote:
-                    st.write("### 🤖 LLM 투표 결과")
-                    st.write(f"**선택한 항목:** {llm_vote['option_text']}")
-                    st.write("**선택 이유:**")
-                    st.write(llm_vote['reasoning'])
+            # LLM 투표 결과 표시
+            if 'last_llm_vote' in st.session_state:
+                llm_vote = st.session_state['last_llm_vote']
+                st.write("### 🤖 LLM 투표 결과")
+                st.write(f"**선택한 항목:** {llm_vote['option_text']}")
+                st.write("**선택 이유:**")
+                st.write(llm_vote['reasoning'])
             
             # 결과 비교 표시
             st.write("---")
@@ -911,9 +993,6 @@ def main():
             
             results = get_combined_results(selected_question['question_id'], apply_weights)
             if results:
-                # Print the column names for debugging
-                print("Combined Results Column Names:", results[0].keys())
-
                 # Create DataFrame with correct column names
                 df_results = pd.DataFrame(results)
                 
@@ -1144,7 +1223,7 @@ def main():
                             
                             # LLM에게 물어보기
                             with st.spinner("LLM 응답 대기 중..."):
-                                llm_response = ask_llm(
+                                llm_response = ai_vote_llm(
                                     selected_question['description'],
                                     "",
                                     selected_model,

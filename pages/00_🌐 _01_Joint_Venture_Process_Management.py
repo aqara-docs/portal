@@ -30,7 +30,24 @@ def get_connection():
     except Error as e:
         st.error(f"Database connection failed: {str(e)}")
         return None
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
 
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('Environment variable (ADMIN_PASSWORD) is not set. Please check your .env file.')
+    st.stop()
+
+if not st.session_state.authenticated:
+    password = st.text_input("Enter admin password", type="password")
+    if password == admin_pw:
+        st.session_state.authenticated = True
+        st.rerun()
+    else:
+        if password:  # Show error only if password is entered
+            st.error("Admin privileges required.")
+        st.stop()
+        
 # Sample data creation
 def create_sample_data(conn):
     """Sample data creation"""

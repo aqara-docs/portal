@@ -14,13 +14,18 @@ st.set_page_config(
     layout="wide"
 )
 
-# 인증 기능 (간단한 비밀번호 보호)
+# 인증 기능 (간단한 비밀번호 보호, .env 필수)
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('환경변수(ADMIN_PASSWORD)가 설정되어 있지 않습니다. .env 파일을 확인하세요.')
+    st.stop()
+
 if not st.session_state.authenticated:
     password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
-    if password == os.getenv('ADMIN_PASSWORD', 'admin123'):  # 환경 변수에서 비밀번호 가져오기
+    if password == admin_pw:
         st.session_state.authenticated = True
         st.rerun()
     else:
