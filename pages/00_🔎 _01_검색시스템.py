@@ -11,7 +11,9 @@ import time
 
 # 환경 변수 로드
 load_dotenv()
-
+# Streamlit UI
+st.set_page_config(page_title="🔎 DB RAG 검색 시스템", layout="wide")
+st.title("🔎 MySQL DB RAG 검색 챗봇")
 # 인증 기능 (간단한 비밀번호 보호)
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -186,9 +188,7 @@ def summarize_db_reference(search_results, max_tables=3, max_rows_per_table=1, m
             ref_lines.append(f"  - 예시 데이터: {col_str}")
     return "\n".join(ref_lines)
 
-# Streamlit UI
-st.set_page_config(page_title="🔎 DB RAG 검색 시스템", layout="wide")
-st.title("🔎 MySQL DB RAG 검색 챗봇")
+
 
 # 모델 선택
 available_models = []

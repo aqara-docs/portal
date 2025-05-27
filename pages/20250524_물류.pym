@@ -714,9 +714,6 @@ def delete_pi(pi_id):
     conn = connect_to_db()
     cursor = conn.cursor()
     try:
-        # 트랜잭션 시작
-        conn.start_transaction()
-        
         # PI 항목의 입고 여부 확인
         cursor.execute("""
             SELECT COALESCE(SUM(ci_items.quantity), 0) as received_qty
@@ -731,13 +728,8 @@ def delete_pi(pi_id):
         if any(item[0] > 0 for item in received_items):
             return False, "이미 입고된 항목이 있어 PI를 삭제할 수 없습니다."
         
-        # 1. 먼저 PI 항목들을 삭제 (pi_items 테이블)
-        cursor.execute("DELETE FROM pi_items WHERE pi_id = %s", (pi_id,))
-        
-        # 2. 그 다음 PI를 삭제 (proforma_invoices 테이블)
+        # PI 삭제 (CASCADE로 인해 관련 항목도 자동 삭제)
         cursor.execute("DELETE FROM proforma_invoices WHERE pi_id = %s", (pi_id,))
-        
-        # 트랜잭션 커밋
         conn.commit()
         return True, "PI가 성공적으로 삭제되었습니다."
     except Exception as e:
@@ -907,7 +899,7 @@ def main():
     # 사이드바 메뉴
     menu = st.sidebar.selectbox(
         "메뉴 선택",
-        ["재고 현황", "입고 관리", "출고 관리", "재고 조정", "재고 분석", "PI 관리", "CI 관리", "제품 관리", "재고 이력"]
+        ["재고 현황", "입고 관리", "출고 관리", "재고 조정", "재고 분석", "PI 관리", "제품 관리", "재고 이력"]
     )
     
     if menu == "재고 현황":
@@ -1792,68 +1784,17 @@ def main():
                     hide_index=True
                 )
                 
-                # PI 수정/삭제 기능
-                st.subheader("PI 수정/삭제")
+                # PI 수정 기능
+                st.subheader("PI 수정")
+                selected_pi_number = st.selectbox(
+                    "수정할 PI 선택",
+                    options=[pi['pi_number'] for pi in pi_list],
+                    key="edit_pi"
+                )
                 
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("#### PI 수정")
-                    selected_pi_number = st.selectbox(
-                        "수정할 PI 선택",
-                        options=[pi['pi_number'] for pi in pi_list],
-                        key="edit_pi"
-                    )
-                
-                with col2:
-                    st.markdown("#### PI 삭제")
-                    selected_pi_for_delete = st.selectbox(
-                        "삭제할 PI 선택",
-                        options=[pi['pi_number'] for pi in pi_list],
-                        key="delete_pi_select"
-                    )
-                    
-                    if selected_pi_for_delete:
-                        # 선택된 PI 정보 조회
-                        pi_to_delete = next((pi for pi in pi_list if pi['pi_number'] == selected_pi_for_delete), None)
-                        if pi_to_delete:
-                            st.info(f"PI: {pi_to_delete['pi_number']}")
-                            st.info(f"공급업체: {pi_to_delete['supplier_name']}")
-                            st.info(f"입고율: {(pi_to_delete['total_received_qty'] / pi_to_delete['total_ordered_qty'] * 100):.1f}%")
-                            
-                            # 삭제 버튼
-                            if pi_to_delete['total_received_qty'] > 0:
-                                st.error("⚠️ 이미 입고된 항목이 있어 삭제할 수 없습니다.")
-                            else:
-                                if st.button("PI 삭제", type="secondary", key="delete_pi_btn"):
-                                    # 삭제 확인
-                                    if st.session_state.get(f"confirm_delete_{selected_pi_for_delete}") != True:
-                                        st.session_state[f"confirm_delete_{selected_pi_for_delete}"] = True
-                                        st.warning("⚠️ 한 번 더 클릭하면 PI가 완전히 삭제됩니다.")
-                                        st.rerun()
-                                    else:
-                                        # 실제 삭제 수행
-                                        success, message = delete_pi(pi_to_delete['pi_id'])
-                                        if success:
-                                            st.success(message)
-                                            # 확인 상태 초기화
-                                            if f"confirm_delete_{selected_pi_for_delete}" in st.session_state:
-                                                del st.session_state[f"confirm_delete_{selected_pi_for_delete}"]
-                                            time.sleep(1)
-                                            st.rerun()
-                                        else:
-                                            st.error(f"PI 삭제 중 오류: {message}")
-                                            # 확인 상태 초기화
-                                            if f"confirm_delete_{selected_pi_for_delete}" in st.session_state:
-                                                del st.session_state[f"confirm_delete_{selected_pi_for_delete}"]
-                
-                # PI 수정 폼
                 if selected_pi_number:
                     pi_info = get_pi_by_number(selected_pi_number)
                     if pi_info:
-                        st.divider()
-                        st.subheader("PI 수정 폼")
-                        
                         with st.form("edit_pi_form"):
                             st.info(f"PI 번호: {pi_info['pi_number']} (수정 불가)")
                             
@@ -1927,7 +1868,7 @@ def main():
                                 key="edit_notes"
                             )
                             
-                            # 제출 버튼
+                            # 제출 버튼 - 폼 컨텍스트 내에서 직접 호출
                             submitted = st.form_submit_button("PI 수정")
                         
                         # 폼 제출 후 처리
@@ -2110,97 +2051,6 @@ def main():
                             # 페이지 변경을 위한 세션 상태 설정은 별도로 구현 필요
             else:
                 st.info("미입고된 PI가 없습니다.")
-
-    elif menu == "CI 관리":
-        st.header("📋 CI 관리")
-        
-        # 공급업체 선택
-        suppliers = get_suppliers()
-        selected_supplier = st.selectbox(
-            "공급업체 선택",
-            options=[{"supplier_id": None, "supplier_name": "전체"}] + suppliers,
-            format_func=lambda x: x['supplier_name'],
-            key="ci_supplier"
-        )
-        
-        # CI 목록 조회
-        ci_list = get_ci_list(
-            supplier_id=selected_supplier['supplier_id'] if selected_supplier['supplier_id'] else None
-        )
-        
-        if ci_list:
-            # 데이터프레임 변환
-            df = pd.DataFrame(ci_list)
-            
-            st.dataframe(
-                df,
-                column_config={
-                    "ci_number": "CI 번호",
-                    "supplier_name": "공급업체",
-                    "shipping_date": st.column_config.DateColumn("선적일", format="YYYY-MM-DD"),
-                    "arrival_date": st.column_config.DateColumn("입고일", format="YYYY-MM-DD"),
-                    "items_summary": "주문 항목",
-                    "shipping_details": "선적 정보",
-                    "notes": "비고"
-                },
-                hide_index=True
-            )
-            
-            # CI 삭제 기능
-            st.subheader("CI 삭제")
-            
-            selected_ci_for_delete = st.selectbox(
-                "삭제할 CI 선택",
-                options=[ci['ci_number'] for ci in ci_list],
-                key="delete_ci_select"
-            )
-            
-            if selected_ci_for_delete:
-                # 선택된 CI 정보 조회
-                ci_to_delete = next((ci for ci in ci_list if ci['ci_number'] == selected_ci_for_delete), None)
-                if ci_to_delete:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.info(f"**CI 번호:** {ci_to_delete['ci_number']}")
-                        st.info(f"**공급업체:** {ci_to_delete['supplier_name']}")
-                        st.info(f"**선적일:** {ci_to_delete['shipping_date']}")
-                        st.info(f"**입고일:** {ci_to_delete['arrival_date']}")
-                    
-                    with col2:
-                        st.info(f"**항목:** {ci_to_delete['items_summary']}")
-                        if ci_to_delete['shipping_details']:
-                            st.info(f"**선적 정보:** {ci_to_delete['shipping_details']}")
-                        
-                        handle_stock = st.checkbox(
-                            "재고 차감 처리",
-                            value=True,
-                            help="체크하면 CI 삭제 시 해당 재고도 함께 차감됩니다."
-                        )
-                    
-                    # 삭제 버튼
-                    if st.button("CI 삭제", type="secondary", key="delete_ci_btn"):
-                        # 삭제 확인
-                        if st.session_state.get(f"confirm_delete_ci_{selected_ci_for_delete}") != True:
-                            st.session_state[f"confirm_delete_ci_{selected_ci_for_delete}"] = True
-                            st.warning("⚠️ 한 번 더 클릭하면 CI가 완전히 삭제됩니다.")
-                            st.rerun()
-                        else:
-                            # 실제 삭제 수행
-                            success, message = delete_ci(ci_to_delete['ci_id'], handle_stock)
-                            if success:
-                                st.success(message)
-                                # 확인 상태 초기화
-                                if f"confirm_delete_ci_{selected_ci_for_delete}" in st.session_state:
-                                    del st.session_state[f"confirm_delete_ci_{selected_ci_for_delete}"]
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error(f"CI 삭제 중 오류: {message}")
-                                # 확인 상태 초기화
-                                if f"confirm_delete_ci_{selected_ci_for_delete}" in st.session_state:
-                                    del st.session_state[f"confirm_delete_ci_{selected_ci_for_delete}"]
-        else:
-            st.info("등록된 CI가 없습니다.")
 
     elif menu == "제품 관리":
         st.header("📝 제품 관리")
@@ -2432,3 +2282,4 @@ def main():
 
 if __name__ == "__main__":
     main() 
+    

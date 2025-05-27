@@ -833,7 +833,6 @@ def create_logistics_tables(mode="migrate"):
                 product_id INT AUTO_INCREMENT PRIMARY KEY,
                 supplier_id INT NOT NULL,
                 model_name VARCHAR(200) NOT NULL,
-                unit_price DECIMAL(10, 2) NOT NULL DEFAULT 0,
                 moq INT NOT NULL DEFAULT 1,
                 lead_time INT NOT NULL DEFAULT 1,
                 notes TEXT,
@@ -881,8 +880,6 @@ def create_logistics_tables(mode="migrate"):
                 supplier_id INT NOT NULL,
                 issue_date DATE NOT NULL,
                 expected_delivery_date DATE,
-                total_amount DECIMAL(15, 2) NOT NULL,
-                currency VARCHAR(3) NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'draft',
                 payment_terms TEXT,
                 shipping_terms TEXT,
@@ -901,8 +898,6 @@ def create_logistics_tables(mode="migrate"):
                 pi_id INT NOT NULL,
                 product_id INT NOT NULL,
                 quantity INT NOT NULL,
-                unit_price DECIMAL(10, 2) NOT NULL,
-                total_price DECIMAL(15, 2) NOT NULL,
                 expected_production_date DATE,
                 status ENUM('pending', 'partial', 'completed', 'cancelled') NOT NULL DEFAULT 'pending',
                 delay_reason TEXT,
@@ -960,8 +955,6 @@ def create_logistics_tables(mode="migrate"):
                 supplier_id INT NOT NULL,
                 shipping_date DATE NOT NULL,
                 arrival_date DATE,
-                total_amount DECIMAL(15, 2) NOT NULL,
-                currency VARCHAR(3) NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'draft',
                 shipping_details TEXT,
                 notes TEXT,
@@ -980,8 +973,6 @@ def create_logistics_tables(mode="migrate"):
                 pi_item_id INT,
                 product_id INT NOT NULL,
                 quantity INT NOT NULL,
-                unit_price DECIMAL(10, 2) NOT NULL,
-                total_price DECIMAL(15, 2) NOT NULL,
                 shipping_date DATE,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1293,6 +1284,30 @@ def create_meeting_records_table(mode="migrate"):
         cursor.close()
         conn.close()
 
+def create_ai_tool_expenses_table():
+    """AI 툴 사용비용 기록 테이블 생성"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ai_tool_expenses (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                reg_date DATE NOT NULL,
+                tool_name VARCHAR(100) NOT NULL,
+                amount DOUBLE NOT NULL,
+                currency VARCHAR(10) NOT NULL,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"AI 사용비용 테이블 생성 오류: {e}")
+        return False
+
 def main():
     st.title("DB 테이블 관리 시스템")
     
@@ -1305,7 +1320,8 @@ def main():
          "주관식 질문 관련 테이블 생성", "물류 관리(PI/CI) 테이블 생성", 
          "MCP 분석 테이블 생성", "의사결정 트리 테이블 생성",
          "회의록 테이블 생성/업데이트",
-         "decision_options 컬럼 추가(데이터 보호)"]
+         "decision_options 컬럼 추가(데이터 보호)",
+         "AI 사용비용 테이블 생성"]
     )
     
     if menu == "테이블 목록":
@@ -1673,7 +1689,6 @@ def main():
                 # 변경 후 테이블 구조 표시
                 schema = get_table_schema("decision_options")
                 if schema:
-                    import pandas as pd
                     schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
                     st.write("### decision_options 테이블 구조:")
                     st.dataframe(schema_df)
@@ -1734,7 +1749,6 @@ def main():
                 # 변경 후 테이블 구조 표시
                 schema = get_table_schema("decision_options")
                 if schema:
-                    import pandas as pd
                     schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
                     st.write("### decision_options 테이블 구조:")
                     st.dataframe(schema_df)
@@ -1742,6 +1756,14 @@ def main():
                 conn.close()
             except Exception as e:
                 st.error(f"컬럼 추가/수정 중 오류: {str(e)}")
+
+    elif menu == "AI 사용비용 테이블 생성":
+        st.header("AI 사용비용 테이블 생성")
+        if st.button("AI 사용비용 테이블 생성", type="primary"):
+            if create_ai_tool_expenses_table():
+                st.success("AI 사용비용 테이블이 성공적으로 생성되었습니다!")
+            else:
+                st.error("테이블 생성 중 오류가 발생했습니다.")
 
 if __name__ == "__main__":
     main() 

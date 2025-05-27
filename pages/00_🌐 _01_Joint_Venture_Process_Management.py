@@ -244,7 +244,7 @@ def main():
             return
             
         # Sidebar menu
-        st.sidebar.title("YUER-Korea Joint Venture")
+        st.sidebar.title("YUER-AqaraLife Joint Venture")
         menu = st.sidebar.selectbox(
             "Select Menu",
             ["Dashboard", "Parts Management", "Parts Orders", "Production Management", "Products Management", "Sales Management", "Sales Analysis", "Inventory Management", "Settings"]
