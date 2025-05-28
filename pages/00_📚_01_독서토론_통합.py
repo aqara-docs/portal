@@ -18,7 +18,7 @@ st.set_page_config(page_title="📚 독서토론 통합", layout="wide")
 
 # 환경 변수 로드
 load_dotenv()
-
+st.title("📚 독서토론 통합 관리")
 # 모델 선택 및 API 키 확인
 if 'selected_model' not in st.session_state:
     st.session_state.selected_model = 'claude-3-7-sonnet-latest'
@@ -38,12 +38,16 @@ if has_openai_key:
 if not available_models:
     available_models = ['claude-3-7-sonnet-latest']
 
-st.session_state.selected_model = st.selectbox(
+# 모델 선택 (다른 세션 상태에 영향을 주지 않도록 안전하게 처리)
+selected_model = st.selectbox(
     'AI 모델 선택',
     options=available_models,
     index=available_models.index(st.session_state.selected_model) if st.session_state.selected_model in available_models else 0,
     help='Claude(Anthropic)는 ANTHROPIC_API_KEY, OpenAI는 OPENAI_API_KEY 필요'
 )
+# 모델이 실제로 변경된 경우에만 세션 상태 업데이트
+if selected_model != st.session_state.selected_model:
+    st.session_state.selected_model = selected_model
 
 # DB 연결 함수
 def connect_to_db():
@@ -131,7 +135,7 @@ def ai_summarize(text, model_name, extra_prompt=None):
 # 적용 파일 생성 함수 (Claude/OpenAI 모두 지원)
 def ai_generate_application(summary_text, application_text, model_name, extra_prompt=None):
     if model_name.startswith('claude'):
-        client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.3, max_tokens=3500)
+        client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.3, max_tokens=8192)
         prompt = f"""
 아래의 '요약 내용'과 '기존 적용 파일'을 참고하여, 기존 적용 파일을 개선/보완한 새로운 적용 파일을 작성해 주세요.\n\n[절대적 요구사항]\n- 기존 적용 파일의 대부분의 핵심 내용이 빠짐없이 포함되어야 합니다. 중요한 내용이 누락되지 않도록 하세요.\n- 기존 적용 파일의 모든 섹션, 소제목, 구조를 그대로 유지하세요.\n- 요약 내용의 핵심 인사이트와 지침을 반드시 반영해 주세요.\n- 기존 적용 파일의 구조와 맥락을 최대한 유지하되, 중복은 피하고 자연스럽게 통합해 주세요.\n- 반드시 존댓말을 사용해 주세요.\n\n[요약 내용]\n{summary_text}\n\n[기존 적용 파일]\n{application_text}\n"""
         if extra_prompt and extra_prompt.strip():
@@ -153,7 +157,7 @@ def ai_generate_application(summary_text, application_text, model_name, extra_pr
                 {"role": "system", "content": "당신은 적용 파일 통합 전문가입니다. 반드시 기존 적용 파일의 대부분의 핵심 내용이 빠짐없이 포함되고, 구조와 맥락을 유지하며, 존댓말로 작성합니다. 중요한 내용 누락 금지."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=3500,
+            max_tokens=8192,
             temperature=0.3
         )
         return response.choices[0].message.content
@@ -388,6 +392,7 @@ def discussion_order_tab():
                     st.session_state.order_timer_finished = False
             else:
                 if st.button("🔄 타이머 리셋", use_container_width=True):
+                    # 타이머 관련 세션 상태만 리셋 (다른 탭의 세션 상태는 보호)
                     st.session_state.order_timer_started = False
                     st.session_state.order_start_time = None
                     st.session_state.order_timer_finished = False
@@ -430,6 +435,7 @@ def discussion_order_tab():
                 ''', height=80)
     st.markdown("---")
     if st.button("🔄 다시 정하기", key="order_reset", use_container_width=True):
+        # 타이머 관련 세션 상태만 초기화 (다른 탭의 세션 상태는 보호)
         st.session_state.order_generated = False
         st.session_state.order_timer_started = False
         st.session_state.order_start_time = None
@@ -437,7 +443,16 @@ def discussion_order_tab():
     st.markdown("</div>", unsafe_allow_html=True)
 
 def main():
-    st.title("📚 독서토론 통합 관리")
+    # 독서토론 검색/조회 탭의 세션 상태를 영구적으로 보호
+    if 'ai_summary_result' not in st.session_state:
+        st.session_state['ai_summary_result'] = None
+    if 'tts_audio' not in st.session_state:
+        st.session_state['tts_audio'] = None
+    if 'ai_app_summary_result' not in st.session_state:
+        st.session_state['ai_app_summary_result'] = None
+    if 'tts_app_audio' not in st.session_state:
+        st.session_state['tts_app_audio'] = None
+   
     tab1, tab2, tab3, tab_order = st.tabs(["요약/적용 파일 등록", "적용 파일 생성", "독서토론 검색/조회", "발표 순서/타이머"])
     with tab1:
         st.header("요약/적용 파일 등록")
@@ -528,11 +543,6 @@ def main():
         with subtab1:
             st.subheader("요약 파일 검색/AI 요약/음성 생성")
             summaries = get_materials("summary")
-            # 세션 상태 초기화 (탭 이동 시 삭제 방지)
-            if 'ai_summary_result' not in st.session_state:
-                st.session_state['ai_summary_result'] = None
-            if 'tts_audio' not in st.session_state:
-                st.session_state['tts_audio'] = None
             previous_topic = st.text_input("이전 토론 주제", placeholder="이전 독서 토론의 주제를 입력해주세요", key="prev_topic_tts")
             if summaries:
                 summary_options = [f"{s['book_title']} - {s['file_name']} ({s['created_at'].strftime('%Y-%m-%d')})" for s in summaries]
@@ -575,10 +585,6 @@ def main():
         with subtab2:
             st.subheader("적용 파일 검색/AI 요약/음성 생성")
             applications = get_materials("application")
-            if 'ai_app_summary_result' not in st.session_state:
-                st.session_state['ai_app_summary_result'] = None
-            if 'tts_app_audio' not in st.session_state:
-                st.session_state['tts_app_audio'] = None
             next_topic = st.text_input("다음 토론 주제", placeholder="다음 독서 토론의 주제를 입력해주세요", key="next_topic_tts")
             if applications:
                 application_options = [f"{a['book_title']} - {a['file_name']} ({a['created_at'].strftime('%Y-%m-%d')})" for a in applications]
@@ -683,7 +689,7 @@ def ai_summarize_application_summary(text, model_name, extra_prompt=None):
         "아래 적용 파일의 핵심 내용을 더 상세하게 요약해 주세요. 이어서, 총평의 제목은 반드시 '투명하고 진실한 조직 문화'로 하고, 그 아래에는 협업하는 조직 문화 만들기 관점에서 적용 파일에 대한 총평을 5줄 이내로 간결하게 작성해 주세요. 전체 분량은 약 2분 분량(요약은 상세하게, 총평은 간결하게)으로 해 주세요. 필요시 bullet point를 활용해도 좋습니다."
     )
     if model_name.startswith('claude'):
-        client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.3, max_tokens=1500)
+        client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.3, max_tokens=4096)
         prompt_full = f"{prompt}\n---\n{text}"
         if extra_prompt and extra_prompt.strip():
             prompt_full += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
@@ -703,7 +709,7 @@ def ai_summarize_application_summary(text, model_name, extra_prompt=None):
                 {"role": "system", "content": "당신은 비즈니스 요약 및 평가 전문가입니다. 적용 파일의 핵심을 더 상세하게 요약하고, 총평의 제목은 반드시 '투명하고 진실한 조직 문화'로 하며, 그 아래에는 협업하는 조직 문화 만들기 관점에서 5줄 이내로 간결한 총평을 작성해 주세요."},
                 {"role": "user", "content": prompt_full}
             ],
-            max_tokens=1500,
+            max_tokens=4096,
             temperature=0.3
         )
         return response.choices[0].message.content

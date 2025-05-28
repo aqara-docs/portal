@@ -30,7 +30,7 @@ load_dotenv()
 st.set_page_config(page_title="Vote 결과", page_icon="📊", layout="wide")
 
 # Page header
-st.title("투표 결과")
+st.title("🗳️ 투표 결과")
 
 # 인증 기능 (간단한 비밀번호 보호)
 if 'authenticated' not in st.session_state:

@@ -1,4 +1,12 @@
 import streamlit as st
+
+# 페이지 설정을 가장 먼저 호출
+st.set_page_config(
+    page_title="MCP 기반 분석 툴",
+    page_icon="🤖",
+    layout="wide"
+)
+
 import os
 import asyncio
 import nest_asyncio
@@ -25,7 +33,6 @@ import re
 import inspect
 import numpy as np
 import pandas as pd
-import streamlit as st
 from datetime import datetime, timedelta
 from mysql.connector import Error
 from langchain.chains import LLMChain
@@ -72,19 +79,7 @@ if "authenticated" not in st.session_state:
 # 로그인 필요 여부 확인
 use_login = os.environ.get("USE_LOGIN", "false").lower() == "true"
 
-# 페이지 설정을 가장 먼저 호출 (로그인 상태에 따라 다른 설정 적용)
-if use_login and not st.session_state.authenticated:
-    st.set_page_config(
-        page_title="Agent with MCP Tools",
-        page_icon="🧠",
-        layout="narrow"
-    )
-else:
-    st.set_page_config(
-        page_title="MCP 기반 분석 툴",
-        page_icon="🤖",
-        layout="wide"
-    )
+st.title("🤖 사내 데이터베이스 기반 사업 전략 보고서 작성 👥")
 
 from langchain_core.messages import (
     BaseMessage,

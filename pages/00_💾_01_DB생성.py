@@ -13,6 +13,8 @@ st.set_page_config(
     layout="wide"
 )
 
+st.title("💾 DB 테이블 관리 시스템")
+
 def connect_to_db():
     """데이터베이스 연결"""
     try:
@@ -1308,8 +1310,106 @@ def create_ai_tool_expenses_table():
         st.error(f"AI 사용비용 테이블 생성 오류: {e}")
         return False
 
+def create_project_review_tables():
+    """프로젝트 리뷰 시스템 관련 테이블 생성"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        
+        # 외래 키 체크 비활성화
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+        
+        # 기존 테이블 삭제
+        cursor.execute("DROP TABLE IF EXISTS project_metrics")
+        cursor.execute("DROP TABLE IF EXISTS project_ai_analysis")
+        cursor.execute("DROP TABLE IF EXISTS project_review_files")
+        cursor.execute("DROP TABLE IF EXISTS project_reviews")
+        
+        # 프로젝트 리뷰 메인 테이블
+        cursor.execute("""
+            CREATE TABLE project_reviews (
+                review_id INT AUTO_INCREMENT PRIMARY KEY,
+                project_name VARCHAR(255) NOT NULL,
+                project_type VARCHAR(100) NOT NULL,
+                start_date DATE,
+                end_date DATE,
+                project_manager VARCHAR(100),
+                team_members TEXT,
+                budget DECIMAL(15,2),
+                actual_cost DECIMAL(15,2),
+                status ENUM('completed', 'ongoing', 'cancelled', 'on_hold') DEFAULT 'completed',
+                overall_rating INT CHECK (overall_rating BETWEEN 1 AND 10),
+                description TEXT,
+                objectives TEXT,
+                deliverables TEXT,
+                challenges TEXT,
+                lessons_learned TEXT,
+                recommendations TEXT,
+                created_by VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+        
+        # 프로젝트 파일 첨부 테이블
+        cursor.execute("""
+            CREATE TABLE project_review_files (
+                file_id INT AUTO_INCREMENT PRIMARY KEY,
+                review_id INT NOT NULL,
+                filename VARCHAR(255) NOT NULL,
+                file_type VARCHAR(50) NOT NULL,
+                file_content LONGTEXT,
+                file_size INT,
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (review_id) REFERENCES project_reviews(review_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+        
+        # AI 분석 결과 테이블
+        cursor.execute("""
+            CREATE TABLE project_ai_analysis (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                review_id INT NOT NULL,
+                agent_type VARCHAR(50) NOT NULL,
+                model_name VARCHAR(100) NOT NULL,
+                analysis_content LONGTEXT NOT NULL,
+                recommendations TEXT,
+                risk_assessment TEXT,
+                score INT CHECK (score BETWEEN 1 AND 10),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (review_id) REFERENCES project_reviews(review_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+        
+        # 프로젝트 메트릭스 테이블
+        cursor.execute("""
+            CREATE TABLE project_metrics (
+                metric_id INT AUTO_INCREMENT PRIMARY KEY,
+                review_id INT NOT NULL,
+                metric_name VARCHAR(100) NOT NULL,
+                metric_value DECIMAL(10,4),
+                metric_unit VARCHAR(50),
+                target_value DECIMAL(10,4),
+                category VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (review_id) REFERENCES project_reviews(review_id) ON DELETE CASCADE
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """)
+        
+        # 외래 키 체크 다시 활성화
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"Error: {err}")
+        return False
+
 def main():
-    st.title("DB 테이블 관리 시스템")
+    
     
     # 사이드바 메뉴
     menu = st.sidebar.selectbox(
@@ -1321,7 +1421,8 @@ def main():
          "MCP 분석 테이블 생성", "의사결정 트리 테이블 생성",
          "회의록 테이블 생성/업데이트",
          "decision_options 컬럼 추가(데이터 보호)",
-         "AI 사용비용 테이블 생성"]
+         "AI 사용비용 테이블 생성",
+         "프로젝트 리뷰 시스템 테이블 생성"]
     )
     
     if menu == "테이블 목록":
@@ -1762,6 +1863,25 @@ def main():
         if st.button("AI 사용비용 테이블 생성", type="primary"):
             if create_ai_tool_expenses_table():
                 st.success("AI 사용비용 테이블이 성공적으로 생성되었습니다!")
+            else:
+                st.error("테이블 생성 중 오류가 발생했습니다.")
+
+    elif menu == "프로젝트 리뷰 시스템 테이블 생성":
+        st.header("프로젝트 리뷰 시스템 테이블 생성")
+        if st.button("프로젝트 리뷰 시스템 테이블 생성"):
+            if create_project_review_tables():
+                st.success("프로젝트 리뷰 시스템 관련 테이블이 성공적으로 생성되었습니다.")
+                
+                # 생성된 테이블 구조 표시
+                st.write("### 생성된 테이블 구조:")
+                
+                tables = ["project_reviews", "project_review_files", "project_ai_analysis", "project_metrics"]
+                for table in tables:
+                    st.write(f"#### {table} 테이블")
+                    schema = get_table_schema(table)
+                    if schema:
+                        schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                        st.dataframe(schema_df)
             else:
                 st.error("테이블 생성 중 오류가 발생했습니다.")
 

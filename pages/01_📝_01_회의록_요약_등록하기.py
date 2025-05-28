@@ -13,7 +13,7 @@ import anthropic  # Anthropic 라이브러리 추가
 
 # .env 파일 로드
 load_dotenv()
-
+st.title("🎙️ 회의록 작성 시스템")
 # 인증 기능 (간단한 비밀번호 보호)
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -648,7 +648,7 @@ def process_text_file(file_content):
             return None
 
 def main():
-    st.title("🎙️ 회의록 작성 시스템")
+    
     
     # 세션 상태 초기화 (앱 시작 시 한 번만)
     if 'action_items_list' not in st.session_state:

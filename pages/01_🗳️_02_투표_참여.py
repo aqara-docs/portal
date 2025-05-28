@@ -10,7 +10,7 @@ load_dotenv()
 st.set_page_config(page_title="Vote 참여", page_icon="🗳️", layout="wide")
 
 # Page header
-st.title("투표 참여")
+st.title(" 🗳️ 투표 참여")
 
 # MySQL 연결 설정
 def connect_to_db():

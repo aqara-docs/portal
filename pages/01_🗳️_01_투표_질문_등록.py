@@ -10,7 +10,7 @@ load_dotenv()
 st.set_page_config(page_title="Vote Question 등록", page_icon="📋", layout="wide")
 
 # Page header
-st.title("투표 문제 등록")
+st.title("🗳️ 투표 문제 등록")
 
 # MySQL 연결 설정
 def connect_to_db():

@@ -30,8 +30,10 @@ def get_connection():
     except Error as e:
         st.error(f"Database connection failed: {str(e)}")
         return None
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
+
+st.title("🌐 JV Process Management")
+
+st.session_state.authenticated = False
 
 admin_pw = os.getenv('ADMIN_PASSWORD')
 if not admin_pw:
