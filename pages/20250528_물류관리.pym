@@ -556,13 +556,13 @@ def get_ci_list(supplier_id=None, start_date=None, end_date=None):
             query += " AND ci.supplier_id = %s"
             params.append(supplier_id)
         if start_date:
-            query += " AND ci.shipping_date >= %s"
+            query += " AND ci.issue_date >= %s"
             params.append(start_date)
         if end_date:
-            query += " AND ci.shipping_date <= %s"
+            query += " AND ci.issue_date <= %s"
             params.append(end_date)
             
-        query += " GROUP BY ci.ci_id ORDER BY ci.shipping_date DESC"
+        query += " GROUP BY ci.ci_id ORDER BY ci.issue_date DESC"
         
         cursor.execute(query, params)
         return cursor.fetchall()
@@ -907,7 +907,7 @@ def main():
     # 사이드바 메뉴
     menu = st.sidebar.selectbox(
         "메뉴 선택",
-        ["재고 현황", "입고 관리", "A/S 지원 입고", "출고 관리", "재고 조정", "재고 분석", "PI 관리", "CI 관리", "제품 관리", "재고 이력"]
+        ["재고 현황", "입고 관리", "출고 관리", "재고 조정", "재고 분석", "PI 관리", "CI 관리", "제품 관리", "재고 이력"]
     )
     
     if menu == "재고 현황":
@@ -968,7 +968,6 @@ def main():
             products = [p for p in products if p['current_stock'] > 0]
         if products:
             # 재고현황 표에서 모델명, supplier_name, 현재 재고만 보이도록 DataFrame 컬럼 제한
-            import pandas as pd  # pandas import 추가
             df = pd.DataFrame(products)
             df = df[['model_name', 'supplier_name', 'current_stock']]
             def highlight_status(row):
@@ -1165,249 +1164,90 @@ def main():
                                                 st.error(f"CI 삭제 중 오류가 발생했습니다: {message}")
         
         else:  # 기존 CI 매칭
-            st.subheader("🔗 CI와 미입고 PI 매칭 관리")
+            st.subheader("기존 CI와 미입고 PI 매칭")
             
-            # 탭으로 기능 분리
-            tab1, tab2, tab3 = st.tabs(["📋 미입고 PI 현황", "🔗 새 CI 매칭", "📊 매칭 이력"])
+            # 공급업체 선택
+            suppliers = get_suppliers()
+            selected_supplier = st.selectbox(
+                "공급업체 선택",
+                options=suppliers,
+                format_func=lambda x: x['supplier_name'],
+                key="ci_matching_supplier"
+            )
             
-            with tab1:
-                st.write("### 📋 미입고 PI 현황")
+            # CI 번호 입력
+            ci_number = st.text_input("CI 번호")
+            
+            if ci_number and selected_supplier:
+                # CI와 미입고 PI 매칭
+                matched_items = match_ci_with_pi(ci_number, selected_supplier['supplier_id'])
                 
-                # 공급업체 선택
-                suppliers = get_suppliers()
-                selected_supplier = st.selectbox(
-                    "공급업체 선택",
-                    options=suppliers,
-                    format_func=lambda x: x['supplier_name'],
-                    key="pending_pi_supplier"
-                )
-                
-                if selected_supplier:
-                    # 미입고 PI 항목 조회
-                    pending_items = get_pending_pi_items(selected_supplier['supplier_id'])
+                if matched_items:
+                    st.success(f"CI {ci_number}와 매칭된 미입고 항목을 찾았습니다.")
                     
-                    if pending_items:
-                        st.success(f"{selected_supplier['supplier_name']}의 미입고 항목: {len(pending_items)}건")
-                        
-                        # 미입고 항목을 DataFrame으로 표시
-                        import pandas as pd
-                        df_pending = pd.DataFrame(pending_items)
-                        df_pending['미입고수량'] = df_pending['ordered_qty'] - df_pending['received_qty']
-                        df_pending['입고율(%)'] = (df_pending['received_qty'] / df_pending['ordered_qty'] * 100).round(1)
-                        
-                        # 표시할 컬럼 선택
-                        display_df = df_pending[['pi_number', 'model_name', 'ordered_qty', 'received_qty', '미입고수량', '입고율(%)', 'expected_delivery_date']].copy()
-                        display_df.columns = ['PI번호', '모델명', '주문수량', '입고수량', '미입고수량', '입고율(%)', '예상납기일']
-                        
-                        # 스타일 적용
-                        def highlight_pending(row):
-                            if row['미입고수량'] > 0:
-                                return ['background-color: #f44336; color: white'] * len(row)  # 빨간색 배경, 흰색 글자
-                            return [''] * len(row)
-                        
-                        st.dataframe(
-                            display_df.style.apply(highlight_pending, axis=1),
-                            use_container_width=True,
-                            height=400
-                        )
-                        
-                        # 요약 정보
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("총 미입고 건수", len(pending_items))
-                        with col2:
-                            total_pending_qty = df_pending['미입고수량'].sum()
-                            st.metric("총 미입고 수량", f"{total_pending_qty:,}개")
-                        with col3:
-                            avg_completion = df_pending['입고율(%)'].mean()
-                            st.metric("평균 입고율", f"{avg_completion:.1f}%")
-                        with col4:
-                            overdue_count = len(df_pending[df_pending['expected_delivery_date'] < pd.Timestamp.now().date()])
-                            st.metric("지연 건수", overdue_count)
-                    else:
-                        st.info(f"{selected_supplier['supplier_name']}의 미입고 항목이 없습니다.")
-            
-            with tab2:
-                st.write("### 🔗 새 CI와 미입고 PI 매칭")
-                
-                # 공급업체 선택
-                suppliers = get_suppliers()
-                selected_supplier_ci = st.selectbox(
-                    "공급업체 선택",
-                    options=suppliers,
-                    format_func=lambda x: x['supplier_name'],
-                    key="ci_matching_supplier"
-                )
-                
-                if selected_supplier_ci:
-                    # 미입고 PI 항목 조회
-                    pending_items = get_pending_pi_items(selected_supplier_ci['supplier_id'])
-                    
-                    if pending_items:
-                        st.info(f"매칭 가능한 미입고 항목: {len(pending_items)}건")
-                        
-                        # CI 정보 입력
-                        with st.form("new_ci_matching_form"):
-                            st.write("#### CI 기본 정보")
+                    # 매칭된 항목 표시
+                    for item in matched_items:
+                        with st.expander(f"PI: {item['pi_number']} - {item['model_name']}"):
                             col1, col2 = st.columns(2)
                             with col1:
-                                ci_number = st.text_input("CI 번호*", placeholder="CI-2024-001")
-                                shipping_date = st.date_input("선적일*", value=datetime.now().date())
+                                st.write(f"**주문 수량:** {item['ordered_qty']}개")
+                                st.write(f"**입고 수량:** {item['received_qty']}개")
+                                st.write(f"**미입고 수량:** {item['ordered_qty'] - item['received_qty']}개")
                             with col2:
-                                arrival_date = st.date_input("도착 예정일", value=datetime.now().date() + timedelta(days=7))
-                                shipping_details = st.text_input("선적 상세", placeholder="컨테이너 번호, 선박명 등")
-                            
-                            notes = st.text_area("비고")
-                            
-                            st.write("#### 매칭할 제품 선택")
-                            
-                            # 제품별로 그룹화하여 표시
-                            product_groups = {}
-                            for item in pending_items:
-                                product_id = item['product_id']
-                                if product_id not in product_groups:
-                                    product_groups[product_id] = {
-                                        'model_name': item['model_name'],
-                                        'total_pending': 0,
-                                        'pi_items': []
-                                    }
-                                product_groups[product_id]['total_pending'] += int(item['ordered_qty'] - item['received_qty'])  # int로 변환
-                                product_groups[product_id]['pi_items'].append(item)
-                            
-                            selected_items = []
-                            
-                            for product_id, group in product_groups.items():
-                                st.write(f"**{group['model_name']}** (총 미입고: {group['total_pending']}개)")
-                                
-                                # 이 제품의 입고 수량 입력
-                                received_qty = st.number_input(
-                                    f"{group['model_name']} 입고 수량",
-                                    min_value=0,
-                                    max_value=int(group['total_pending']),  # int로 변환
-                                    value=0,
-                                    step=1,
-                                    key=f"qty_{product_id}"
-                                )
-                                
-                                if received_qty > 0:
-                                    selected_items.append({
-                                        'product_id': product_id,
-                                        'model_name': group['model_name'],
-                                        'quantity': received_qty,
-                                        'pi_items': group['pi_items']
-                                    })
-                                
-                                # 관련 PI 목록 표시
-                                with st.expander(f"{group['model_name']} 관련 PI 목록"):
-                                    for pi_item in group['pi_items']:
-                                        pending_qty = pi_item['ordered_qty'] - pi_item['received_qty']
-                                        st.write(f"- PI: {pi_item['pi_number']}, 미입고: {pending_qty}개, 예상납기: {pi_item['expected_delivery_date']}")
-                            
-                            # 매칭 처리 버튼
-                            submitted = st.form_submit_button("CI 생성 및 PI 매칭 처리", type="primary")
-                            
-                            if submitted and ci_number and selected_items:
-                                try:
-                                    # CI 생성 및 FIFO 매칭 처리
-                                    ci_data = {
-                                        'ci_number': ci_number,
-                                        'supplier_id': selected_supplier_ci['supplier_id'],
-                                        'shipping_date': shipping_date,
-                                        'arrival_date': arrival_date,
-                                        'shipping_details': shipping_details,
-                                        'notes': notes
-                                    }
-                                    
-                                    success, ci_id = create_ci(ci_data, selected_items)
-                                    
-                                    if success:
-                                        st.success(f"✅ CI {ci_number}가 성공적으로 생성되고 미입고 PI와 매칭되었습니다!")
-                                        
-                                        # 매칭 결과 표시
-                                        st.write("#### 매칭 결과")
-                                        for item in selected_items:
-                                            st.write(f"- {item['model_name']}: {item['quantity']}개 입고 처리")
-                                        
-                                        time.sleep(2)
-                                        st.rerun()
-                                    else:
-                                        st.error(f"CI 생성 중 오류가 발생했습니다: {ci_id}")
-                                        
-                                except Exception as e:
-                                    st.error(f"처리 중 오류가 발생했습니다: {str(e)}")
-                            elif submitted and not ci_number:
-                                st.error("CI 번호를 입력해주세요.")
-                            elif submitted and not selected_items:
-                                st.error("입고할 제품을 선택해주세요.")
-                    else:
-                        st.info(f"{selected_supplier_ci['supplier_name']}의 미입고 항목이 없습니다.")
-            
-            with tab3:
-                st.write("### 📊 CI-PI 매칭 이력")
+                                st.write(f"**실제 납기일:** {item['shipping_date'].strftime('%Y-%m-%d')}")
+                                st.write(f"**선적일:** {item['shipping_date'].strftime('%Y-%m-%d')}")
+                                if item['notes']:
+                                    st.write(f"**비고:** {item['notes']}")
                 
-                # 공급업체 선택
-                suppliers = get_suppliers()
-                selected_supplier_history = st.selectbox(
-                    "공급업체 선택",
-                    options=suppliers,
-                    format_func=lambda x: x['supplier_name'],
-                    key="history_supplier"
-                )
-                
-                # 기간 선택
-                col1, col2 = st.columns(2)
-                with col1:
-                    start_date = st.date_input("시작일", value=datetime.now().date() - timedelta(days=30))
-                with col2:
-                    end_date = st.date_input("종료일", value=datetime.now().date())
-                
-                if selected_supplier_history:
-                    # CI 목록 조회
-                    ci_list = get_ci_list(selected_supplier_history['supplier_id'], start_date, end_date)
-                    
-                    if ci_list:
-                        st.success(f"조회 기간 내 CI: {len(ci_list)}건")
+                    # 매칭 확인 및 처리 폼
+                    with st.form("ci_matching_form"):
+                        st.write("매칭된 항목을 확인하고 입고 처리를 진행합니다.")
+                        submitted = st.form_submit_button("매칭 확인 및 입고 처리")
                         
-                        # CI별 매칭 정보 표시
-                        for ci in ci_list:
-                            with st.expander(f"CI: {ci['ci_number']} ({ci['shipping_date']})"):
-                                # CI 항목 조회
+                        if submitted:
+                            try:
                                 conn = connect_to_db()
-                                cursor = conn.cursor(dictionary=True)
-                                try:
+                                cursor = conn.cursor()
+                                
+                                # 트랜잭션 시작
+                                conn.start_transaction()
+                                
+                                for item in matched_items:
+                                    # 재고 업데이트
                                     cursor.execute("""
-                                        SELECT 
-                                            ci_items.*,
-                                            p.model_name,
-                                            pi.pi_number
-                                        FROM ci_items
-                                        JOIN products_logistics p ON ci_items.product_id = p.product_id
-                                        LEFT JOIN pi_items ON ci_items.pi_item_id = pi_items.pi_item_id
-                                        LEFT JOIN proforma_invoices pi ON pi_items.pi_id = pi.pi_id
-                                        WHERE ci_items.ci_id = %s
-                                    """, (ci['ci_id'],))
-                                    ci_items = cursor.fetchall()
+                                        UPDATE inventory_logistics 
+                                        SET stock = stock + %s
+                                        WHERE product_id = %s
+                                    """, (int(item['received_qty']), item['product_id']))  # Convert to int
                                     
-                                    if ci_items:
-                                        for item in ci_items:
-                                            col1, col2, col3 = st.columns(3)
-                                            with col1:
-                                                st.write(f"**제품:** {item['model_name']}")
-                                                st.write(f"**수량:** {item['quantity']}개")
-                                            with col2:
-                                                if item['pi_number']:
-                                                    st.write(f"**연결 PI:** {item['pi_number']}")
-                                                else:
-                                                    st.write("**연결 PI:** 직접 입고")
-                                            with col3:
-                                                st.write(f"**입고일:** {item['shipping_date']}")
-                                                if item['notes']:
-                                                    st.write(f"**비고:** {item['notes']}")
-                                finally:
-                                    cursor.close()
-                                    conn.close()
-                    else:
-                        st.info("조회 기간 내 CI가 없습니다.")
+                                    # 재고 이력 기록
+                                    cursor.execute("""
+                                        INSERT INTO inventory_transactions 
+                                        (product_id, change_type, quantity, reference_number, 
+                                         notes, date, destination)
+                                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                    """, (
+                                        item['product_id'],
+                                        '입고',
+                                        int(item['received_qty']),  # Convert to int
+                                        ci_number,
+                                        f"CI {ci_number} 매칭 입고 - PI {item['pi_number']}",
+                                        item['shipping_date'],
+                                        "CI 매칭 입고"
+                                    ))
+                                
+                                conn.commit()
+                                st.success("매칭된 항목의 입고 처리가 완료되었습니다.")
+                                time.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"입고 처리 중 오류가 발생했습니다: {str(e)}")
+                            finally:
+                                cursor.close()
+                                conn.close()
+                else:
+                    st.warning(f"CI {ci_number}와 매칭되는 미입고 항목을 찾을 수 없습니다.")
     
     elif menu == "출고 관리":
         st.header("📤 출고 관리")
@@ -1709,7 +1549,6 @@ def main():
         st.subheader("재고 이동 추이")
         movements = get_stock_movements((end_date - start_date).days)
         if movements:
-            import pandas as pd  # pandas import 추가
             df_movements = pd.DataFrame(movements)
             
             # 차트 데이터 준비
@@ -1757,7 +1596,6 @@ def main():
         stats = get_stock_statistics()
         
         # 공급업체별 재고 현황 차트
-        import pandas as pd  # pandas import 추가
         supplier_df = pd.DataFrame(stats['suppliers'])
         # low_stock 컬럼이 없으면 0으로 추가
         if 'low_stock' not in supplier_df.columns:
@@ -1927,7 +1765,6 @@ def main():
             
             if pi_list:
                 # 데이터프레임 변환
-                import pandas as pd  # pandas import 추가
                 df = pd.DataFrame(pi_list)
                 df = df.drop(columns=['total_amount', 'currency'], errors='ignore')
                 df['입고율'] = (df['total_received_qty'] / df['total_ordered_qty'] * 100).round(1)
@@ -2293,7 +2130,6 @@ def main():
         
         if ci_list:
             # 데이터프레임 변환
-            import pandas as pd  # pandas import 추가
             df = pd.DataFrame(ci_list)
             
             st.dataframe(
@@ -2496,7 +2332,6 @@ def main():
                 
                 if products:
                     # 데이터프레임 변환
-                    import pandas as pd  # pandas import 추가
                     df = pd.DataFrame(products)
                     
                     # 상태별 색상 지정
@@ -2594,443 +2429,6 @@ def main():
                 "text/csv",
                 key='download-xlsx'
             )
-
-    elif menu == "A/S 지원 입고":
-        st.header("🔧 A/S 지원 입고")
-        
-        # A/S 지원 입고 서브메뉴
-        as_submenu = st.radio(
-            "A/S 지원 메뉴",
-            ["A/S 지원 입고 등록", "A/S 지원 이력", "A/S 지원 통계"],
-            horizontal=True
-        )
-        
-        if as_submenu == "A/S 지원 입고 등록":
-            st.subheader("🔧 A/S 지원 물량 입고 등록")
-            st.info("💡 공급처에서 A/S 발생 시 사용하라고 무상으로 제공된 제품을 등록합니다.")
-            
-            with st.form("as_support_form"):
-                # 공급업체 선택
-                suppliers = get_suppliers()
-                selected_supplier = st.selectbox(
-                    "공급업체 선택",
-                    options=suppliers,
-                    format_func=lambda x: x['supplier_name'],
-                    key="as_supplier"
-                )
-                
-                # 제품 선택 및 수량 입력
-                selected_product = None
-                quantity = 0
-                
-                if selected_supplier:
-                    products = get_products(selected_supplier['supplier_id'])
-                    if products:
-                        selected_product = st.selectbox(
-                            "제품 선택",
-                            options=products,
-                            format_func=lambda x: f"{x['model_name']} (현재 재고: {x['current_stock']}개)",
-                            key="as_product"
-                        )
-                        
-                        if selected_product:
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                quantity = st.number_input(
-                                    "A/S 지원 수량",
-                                    min_value=1,
-                                    value=1,
-                                    step=1,
-                                    help="공급처에서 제공한 A/S 지원 물량 수량"
-                                )
-                            with col2:
-                                support_date = st.date_input(
-                                    "지원 제공일",
-                                    value=date.today(),
-                                    help="공급처에서 A/S 지원 물량을 제공한 날짜"
-                                )
-                
-                # A/S 관련 정보
-                col1, col2 = st.columns(2)
-                with col1:
-                    as_case_number = st.text_input(
-                        "A/S 케이스 번호",
-                        placeholder="AS-2024-001",
-                        help="A/S 발생 케이스 번호 (선택사항)"
-                    )
-                    reference_number = st.text_input(
-                        "참조 번호",
-                        value=f"AS_SUPPORT_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                        help="시스템에서 자동 생성된 참조 번호"
-                    )
-                
-                with col2:
-                    as_reason = st.text_area(
-                        "A/S 발생 사유",
-                        placeholder="예: 초기 불량, 사용자 오작동 등",
-                        help="A/S가 발생한 원인이나 사유"
-                    )
-                    supplier_contact = st.text_input(
-                        "공급처 담당자",
-                        placeholder="담당자명 또는 연락처",
-                        help="A/S 지원을 제공한 공급처 담당자 정보"
-                    )
-                
-                notes = st.text_area(
-                    "추가 비고",
-                    placeholder="기타 특이사항이나 추가 정보",
-                    help="A/S 지원과 관련된 추가 정보"
-                )
-                
-                # 제출 버튼
-                submitted = st.form_submit_button("A/S 지원 입고 등록", type="primary")
-            
-            # 폼 제출 후 처리
-            if submitted and selected_product and quantity > 0:
-                try:
-                    # A/S 지원 입고 처리
-                    notes_detail = f"A/S 지원 물량 입고"
-                    if as_case_number:
-                        notes_detail += f" | 케이스번호: {as_case_number}"
-                    if as_reason:
-                        notes_detail += f" | 사유: {as_reason}"
-                    if supplier_contact:
-                        notes_detail += f" | 담당자: {supplier_contact}"
-                    if notes:
-                        notes_detail += f" | 비고: {notes}"
-                    
-                    # 재고 업데이트 (기존 함수 활용)
-                    success = update_stock(
-                        product_id=selected_product['product_id'],
-                        quantity_change=quantity,
-                        change_type='A/S지원입고',
-                        reference_number=reference_number,
-                        notes=notes_detail,
-                        destination=f"공급처: {selected_supplier['supplier_name']}"
-                    )
-                    
-                    if success:
-                        st.success(f"✅ A/S 지원 물량 {quantity}개가 성공적으로 입고되었습니다!")
-                        
-                        # 입고 결과 요약 표시
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("입고 제품", selected_product['model_name'])
-                        with col2:
-                            st.metric("입고 수량", f"{quantity}개")
-                        with col3:
-                            current_stock = get_stock(selected_product['product_id'])['stock']
-                            st.metric("현재 총 재고", f"{current_stock}개")
-                        
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.error("A/S 지원 입고 처리 중 오류가 발생했습니다.")
-                        
-                except Exception as e:
-                    st.error(f"A/S 지원 입고 처리 중 오류가 발생했습니다: {str(e)}")
-            elif submitted and not selected_product:
-                st.error("제품을 선택해주세요.")
-            elif submitted and quantity <= 0:
-                st.error("수량을 1개 이상 입력해주세요.")
-        
-        elif as_submenu == "A/S 지원 이력":
-            st.subheader("📋 A/S 지원 입고 이력")
-            
-            # 필터 옵션
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                # 공급업체 선택
-                suppliers = get_suppliers()
-                selected_supplier = st.selectbox(
-                    "공급업체 선택",
-                    options=[{"supplier_id": None, "supplier_name": "전체"}] + suppliers,
-                    format_func=lambda x: x['supplier_name'],
-                    key="as_history_supplier"
-                )
-            
-            with col2:
-                start_date = st.date_input(
-                    "시작일",
-                    value=date.today() - timedelta(days=30),
-                    key="as_history_start"
-                )
-            
-            with col3:
-                end_date = st.date_input(
-                    "종료일",
-                    value=date.today(),
-                    key="as_history_end"
-                )
-            
-            # A/S 지원 이력 조회
-            conn = connect_to_db()
-            cursor = conn.cursor(dictionary=True)
-            try:
-                query = """
-                    SELECT 
-                        t.date,
-                        p.model_name,
-                        s.supplier_name,
-                        t.quantity,
-                        t.reference_number,
-                        t.notes,
-                        t.destination
-                    FROM inventory_transactions t
-                    JOIN products_logistics p ON t.product_id = p.product_id
-                    JOIN suppliers s ON p.supplier_id = s.supplier_id
-                    WHERE t.change_type = 'A/S지원입고'
-                    AND DATE(t.date) >= %s 
-                    AND DATE(t.date) <= %s
-                """
-                params = [start_date, end_date]
-                
-                if selected_supplier and selected_supplier['supplier_id']:
-                    query += " AND s.supplier_id = %s"
-                    params.append(selected_supplier['supplier_id'])
-                
-                query += " ORDER BY t.date DESC"
-                
-                cursor.execute(query, params)
-                as_history = cursor.fetchall()
-                
-                if as_history:
-                    st.success(f"조회 기간 내 A/S 지원 입고: {len(as_history)}건")
-                    
-                    # 데이터프레임으로 표시
-                    import pandas as pd
-                    df = pd.DataFrame(as_history)
-                    
-                    # 날짜 포맷 변경
-                    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d %H:%M')
-                    
-                    st.dataframe(
-                        df,
-                        column_config={
-                            "date": st.column_config.TextColumn("입고일시", width="medium"),
-                            "model_name": st.column_config.TextColumn("제품명", width="medium"),
-                            "supplier_name": st.column_config.TextColumn("공급업체", width="medium"),
-                            "quantity": st.column_config.NumberColumn("수량", format="%d개"),
-                            "reference_number": st.column_config.TextColumn("참조번호", width="medium"),
-                            "notes": st.column_config.TextColumn("상세내용", width="large"),
-                            "destination": st.column_config.TextColumn("공급처", width="medium")
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
-                    
-                    # 요약 통계
-                    st.subheader("📊 요약 통계")
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        total_quantity = sum(item['quantity'] for item in as_history)
-                        st.metric("총 A/S 지원 수량", f"{total_quantity}개")
-                    
-                    with col2:
-                        unique_products = len(set(item['model_name'] for item in as_history))
-                        st.metric("지원 제품 종류", f"{unique_products}종")
-                    
-                    with col3:
-                        unique_suppliers = len(set(item['supplier_name'] for item in as_history))
-                        st.metric("지원 공급업체", f"{unique_suppliers}개사")
-                    
-                    with col4:
-                        avg_quantity = total_quantity / len(as_history) if as_history else 0
-                        st.metric("평균 지원 수량", f"{avg_quantity:.1f}개")
-                    
-                    # 엑셀 다운로드
-                    csv = df.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button(
-                        "📥 A/S 지원 이력 다운로드",
-                        csv,
-                        f"AS_지원이력_{start_date}_{end_date}.csv",
-                        "text/csv",
-                        key='download-as-history'
-                    )
-                    
-                else:
-                    st.info("조회 기간 내 A/S 지원 입고 이력이 없습니다.")
-                    
-            finally:
-                cursor.close()
-                conn.close()
-        
-        elif as_submenu == "A/S 지원 통계":
-            st.subheader("📈 A/S 지원 통계 분석")
-            
-            # 분석 기간 선택
-            col1, col2 = st.columns(2)
-            with col1:
-                analysis_start = st.date_input(
-                    "분석 시작일",
-                    value=date.today() - timedelta(days=90),
-                    key="as_stats_start"
-                )
-            with col2:
-                analysis_end = st.date_input(
-                    "분석 종료일",
-                    value=date.today(),
-                    key="as_stats_end"
-                )
-            
-            # A/S 지원 통계 데이터 조회
-            conn = connect_to_db()
-            cursor = conn.cursor(dictionary=True)
-            try:
-                # 1. 공급업체별 A/S 지원 현황
-                cursor.execute("""
-                    SELECT 
-                        s.supplier_name,
-                        COUNT(*) as support_count,
-                        SUM(t.quantity) as total_quantity,
-                        AVG(t.quantity) as avg_quantity
-                    FROM inventory_transactions t
-                    JOIN products_logistics p ON t.product_id = p.product_id
-                    JOIN suppliers s ON p.supplier_id = s.supplier_id
-                    WHERE t.change_type = 'A/S지원입고'
-                    AND DATE(t.date) >= %s 
-                    AND DATE(t.date) <= %s
-                    GROUP BY s.supplier_id, s.supplier_name
-                    ORDER BY total_quantity DESC
-                """, (analysis_start, analysis_end))
-                supplier_stats = cursor.fetchall()
-                
-                # 2. 제품별 A/S 지원 현황
-                cursor.execute("""
-                    SELECT 
-                        p.model_name,
-                        s.supplier_name,
-                        COUNT(*) as support_count,
-                        SUM(t.quantity) as total_quantity
-                    FROM inventory_transactions t
-                    JOIN products_logistics p ON t.product_id = p.product_id
-                    JOIN suppliers s ON p.supplier_id = s.supplier_id
-                    WHERE t.change_type = 'A/S지원입고'
-                    AND DATE(t.date) >= %s 
-                    AND DATE(t.date) <= %s
-                    GROUP BY p.product_id, p.model_name, s.supplier_name
-                    ORDER BY total_quantity DESC
-                """, (analysis_start, analysis_end))
-                product_stats = cursor.fetchall()
-                
-                # 3. 월별 A/S 지원 추이
-                cursor.execute("""
-                    SELECT 
-                        DATE_FORMAT(t.date, '%%Y-%%m') as month,
-                        COUNT(*) as support_count,
-                        SUM(t.quantity) as total_quantity
-                    FROM inventory_transactions t
-                    JOIN products_logistics p ON t.product_id = p.product_id
-                    WHERE t.change_type = 'A/S지원입고'
-                    AND DATE(t.date) >= %s 
-                    AND DATE(t.date) <= %s
-                    GROUP BY DATE_FORMAT(t.date, '%%Y-%%m')
-                    ORDER BY month
-                """, (analysis_start, analysis_end))
-                monthly_stats = cursor.fetchall()
-                
-                if supplier_stats or product_stats or monthly_stats:
-                    # 공급업체별 통계
-                    if supplier_stats:
-                        st.subheader("🏢 공급업체별 A/S 지원 현황")
-                        import pandas as pd
-                        df_supplier = pd.DataFrame(supplier_stats)
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            # 공급업체별 지원 수량 차트
-                            fig = px.bar(
-                                df_supplier,
-                                x='supplier_name',
-                                y='total_quantity',
-                                title='공급업체별 A/S 지원 수량',
-                                labels={'supplier_name': '공급업체', 'total_quantity': '총 지원 수량'}
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                        
-                        with col2:
-                            # 공급업체별 지원 횟수 차트
-                            fig2 = px.pie(
-                                df_supplier,
-                                values='support_count',
-                                names='supplier_name',
-                                title='공급업체별 A/S 지원 횟수 비율'
-                            )
-                            st.plotly_chart(fig2, use_container_width=True)
-                        
-                        # 상세 테이블
-                        st.dataframe(
-                            df_supplier,
-                            column_config={
-                                "supplier_name": "공급업체",
-                                "support_count": st.column_config.NumberColumn("지원 횟수", format="%d회"),
-                                "total_quantity": st.column_config.NumberColumn("총 지원 수량", format="%d개"),
-                                "avg_quantity": st.column_config.NumberColumn("평균 지원 수량", format="%.1f개")
-                            },
-                            hide_index=True
-                        )
-                    
-                    # 제품별 통계
-                    if product_stats:
-                        st.subheader("📦 제품별 A/S 지원 현황")
-                        df_product = pd.DataFrame(product_stats)
-                        
-                        # 상위 10개 제품만 표시
-                        top_products = df_product.head(10)
-                        
-                        fig3 = px.bar(
-                            top_products,
-                            x='model_name',
-                            y='total_quantity',
-                            color='supplier_name',
-                            title='제품별 A/S 지원 수량 (상위 10개)',
-                            labels={'model_name': '제품명', 'total_quantity': '총 지원 수량', 'supplier_name': '공급업체'}
-                        )
-                        fig3.update_xaxes(tickangle=45)
-                        st.plotly_chart(fig3, use_container_width=True)
-                        
-                        st.dataframe(
-                            df_product,
-                            column_config={
-                                "model_name": "제품명",
-                                "supplier_name": "공급업체",
-                                "support_count": st.column_config.NumberColumn("지원 횟수", format="%d회"),
-                                "total_quantity": st.column_config.NumberColumn("총 지원 수량", format="%d개")
-                            },
-                            hide_index=True
-                        )
-                    
-                    # 월별 추이
-                    if monthly_stats:
-                        st.subheader("📅 월별 A/S 지원 추이")
-                        df_monthly = pd.DataFrame(monthly_stats)
-                        
-                        fig4 = px.line(
-                            df_monthly,
-                            x='month',
-                            y=['support_count', 'total_quantity'],
-                            title='월별 A/S 지원 추이',
-                            labels={'month': '월', 'value': '수량', 'variable': '구분'}
-                        )
-                        st.plotly_chart(fig4, use_container_width=True)
-                        
-                        st.dataframe(
-                            df_monthly,
-                            column_config={
-                                "month": "월",
-                                "support_count": st.column_config.NumberColumn("지원 횟수", format="%d회"),
-                                "total_quantity": st.column_config.NumberColumn("총 지원 수량", format="%d개")
-                            },
-                            hide_index=True
-                        )
-                
-                else:
-                    st.info("분석 기간 내 A/S 지원 데이터가 없습니다.")
-                    
-            finally:
-                cursor.close()
-                conn.close()
 
 if __name__ == "__main__":
     main() 

@@ -1408,6 +1408,81 @@ def create_project_review_tables():
         st.error(f"Error: {err}")
         return False
 
+def add_revenue_to_project_reviews():
+    """프로젝트 리뷰 테이블에 매출액 컬럼 추가 (기존 데이터 보존)"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        
+        # project_reviews 테이블 존재 여부 확인
+        cursor.execute("SHOW TABLES LIKE 'project_reviews'")
+        if not cursor.fetchone():
+            st.error("project_reviews 테이블이 존재하지 않습니다. 먼저 프로젝트 리뷰 시스템 테이블을 생성해주세요.")
+            return False
+        
+        # revenue 컬럼 존재 여부 확인
+        cursor.execute("SHOW COLUMNS FROM project_reviews LIKE 'revenue'")
+        if cursor.fetchone():
+            st.info("revenue 컬럼이 이미 존재합니다.")
+            return True
+        
+        # revenue 컬럼 추가 (actual_cost 컬럼 다음에 배치)
+        cursor.execute("""
+            ALTER TABLE project_reviews 
+            ADD COLUMN revenue DECIMAL(15,2) DEFAULT 0.00 
+            AFTER actual_cost
+        """)
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"Error: {err}")
+        return False
+
+def add_value_metrics_to_project_reviews():
+    """프로젝트 리뷰 테이블에 가치 지표 컬럼들 추가 (기존 데이터 보존)"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        
+        # project_reviews 테이블 존재 여부 확인
+        cursor.execute("SHOW TABLES LIKE 'project_reviews'")
+        if not cursor.fetchone():
+            st.error("project_reviews 테이블이 존재하지 않습니다. 먼저 프로젝트 리뷰 시스템 테이블을 생성해주세요.")
+            return False
+        
+        # 새로운 컬럼들 추가
+        new_columns = [
+            ("value_type", "VARCHAR(50) DEFAULT '매출 창출'"),
+            ("cost_savings", "DECIMAL(15,2) DEFAULT 0.00"),
+            ("customer_satisfaction", "INT DEFAULT 0"),
+            ("brand_value", "INT DEFAULT 0"),
+            ("efficiency_improvement", "INT DEFAULT 0"),
+            ("risk_reduction", "INT DEFAULT 0")
+        ]
+        
+        for col_name, col_definition in new_columns:
+            # 컬럼 존재 여부 확인
+            cursor.execute(f"SHOW COLUMNS FROM project_reviews LIKE '{col_name}'")
+            if not cursor.fetchone():
+                # 컬럼이 없으면 추가
+                cursor.execute(f"ALTER TABLE project_reviews ADD COLUMN {col_name} {col_definition}")
+                st.info(f"✅ {col_name} 컬럼이 추가되었습니다.")
+            else:
+                st.info(f"ℹ️ {col_name} 컬럼이 이미 존재합니다.")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"Error: {err}")
+        return False
+
 def main():
     
     
@@ -1422,7 +1497,9 @@ def main():
          "회의록 테이블 생성/업데이트",
          "decision_options 컬럼 추가(데이터 보호)",
          "AI 사용비용 테이블 생성",
-         "프로젝트 리뷰 시스템 테이블 생성"]
+         "프로젝트 리뷰 시스템 테이블 생성",
+         "프로젝트 리뷰 테이블에 매출액 컬럼 추가",
+         "프로젝트 리뷰 테이블에 가치 지표 컬럼 추가"]
     )
     
     if menu == "테이블 목록":
@@ -1884,6 +1961,159 @@ def main():
                         st.dataframe(schema_df)
             else:
                 st.error("테이블 생성 중 오류가 발생했습니다.")
+
+    elif menu == "프로젝트 리뷰 테이블에 매출액 컬럼 추가":
+        st.header("프로젝트 리뷰 테이블에 매출액 컬럼 추가")
+        
+        st.markdown("""
+        ### 📊 매출액 컬럼 추가의 필요성
+        
+        현재 프로젝트 리뷰 시스템에는 다음 항목들이 있습니다:
+        - **예산(budget)**: 프로젝트 계획 비용
+        - **실제 비용(actual_cost)**: 프로젝트 실제 소요 비용
+        
+        **매출액(revenue)** 컬럼을 추가하면:
+        - ✅ **ROI 계산**: (매출액 - 실제비용) / 실제비용 × 100
+        - ✅ **수익성 분석**: 프로젝트가 실제로 얼마나 수익을 창출했는지 측정
+        - ✅ **비즈니스 가치 평가**: 비용 뿐만 아니라 수익 관점에서 프로젝트 평가
+        - ✅ **AI 분석 개선**: 더 정확한 재무 분석 및 권고사항 제공
+        
+        ⚠️ **안전한 방식**: 기존 데이터는 보존하고 새로운 컬럼만 추가합니다.
+        """)
+        
+        # 현재 테이블 구조 표시
+        schema = get_table_schema("project_reviews")
+        if schema:
+            st.write("### 현재 project_reviews 테이블 구조:")
+            schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+            st.dataframe(schema_df)
+            
+            # revenue 컬럼 존재 여부 확인
+            has_revenue = any(row[0] == 'revenue' for row in schema)
+            if has_revenue:
+                st.success("✅ revenue 컬럼이 이미 존재합니다!")
+            else:
+                st.warning("❌ revenue 컬럼이 없습니다. 추가가 필요합니다.")
+        else:
+            st.error("project_reviews 테이블이 존재하지 않습니다.")
+        
+        if st.button("매출액(revenue) 컬럼 추가", type="primary"):
+            if add_revenue_to_project_reviews():
+                st.success("✅ 매출액(revenue) 컬럼이 성공적으로 추가되었습니다!")
+                
+                # 변경 후 테이블 구조 표시
+                st.write("### 업데이트된 테이블 구조:")
+                schema = get_table_schema("project_reviews")
+                if schema:
+                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                    st.dataframe(schema_df)
+                    
+                st.info("""
+                🎉 **완료!** 이제 프로젝트 등록/수정 시 매출액을 입력할 수 있습니다.
+                
+                **다음 단계:**
+                1. 프로젝트 리뷰 페이지로 이동
+                2. 기존 프로젝트의 매출액 정보 업데이트
+                3. 새 프로젝트 등록 시 매출액 포함
+                4. AI 분석에서 ROI 및 수익성 분석 확인
+                """)
+            else:
+                st.error("매출액 컬럼 추가에 실패했습니다.")
+
+    elif menu == "프로젝트 리뷰 테이블에 가치 지표 컬럼 추가":
+        st.header("프로젝트 리뷰 테이블에 가치 지표 컬럼 추가")
+        
+        st.markdown("""
+        ### 📊 가치 지표 컬럼 추가의 필요성
+        
+        현재 프로젝트 리뷰 시스템에는 다음 항목들이 있습니다:
+        - **value_type**: 가치 지표 유형 (예: '매출 창출', '비용 절감', '고객 만족도 향상' 등)
+        - **cost_savings**: 비용 절감 금액
+        - **customer_satisfaction**: 고객 만족도 점수
+        - **brand_value**: 브랜드 가치 점수
+        - **efficiency_improvement**: 효율성 향상 점수
+        - **risk_reduction**: 위험 감소 점수
+        
+        **가치 지표 컬럼을 추가하면**:
+        - ✅ **비즈니스 가치 평가**: 비용 뿐만 아니라 수익 관점에서 프로젝트 평가
+        - ✅ **AI 분석 개선**: 더 정확한 재무 분석 및 권고사항 제공
+        
+        ⚠️ **안전한 방식**: 기존 데이터는 보존하고 새로운 컬럼만 추가합니다.
+        """)
+        
+        # 현재 테이블 구조 표시
+        schema = get_table_schema("project_reviews")
+        if schema:
+            st.write("### 현재 project_reviews 테이블 구조:")
+            schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+            st.dataframe(schema_df)
+            
+            # value_type 컬럼 존재 여부 확인
+            has_value_type = any(row[0] == 'value_type' for row in schema)
+            if has_value_type:
+                st.success("✅ value_type 컬럼이 이미 존재합니다!")
+            else:
+                st.warning("❌ value_type 컬럼이 없습니다. 추가가 필요합니다.")
+            
+            # cost_savings 컬럼 존재 여부 확인
+            has_cost_savings = any(row[0] == 'cost_savings' for row in schema)
+            if has_cost_savings:
+                st.success("✅ cost_savings 컬럼이 이미 존재합니다!")
+            else:
+                st.warning("❌ cost_savings 컬럼이 없습니다. 추가가 필요합니다.")
+            
+            # customer_satisfaction 컬럼 존재 여부 확인
+            has_customer_satisfaction = any(row[0] == 'customer_satisfaction' for row in schema)
+            if has_customer_satisfaction:
+                st.success("✅ customer_satisfaction 컬럼이 이미 존재합니다!")
+            else:
+                st.warning("❌ customer_satisfaction 컬럼이 없습니다. 추가가 필요합니다.")
+            
+            # brand_value 컬럼 존재 여부 확인
+            has_brand_value = any(row[0] == 'brand_value' for row in schema)
+            if has_brand_value:
+                st.success("✅ brand_value 컬럼이 이미 존재합니다!")
+            else:
+                st.warning("❌ brand_value 컬럼이 없습니다. 추가가 필요합니다.")
+            
+            # efficiency_improvement 컬럼 존재 여부 확인
+            has_efficiency_improvement = any(row[0] == 'efficiency_improvement' for row in schema)
+            if has_efficiency_improvement:
+                st.success("✅ efficiency_improvement 컬럼이 이미 존재합니다!")
+            else:
+                st.warning("❌ efficiency_improvement 컬럼이 없습니다. 추가가 필요합니다.")
+            
+            # risk_reduction 컬럼 존재 여부 확인
+            has_risk_reduction = any(row[0] == 'risk_reduction' for row in schema)
+            if has_risk_reduction:
+                st.success("✅ risk_reduction 컬럼이 이미 존재합니다!")
+            else:
+                st.warning("❌ risk_reduction 컬럼이 없습니다. 추가가 필요합니다.")
+        else:
+            st.error("project_reviews 테이블이 존재하지 않습니다.")
+        
+        if st.button("가치 지표 컬럼 추가", type="primary"):
+            if add_value_metrics_to_project_reviews():
+                st.success("✅ 가치 지표 컬럼이 성공적으로 추가되었습니다!")
+                
+                # 변경 후 테이블 구조 표시
+                st.write("### 업데이트된 테이블 구조:")
+                schema = get_table_schema("project_reviews")
+                if schema:
+                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                    st.dataframe(schema_df)
+                    
+                st.info("""
+                🎉 **완료!** 이제 프로젝트 등록/수정 시 가치 지표를 입력할 수 있습니다.
+                
+                **다음 단계:**
+                1. 프로젝트 리뷰 페이지로 이동
+                2. 기존 프로젝트의 가치 지표 정보 업데이트
+                3. 새 프로젝트 등록 시 가치 지표 포함
+                4. AI 분석에서 가치 지표 확인
+                """)
+            else:
+                st.error("가치 지표 컬럼 추가에 실패했습니다.")
 
 if __name__ == "__main__":
     main() 

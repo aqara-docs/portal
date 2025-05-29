@@ -359,7 +359,7 @@ def discussion_order_tab():
                 participants = list(CHARACTERS.keys())
                 for _ in range(30):
                     random.shuffle(participants)
-                    display_text = "\n".join([f"<div style='font-size:28px; font-weight:bold; color:#0066cc;'>{CHARACTERS[p]} <span style='color:#222;'>{p}</span></div>" for p in participants])
+                    display_text = "\n".join([f"<div style='font-size:28px; font-weight:bold; color:#0066cc;'>{CHARACTERS[p]} <span style='color:#fff;'>{p}</span></div>" for p in participants])
                     placeholder.markdown(f"<div class='order-tab-root'>{display_text}</div>", unsafe_allow_html=True)
                     time.sleep(0.08)
                 other_participants = [p for p in participants if p != "현철님"]

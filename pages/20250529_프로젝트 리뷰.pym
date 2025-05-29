@@ -137,7 +137,6 @@ def create_project_review_tables():
                 team_members TEXT,
                 budget DECIMAL(15,2),
                 actual_cost DECIMAL(15,2),
-                revenue DECIMAL(15,2),
                 status ENUM('completed', 'ongoing', 'cancelled', 'on_hold') DEFAULT 'completed',
                 overall_rating INT CHECK (overall_rating BETWEEN 1 AND 10),
                 description TEXT,
@@ -310,11 +309,10 @@ def save_project_review(review_data):
         cursor.execute("""
             INSERT INTO project_reviews 
             (project_name, project_type, start_date, end_date, project_manager, 
-             team_members, budget, actual_cost, revenue, value_type, cost_savings,
-             customer_satisfaction, brand_value, efficiency_improvement, risk_reduction,
-             status, overall_rating, description, objectives, deliverables, challenges, 
-             lessons_learned, recommendations, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             team_members, budget, actual_cost, status, overall_rating, 
+             description, objectives, deliverables, challenges, lessons_learned, 
+             recommendations, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             review_data['project_name'],
             review_data['project_type'],
@@ -324,13 +322,6 @@ def save_project_review(review_data):
             review_data['team_members'],
             review_data['budget'],
             review_data['actual_cost'],
-            review_data['revenue'],
-            review_data.get('value_type', '매출 창출'),
-            review_data.get('cost_savings', 0),
-            review_data.get('customer_satisfaction', 0),
-            review_data.get('brand_value', 0),
-            review_data.get('efficiency_improvement', 0),
-            review_data.get('risk_reduction', 0),
             review_data['status'],
             review_data['overall_rating'],
             review_data['description'],
@@ -482,8 +473,6 @@ def update_project_review(review_id, review_data):
             UPDATE project_reviews SET
             project_name = %s, project_type = %s, start_date = %s, end_date = %s,
             project_manager = %s, team_members = %s, budget = %s, actual_cost = %s,
-            revenue = %s, value_type = %s, cost_savings = %s, customer_satisfaction = %s,
-            brand_value = %s, efficiency_improvement = %s, risk_reduction = %s,
             status = %s, overall_rating = %s, description = %s, objectives = %s,
             deliverables = %s, challenges = %s, lessons_learned = %s, recommendations = %s,
             updated_at = CURRENT_TIMESTAMP
@@ -497,13 +486,6 @@ def update_project_review(review_id, review_data):
             review_data['team_members'],
             review_data['budget'],
             review_data['actual_cost'],
-            review_data['revenue'],
-            review_data.get('value_type', '매출 창출'),
-            review_data.get('cost_savings', 0),
-            review_data.get('customer_satisfaction', 0),
-            review_data.get('brand_value', 0),
-            review_data.get('efficiency_improvement', 0),
-            review_data.get('risk_reduction', 0),
             review_data['status'],
             review_data['overall_rating'],
             review_data['description'],
@@ -1061,25 +1043,6 @@ def analyze_with_integration_ai(review_data, files_content, other_analyses, mode
 팀원: {review_data['team_members']}
 예산: {review_data['budget']:,}원
 실제 비용: {review_data['actual_cost']:,}원
-매출액: {review_data.get('revenue', 0):,}원
-ROI: {((review_data.get('revenue', 0) - review_data['actual_cost']) / review_data['actual_cost'] * 100) if review_data['actual_cost'] > 0 else 0:+.1f}%
-상태: {review_data['status']}
-전체 평점: {review_data['overall_rating']}/10
-작성자: {review_data.get('created_by', 'N/A')}
-
-[가치 지표 및 성과]
-가치 측정 방식: {review_data.get('value_type', '매출 창출')}
-매출액: {review_data.get('revenue', 0):,}원
-비용 절약액: {review_data.get('cost_savings', 0):,}원
-전통적 ROI: {((review_data.get('revenue', 0) - review_data['actual_cost']) / review_data['actual_cost'] * 100) if review_data['actual_cost'] > 0 else 0:+.1f}%
-비용 절약 기준 ROI: {((review_data.get('cost_savings', 0) - review_data['actual_cost']) / review_data['actual_cost'] * 100) if review_data['actual_cost'] > 0 and review_data.get('cost_savings', 0) > 0 else 0:+.1f}%
-
-[정성적 가치 지표 (0-10점)]
-고객 만족도 개선: {review_data.get('customer_satisfaction', 0)}/10
-브랜드 가치 향상: {review_data.get('brand_value', 0)}/10
-업무 효율성 개선: {review_data.get('efficiency_improvement', 0)}/10
-리스크 감소 효과: {review_data.get('risk_reduction', 0)}/10
-
 상태: {review_data['status']}
 전체 평점: {review_data['overall_rating']}/10
 작성자: {review_data.get('created_by', 'N/A')}
@@ -1107,55 +1070,38 @@ ROI: {((review_data.get('revenue', 0) - review_data['actual_cost']) / review_dat
 - 문서에 기록된 실제 성과와 전문가들의 평가 간의 일관성을 검토하세요
 - 각 전문가가 놓친 부분이 첨부 문서에서 발견되는지 확인하세요
 - 문서와 전문가 의견을 종합하여 가장 객관적이고 균형잡힌 평가를 제시하세요
-- **재무적 성과 통합 분석**: 매출액과 ROI 데이터를 모든 전문가 의견과 연계하여 종합적인 비즈니스 가치를 평가하세요
-- **투자 대비 효과 종합 평가**: ROI 수치와 각 영역별 전문가 분석을 연결하여 전체적인 투자 효율성을 판단하세요
-- **프로젝트 유형별 종합 가치 평가**: 
-  * 매출 창출형: 직접적 ROI와 시장 확대 효과를 전문가 의견과 연계 분석
-  * 비용 절약형: 비용 절약액과 효율성 개선을 전문가 분석과 통합 평가  
-  * 무형 가치형(POC, 마케팅 등): 정성적 지표와 장기적 전략 가치를 종합 평가
-  * 복합 가치형: 정량적/정성적 가치를 전문가 의견과 함께 다면적 종합 분석
 
 다음 형식으로 종합 분석해주세요:
 
 1. 전문가 의견 통합 요약 (첨부 문서와의 일치성 포함)
-2. 재무적 성과 통합 분석 (매출액, ROI와 전문가 의견 연계)
-3. 영역별 상호 연관성 분석 (문서 데이터 기반)
-4. 전체적 강점과 약점 (문서와 전문가 의견 종합)
-5. 우선순위별 개선 과제 (증거 기반 우선순위)
-6. 통합 리스크 평가 (문서와 전문가 분석 통합)
-7. 전략적 제언 및 향후 방향 (종합적 근거 제시)
-8. 종합 점수 (1-10점, 모든 정보와 재무 성과를 종합한 최종 평가)
+2. 영역별 상호 연관성 분석 (문서 데이터 기반)
+3. 전체적 강점과 약점 (문서와 전문가 의견 종합)
+4. 우선순위별 개선 과제 (증거 기반 우선순위)
+5. 통합 리스크 평가 (문서와 전문가 분석 통합)
+6. 전략적 제언 및 향후 방향 (종합적 근거 제시)
+7. 종합 점수 (1-10점, 모든 정보를 종합한 최종 평가)
 
-**종합 분석 시각화**: 반드시 다음과 같은 형식으로 통합 Mermaid 다이어그램을 포함해주세요.
+분석 결과에 통합 관점의 Mermaid 차트를 포함해주세요:
 
-```mermaid
-graph TD
-    A[프로젝트 종합 평가] --> B[프로젝트 관리]
-    A --> C[기술적 측면]
-    A --> D[비즈니스 가치]
-    A --> E[품질 수준]
-    A --> F[리스크 관리]
-    A --> G[팀 성과]
-    A --> H[재무 성과]
-    B --> I[종합 결론]
-    C --> I
-    D --> I
-    E --> I
-    F --> I
-    G --> I
-    H --> I
-    I --> J[최종 권고사항]
-```
+ ```mermaid
+ graph TD
+     A[프로젝트 종합 평가] --> B[프로젝트 관리]
+     A --> C[기술적 측면]
+     A --> D[비즈니스 가치]
+     A --> E[품질 수준]
+     A --> F[리스크 관리]
+     A --> G[팀 성과]
+     A --> H[재무 성과]
+     B --> I[통합 결론]
+     C --> I
+     D --> I
+     E --> I
+     F --> I
+     G --> I
+     H --> I
+ ```
 
-**Mermaid 차트 작성 규칙**:
-- 반드시 `graph TD` 또는 `graph LR`로 시작하세요
-- 노드 이름은 A, B, C... 등 영문자를 사용하세요
-- 노드 내용은 대괄호 [내용]로 감싸세요
-- 화살표는 `-->` 를 사용하세요
-- 통합 관점에서 각 전문가 의견의 연관성을 보여주세요
-- 최종 결론과 권고사항으로 수렴되도록 구성하세요
-
-위 규칙을 지켜서 통합적 관점의 종합 분석 차트를 생성해주세요.
+위 형식을 참고하여 실제 분석 내용에 맞는 통합 차트를 생성해주세요.
 """
 
             if model_name.startswith("claude"):
@@ -1302,8 +1248,6 @@ def analyze_with_ai(review_data, files_content, agent_type, model_name):
 팀원: {review_data['team_members']}
 예산: {review_data['budget']:,}원
 실제 비용: {review_data['actual_cost']:,}원
-매출액: {review_data.get('revenue', 0):,}원
-ROI: {((review_data.get('revenue', 0) - review_data['actual_cost']) / review_data['actual_cost'] * 100) if review_data['actual_cost'] > 0 else 0:+.1f}%
 상태: {review_data['status']}
 전체 평점: {review_data['overall_rating']}/10
 작성자: {review_data.get('created_by', 'N/A')}
@@ -1328,47 +1272,26 @@ ROI: {((review_data.get('revenue', 0) - review_data['actual_cost']) / review_dat
 - 첨부 파일에서 발견된 문제점이나 성과를 구체적으로 언급하세요
 - 프로젝트 기본 정보와 첨부 문서 내용 간의 일치성 또는 차이점을 분석하세요
 - 문서에 기록된 실제 데이터를 바탕으로 정량적 평가를 수행하세요
-- **재무적 성과 분석**: 매출액과 실제 비용을 바탕으로 ROI를 분석하고, 투자 대비 수익성을 평가하세요
-- **비즈니스 가치 평가**: ROI가 양수/음수인지에 따른 프로젝트의 비즈니스 성공도를 평가하세요
-- **프로젝트 유형별 가치 평가**: 
-  * 매출 창출형: 직접적 ROI와 시장 확대 효과 중심 분석
-  * 비용 절약형: 비용 절약액과 효율성 개선 중심 분석  
-  * 무형 가치형(POC, 마케팅 등): 정성적 지표와 장기적 전략 가치 중심 분석
-  * 복합 가치형: 정량적/정성적 가치를 종합한 다면적 분석
 
 다음 형식으로 분석해주세요:
 
 1. 핵심 성과 분석 (첨부 문서의 구체적 데이터 인용)
-2. 재무적 성과 분석 (매출액, ROI, 수익성 평가)
-3. 강점과 약점 (문서에서 확인된 사실 기반)
-4. 개선 권고사항 (문서 분석 결과 기반)
-5. 향후 프로젝트를 위한 교훈 (문서에 기록된 경험 활용)
-6. 종합 점수 (1-10점, 문서 내용과 재무 성과를 종합한 근거 제시)
+2. 강점과 약점 (문서에서 확인된 사실 기반)
+3. 개선 권고사항 (문서 분석 결과 기반)
+4. 향후 프로젝트를 위한 교훈 (문서에 기록된 경험 활용)
+5. 종합 점수 (1-10점, 문서 내용을 종합한 근거 제시)
 
-**분석 결과 시각화**: 반드시 다음과 같은 형식으로 Mermaid 다이어그램을 포함해주세요.
+분석 결과에 Mermaid 차트를 포함해주세요:
 
 ```mermaid
 graph TD
     A[프로젝트 성과] --> B[주요 성과 1]
     A --> C[주요 성과 2] 
-    A --> D[주요 성과 3]
-    B --> E[구체적 결과 1]
-    C --> F[구체적 결과 2]
-    D --> G[구체적 결과 3]
-    E --> H[개선 포인트 1]
-    F --> I[개선 포인트 2]
-    G --> J[개선 포인트 3]
+    B --> D[세부 결과]
+    C --> E[세부 결과]
 ```
 
-**Mermaid 차트 작성 규칙**:
-- 반드시 `graph TD` 또는 `graph LR`로 시작하세요
-- 노드 이름은 A, B, C... 등 영문자를 사용하세요 
-- 노드 내용은 대괄호 [내용]로 감싸세요
-- 화살표는 `-->` 를 사용하세요
-- 각 노드는 분석 내용과 실제로 연관된 의미 있는 내용이어야 합니다
-- 최소 5개 이상의 노드를 포함하세요
-
-위 규칙을 지켜서 귀하의 전문 분야에 맞는 분석 차트를 생성해주세요.
+위 형식을 참고하여 실제 분석 내용에 맞는 차트를 생성해주세요.
 """
 
             if model_name.startswith("claude"):
@@ -1501,307 +1424,61 @@ def extract_score(text):
     
     return 5  # 기본값
 
-def validate_mermaid_chart(markdown_text):
-    """Mermaid 차트의 품질을 검증하는 함수"""
-    if not isinstance(markdown_text, str):
-        return {'has_chart': False, 'is_valid': False, 'issues': ['텍스트가 문자열이 아님']}
-    
-    # Mermaid 차트 존재 여부 확인
-    mermaid_patterns = [
-        r"```mermaid\n(.*?)\n```",
-        r"```mermaid\r?\n(.*?)\r?\n```",
-        r"```mermaid\s*\n(.*?)\n\s*```",
-        r"```mermaid(.*?)```"
-    ]
-    
-    mermaid_code = None
-    for pattern in mermaid_patterns:
-        matches = re.findall(pattern, markdown_text, flags=re.DOTALL | re.IGNORECASE)
-        if matches:
-            mermaid_code = matches[0].strip()
-            break
-    
-    if not mermaid_code:
-        return {'has_chart': False, 'is_valid': False, 'issues': ['Mermaid 차트를 찾을 수 없음']}
-    
-    # 차트 유효성 검증
-    issues = []
-    
-    # 1. 기본 구조 확인
-    lines = mermaid_code.split('\n')
-    has_graph_declaration = False
-    
-    for line in lines:
-        line = line.strip()
-        if re.match(r'^\s*(graph|flowchart)\s+(TD|TB|BT|RL|LR|)\s*$', line, re.IGNORECASE):
-            has_graph_declaration = True
-            break
-    
-    if not has_graph_declaration:
-        issues.append('graph 또는 flowchart 선언이 없음')
-    
-    # 2. 노드 존재 확인
-    node_patterns = [
-        r'([A-Za-z0-9_가-힣]+)\[([^\]]+)\]',
-        r'([A-Za-z0-9_가-힣]+)\(([^)]+)\)',
-        r'([A-Za-z0-9_가-힣]+)\{([^}]+)\}',
-        r'([A-Za-z0-9_가-힣]+)\(\(([^)]+)\)\)'
-    ]
-    
-    nodes_found = 0
-    for pattern in node_patterns:
-        matches = re.findall(pattern, mermaid_code)
-        nodes_found += len(matches)
-    
-    if nodes_found < 3:
-        issues.append(f'노드가 너무 적음 (발견: {nodes_found}개, 최소: 3개)')
-    
-    # 3. 엣지 존재 확인
-    edge_patterns = [
-        r'([A-Za-z0-9_가-힣]+)\s*-->\s*([A-Za-z0-9_가-힣]+)',
-        r'([A-Za-z0-9_가-힣]+)\s*->\s*([A-Za-z0-9_가-힣]+)',
-        r'([A-Za-z0-9_가-힣]+)\s*---\s*([A-Za-z0-9_가-힣]+)',
-        r'([A-Za-z0-9_가-힣]+)\s*--\s*([A-Za-z0-9_가-힣]+)'
-    ]
-    
-    edges_found = 0
-    for pattern in edge_patterns:
-        matches = re.findall(pattern, mermaid_code)
-        edges_found += len(matches)
-    
-    if edges_found < 2:
-        issues.append(f'엣지가 너무 적음 (발견: {edges_found}개, 최소: 2개)')
-    
-    # 4. 문법 오류 확인
-    if '[]' in mermaid_code:
-        issues.append('빈 노드 레이블 발견')
-    
-    if '-->' not in mermaid_code and '->' not in mermaid_code and '---' not in mermaid_code and '--' not in mermaid_code:
-        issues.append('연결 화살표를 찾을 수 없음')
-    
-    is_valid = len(issues) == 0
-    
-    return {
-        'has_chart': True,
-        'is_valid': is_valid,
-        'issues': issues,
-        'nodes_count': nodes_found,
-        'edges_count': edges_found,
-        'chart_code': mermaid_code
-    }
-
 def display_mermaid_chart(markdown_text):
-    """Mermaid 차트가 포함된 마크다운 텍스트를 표시 - 개선된 버전"""
+    """Mermaid 차트가 포함된 마크다운 텍스트를 표시"""
     if not isinstance(markdown_text, str):
         st.warning("차트 데이터가 문자열 형식이 아닙니다.")
         return
+        
+    mermaid_pattern = r"```mermaid\n(.*?)\n```"
     
-    # 더 유연한 Mermaid 패턴 매칭
-    mermaid_patterns = [
-        r"```mermaid\n(.*?)\n```",  # 기본 패턴
-        r"```mermaid\r?\n(.*?)\r?\n```",  # 윈도우 줄바꿈 고려
-        r"```mermaid\s*\n(.*?)\n\s*```",  # 공백 포함
-        r"```mermaid(.*?)```"  # 줄바꿈 없는 경우
-    ]
+    # 일반 마크다운과 Mermaid 차트 분리
+    parts = re.split(mermaid_pattern, markdown_text, flags=re.DOTALL)
     
-    mermaid_found = False
-    
-    for pattern in mermaid_patterns:
-        matches = re.findall(pattern, markdown_text, flags=re.DOTALL | re.IGNORECASE)
-        if matches:
-            mermaid_found = True
-            # 일반 텍스트와 Mermaid 차트 분리
-            parts = re.split(pattern, markdown_text, flags=re.DOTALL | re.IGNORECASE)
-            
-            chart_index = 0
-            for i, part in enumerate(parts):
-                part = part.strip()
-                if not part:
-                    continue
-                    
-                # 일반 텍스트 부분
-                if i % 2 == 0:
-                    if part:
-                        st.markdown(part)
-                else:
-                    # Mermaid 차트 부분
-                    mermaid_code = part.strip()
-                    if mermaid_code:
-                        chart_index += 1
-                        
-                        # 디버그 모드에서 차트 품질 정보 표시
-                        if st.session_state.get('debug_mode', False):
-                            validation = validate_mermaid_chart(f"```mermaid\n{mermaid_code}\n```")
-                            if validation['is_valid']:
-                                st.success(f"✅ 차트 {chart_index}: 품질 우수 (노드: {validation['nodes_count']}, 엣지: {validation['edges_count']})")
-                            else:
-                                st.warning(f"⚠️ 차트 {chart_index}: {', '.join(validation['issues'])}")
-                        
-                        # Graphviz로 변환 시도
-                        try:
-                            dot = mermaid_to_graphviz(mermaid_code)
-                            if dot:
-                                st.graphviz_chart(dot.source)
-                                
-                                # 디버그 모드에서만 원본 코드 표시
-                                if st.session_state.get('debug_mode', False):
-                                    st.markdown("**🔍 Mermaid 차트 원본 코드:**")
-                                    st.code(mermaid_code, language="mermaid")
-                            else:
-                                # 변환 실패 시 Mermaid 코드를 보기 좋게 표시
-                                st.markdown("**📊 Mermaid 차트:**")
-                                st.code(mermaid_code, language="mermaid")
-                                st.info("💡 차트 변환에 실패했습니다. 위 코드를 Mermaid 에디터에서 확인해보세요.")
-                        except Exception as e:
-                            st.error(f"차트 처리 중 오류 발생: {str(e)}")
-                            st.markdown("**📊 Mermaid 차트:**")
-                            st.code(mermaid_code, language="mermaid")
-            break
-    
-    # Mermaid 차트가 없는 경우 일반 마크다운으로 표시
-    if not mermaid_found:
-        st.markdown(markdown_text)
+    for i, part in enumerate(parts):
+        if i % 2 == 0:  # 일반 마크다운
+            if part.strip():
+                st.markdown(part)
+        else:  # Mermaid 차트
+            # Graphviz로 변환하여 표시
+            dot = mermaid_to_graphviz(part)
+            if dot:
+                st.graphviz_chart(dot)
+            else:
+                # 변환 실패 시 코드 표시
+                st.code(part, language="mermaid")
 
 def mermaid_to_graphviz(mermaid_code):
-    """Mermaid 코드를 Graphviz로 변환 - 개선된 버전"""
+    """Mermaid 코드를 Graphviz로 변환"""
     try:
-        if not mermaid_code or not mermaid_code.strip():
-            return None
-            
         nodes = {}
         edges = []
         
-        # 코드 정리
-        mermaid_code = mermaid_code.strip()
-        lines = mermaid_code.split('\n')
+        # 노드 정의 찾기 (예: A[내용])
+        node_pattern = r'([A-Za-z0-9_]+)\[(.*?)\]'
+        for match in re.finditer(node_pattern, mermaid_code):
+            node_id, node_label = match.groups()
+            nodes[node_id] = node_label
         
-        # 그래프 타입 확인 및 제거
-        graph_type_patterns = [
-            r'^\s*graph\s+(TD|TB|BT|RL|LR)\s*$',
-            r'^\s*flowchart\s+(TD|TB|BT|RL|LR)\s*$',
-            r'^\s*graph\s*$',
-            r'^\s*flowchart\s*$'
-        ]
-        
-        processed_lines = []
-        direction = 'TD'  # 기본 방향
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            # 그래프 타입 라인 건너뛰기
-            is_graph_type = False
-            for pattern in graph_type_patterns:
-                match = re.match(pattern, line, re.IGNORECASE)
-                if match:
-                    # 방향 정보 추출
-                    if 'LR' in line.upper():
-                        direction = 'LR'
-                    elif 'RL' in line.upper():
-                        direction = 'RL'
-                    elif 'BT' in line.upper():
-                        direction = 'BT'
-                    else:
-                        direction = 'TD'
-                    is_graph_type = True
-                    break
-            
-            if not is_graph_type:
-                processed_lines.append(line)
-        
-        # 처리된 라인들에서 노드와 엣지 추출
-        content = '\n'.join(processed_lines)
-        
-        # 개선된 노드 패턴 (다양한 형태 지원)
-        node_patterns = [
-            r'([A-Za-z0-9_가-힣]+)\[([^\]]+)\]',  # A[내용] - 한글 지원
-            r'([A-Za-z0-9_가-힣]+)\(([^)]+)\)',   # A(내용) - 원형
-            r'([A-Za-z0-9_가-힣]+)\{([^}]+)\}',   # A{내용} - 다이아몬드
-            r'([A-Za-z0-9_가-힣]+)\(\(([^)]+)\)\)', # A((내용)) - 원
-        ]
-        
-        for pattern in node_patterns:
-            for match in re.finditer(pattern, content):
-                node_id, node_label = match.groups()
-                nodes[node_id] = node_label.strip()
-        
-        # 개선된 엣지 패턴 (다양한 화살표 지원)
-        edge_patterns = [
-            r'([A-Za-z0-9_가-힣]+)\s*-->\s*([A-Za-z0-9_가-힣]+)',  # A --> B
-            r'([A-Za-z0-9_가-힣]+)\s*->\s*([A-Za-z0-9_가-힣]+)',   # A -> B
-            r'([A-Za-z0-9_가-힣]+)\s*---\s*([A-Za-z0-9_가-힣]+)',  # A --- B
-            r'([A-Za-z0-9_가-힣]+)\s*--\s*([A-Za-z0-9_가-힣]+)',   # A -- B
-        ]
-        
-        for pattern in edge_patterns:
-            matches = re.findall(pattern, content)
-            edges.extend(matches)
-        
-        # 노드나 엣지가 없으면 None 반환
-        if not nodes and not edges:
-            return None
+        # 엣지 정의 찾기 (예: A --> B)
+        edge_pattern = r'([A-Za-z0-9_]+)\s*-->\s*([A-Za-z0-9_]+)'
+        edges = re.findall(edge_pattern, mermaid_code)
         
         # Graphviz 객체 생성
         dot = graphviz.Digraph()
-        
-        # 방향 설정
-        if direction == 'LR':
-            dot.attr(rankdir='LR')
-        elif direction == 'RL':
-            dot.attr(rankdir='RL')
-        elif direction == 'BT':
-            dot.attr(rankdir='BT')
-        else:
-            dot.attr(rankdir='TB')
-        
-        # 스타일 개선
-        dot.attr('node', shape='box', style='rounded,filled', fillcolor='lightblue')
-        dot.attr('edge', color='darkblue')
+        dot.attr(rankdir='LR')
         
         # 노드 추가
         for node_id, node_label in nodes.items():
-            # 긴 레이블 처리
-            if len(node_label) > 20:
-                # 긴 텍스트를 여러 줄로 분할
-                words = node_label.split()
-                lines = []
-                current_line = []
-                for word in words:
-                    if len(' '.join(current_line + [word])) <= 20:
-                        current_line.append(word)
-                    else:
-                        if current_line:
-                            lines.append(' '.join(current_line))
-                        current_line = [word]
-                if current_line:
-                    lines.append(' '.join(current_line))
-                node_label = '\\n'.join(lines)
-            
             dot.node(node_id, node_label)
-        
-        # 엣지에서 참조된 노드 중 정의되지 않은 것들 추가
-        all_edge_nodes = set()
-        for src, dst in edges:
-            all_edge_nodes.add(src)
-            all_edge_nodes.add(dst)
-        
-        for node_id in all_edge_nodes:
-            if node_id not in nodes:
-                dot.node(node_id, node_id)  # 기본 레이블로 추가
         
         # 엣지 추가
         for src, dst in edges:
             dot.edge(src, dst)
         
         return dot
-        
     except Exception as e:
         st.error(f"차트 변환 중 오류 발생: {str(e)}")
-        # 디버그 정보 제공
-        if st.session_state.get('debug_mode', False):
-            st.code(f"원본 Mermaid 코드:\n{mermaid_code}")
         return None
 
 def create_dashboard_charts(reviews_df):
@@ -1939,16 +1616,6 @@ def main():
     # 사이드바 설정
     with st.sidebar:
         st.header("설정")
-        
-        # 디버그 모드 추가
-        debug_mode = st.checkbox(
-            "🐛 디버그 모드",
-            value=False,
-            help="Mermaid 차트 변환 과정과 오류를 자세히 표시합니다"
-        )
-        
-        # 세션 상태에 저장
-        st.session_state['debug_mode'] = debug_mode
         
         # 모델 선택
         selected_model = st.selectbox(
@@ -2190,21 +1857,7 @@ def main():
                 project_name = st.text_input("프로젝트명*", placeholder="프로젝트 이름을 입력하세요")
                 project_type = st.selectbox(
                     "프로젝트 유형*",
-                    [
-                        "스마트 공간 구축-IoT 및 Skylights 설치",
-                        "웹 개발", 
-                        "모바일 앱", 
-                        "데이터 분석", 
-                        "AI/ML", 
-                        "인프라", 
-                        "POC (Proof of Concept)",
-                        "마케팅/브랜딩",
-                        "R&D/연구개발",
-                        "프로세스 개선",
-                        "비용 절감",
-                        "품질 향상",
-                        "기타"
-                    ]
+                    ["스마트 공간 구축-IoT 및 Skylights 설치","웹 개발", "모바일 앱", "데이터 분석", "AI/ML", "인프라", "기타"]
                 )
                 project_manager = st.text_input("프로젝트 매니저*")
                 team_members = st.text_area("팀원 목록", placeholder="팀원들의 이름을 입력하세요")
@@ -2214,49 +1867,6 @@ def main():
                 end_date = st.date_input("종료일*")
                 budget = st.number_input("예산 (원)*", min_value=0, step=1000000)
                 actual_cost = st.number_input("실제 비용 (원)*", min_value=0, step=1000000)
-                
-                # 프로젝트 유형에 따른 가치 지표 선택
-                st.subheader("💰 프로젝트 가치 지표")
-                
-                value_type = st.radio(
-                    "가치 측정 방식",
-                    [
-                        "매출 창출", 
-                        "비용 절약", 
-                        "무형 가치 (정성적)", 
-                        "복합 가치"
-                    ],
-                    help="프로젝트의 주요 가치 창출 방식을 선택하세요"
-                )
-                
-                revenue = 0
-                cost_savings = 0
-                
-                if value_type == "매출 창출":
-                    revenue = st.number_input("매출액 (원)", min_value=0, step=1000000, help="프로젝트로 인해 창출된 직접 매출액")
-                    
-                elif value_type == "비용 절약":
-                    cost_savings = st.number_input("비용 절약액 (원)", min_value=0, step=1000000, help="프로젝트로 인해 절약된 비용 (연간 기준)")
-                    
-                elif value_type == "무형 가치 (정성적)":
-                    st.info("💡 이 프로젝트는 정성적 가치 창출 프로젝트입니다. AI 분석에서 정성적 성과를 중심으로 평가됩니다.")
-                    
-                elif value_type == "복합 가치":
-                    revenue = st.number_input("매출액 (원)", min_value=0, step=1000000, help="직접 매출액")
-                    cost_savings = st.number_input("비용 절약액 (원)", min_value=0, step=1000000, help="절약된 비용 (연간 기준)")
-                
-                # 무형 가치 지표들 (모든 프로젝트에 공통 적용)
-                st.subheader("📊 정성적 가치 지표 (선택사항)")
-                
-                col_qual1, col_qual2 = st.columns(2)
-                
-                with col_qual1:
-                    customer_satisfaction = st.slider("고객 만족도 개선", 0, 10, 0, help="0: 영향 없음, 10: 매우 큰 개선")
-                    brand_value = st.slider("브랜드 가치 향상", 0, 10, 0, help="0: 영향 없음, 10: 매우 큰 향상")
-                    
-                with col_qual2:
-                    efficiency_improvement = st.slider("업무 효율성 개선", 0, 10, 0, help="0: 개선 없음, 10: 매우 큰 개선")
-                    risk_reduction = st.slider("리스크 감소 효과", 0, 10, 0, help="0: 효과 없음, 10: 매우 큰 효과")
             
             status = st.selectbox(
                 "프로젝트 상태*",
@@ -2298,13 +1908,6 @@ def main():
                         'team_members': team_members,
                         'budget': budget,
                         'actual_cost': actual_cost,
-                        'revenue': revenue,
-                        'value_type': value_type,
-                        'cost_savings': cost_savings,
-                        'customer_satisfaction': customer_satisfaction,
-                        'brand_value': brand_value,
-                        'efficiency_improvement': efficiency_improvement,
-                        'risk_reduction': risk_reduction,
                         'status': status,
                         'overall_rating': overall_rating,
                         'description': description,
@@ -2494,8 +2097,8 @@ def main():
                         )
                         project_type = st.selectbox(
                             "프로젝트 유형*",
-                            ["매출 창출", "POC (Proof of Concept)", "마케팅/브랜딩", "R&D/연구개발", "프로세스 개선", "비용 절감", "품질 향상", "웹 개발", "모바일 앱", "데이터 분석", "AI/ML", "인프라", "기타"],
-                            index=["매출 창출", "POC (Proof of Concept)", "마케팅/브랜딩", "R&D/연구개발", "프로세스 개선", "비용 절감", "품질 향상", "웹 개발", "모바일 앱", "데이터 분석", "AI/ML", "인프라", "기타"].index(selected_review['project_type']) if selected_review['project_type'] in ["매출 창출", "POC (Proof of Concept)", "마케팅/브랜딩", "R&D/연구개발", "프로세스 개선", "비용 절감", "품질 향상", "웹 개발", "모바일 앱", "데이터 분석", "AI/ML", "인프라", "기타"] else 0
+                            ["스마트 공간 구축-IoT 및 Skylights 설치","웹 개발", "모바일 앱", "데이터 분석", "AI/ML", "인프라", "기타"],
+                            index=["스마트 공간 구축-IoT 및 Skylights 설치","웹 개발", "모바일 앱", "데이터 분석", "AI/ML", "인프라", "기타"].index(selected_review['project_type']) if selected_review['project_type'] in ["스마트 공간 구축-IoT 및 Skylights 설치","웹 개발", "모바일 앱", "데이터 분석", "AI/ML", "인프라", "기타"] else 0
                         )
                         project_manager = st.text_input(
                             "프로젝트 매니저*", 
@@ -2528,83 +2131,6 @@ def main():
                             step=1000000,
                             value=float(selected_review['actual_cost']) if selected_review['actual_cost'] else 0
                         )
-                    
-                    # 프로젝트 가치 측정 방식 선택
-                    st.subheader("🎯 프로젝트 가치 측정")
-                    
-                    current_value_type = selected_review.get('value_type', '매출 창출')
-                    value_type = st.radio(
-                        "가치 측정 방식을 선택하세요",
-                        ["매출 창출", "비용 절약", "무형 가치 (정성적)", "복합 가치"],
-                        index=["매출 창출", "비용 절약", "무형 가치 (정성적)", "복합 가치"].index(current_value_type) if current_value_type in ["매출 창출", "비용 절약", "무형 가치 (정성적)", "복합 가치"] else 0,
-                        horizontal=True,
-                        help="프로젝트의 가치를 어떻게 측정할지 선택하세요"
-                    )
-                    
-                    # 조건부 입력 필드
-                    col1, col2 = st.columns(2)
-                    
-                    revenue = 0
-                    cost_savings = 0
-                    
-                    with col1:
-                        if value_type in ["매출 창출", "복합 가치"]:
-                            revenue = st.number_input(
-                                "매출액 (원)" + ("*" if value_type == "매출 창출" else ""),
-                                min_value=0,
-                                step=1000000,
-                                value=float(selected_review.get('revenue', 0)) if selected_review.get('revenue') else 0,
-                                help="프로젝트로 인해 창출된 매출액을 입력하세요"
-                            )
-                    
-                    with col2:
-                        if value_type in ["비용 절약", "복합 가치"]:
-                            cost_savings = st.number_input(
-                                "비용 절약액 (원)" + ("*" if value_type == "비용 절약" else ""),
-                                min_value=0,
-                                step=1000000,
-                                value=float(selected_review.get('cost_savings', 0)) if selected_review.get('cost_savings') else 0,
-                                help="프로젝트로 인해 절약된 비용을 입력하세요"
-                            )
-                    
-                    # 정성적 가치 지표 (모든 프로젝트에 공통)
-                    if value_type in ["무형 가치 (정성적)", "복합 가치"] or (value_type in ["매출 창출", "비용 절약"] and st.checkbox("정성적 가치도 함께 평가", value=bool(selected_review.get('customer_satisfaction', 0) or selected_review.get('brand_value', 0)))):
-                        st.subheader("📊 정성적 가치 지표 (0-10점)")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            customer_satisfaction = st.slider(
-                                "고객 만족도 개선",
-                                0, 10,
-                                value=selected_review.get('customer_satisfaction', 0) if selected_review.get('customer_satisfaction') else 0,
-                                help="고객 만족도가 얼마나 개선되었는지 평가하세요"
-                            )
-                            brand_value = st.slider(
-                                "브랜드 가치 향상",
-                                0, 10,
-                                value=selected_review.get('brand_value', 0) if selected_review.get('brand_value') else 0,
-                                help="브랜드 가치나 이미지가 얼마나 향상되었는지 평가하세요"
-                            )
-                        
-                        with col2:
-                            efficiency_improvement = st.slider(
-                                "업무 효율성 개선",
-                                0, 10,
-                                value=selected_review.get('efficiency_improvement', 0) if selected_review.get('efficiency_improvement') else 0,
-                                help="업무 프로세스나 효율성이 얼마나 개선되었는지 평가하세요"
-                            )
-                            risk_reduction = st.slider(
-                                "리스크 감소 효과",
-                                0, 10,
-                                value=selected_review.get('risk_reduction', 0) if selected_review.get('risk_reduction') else 0,
-                                help="프로젝트로 인한 리스크 감소 효과를 평가하세요"
-                            )
-                    else:
-                        customer_satisfaction = 0
-                        brand_value = 0
-                        efficiency_improvement = 0
-                        risk_reduction = 0
                     
                     status = st.selectbox(
                         "프로젝트 상태*",
@@ -2668,23 +2194,9 @@ def main():
                         delete_submitted = st.form_submit_button("프로젝트 삭제", type="secondary")
                     
                     if update_submitted:
-                        # 유효성 검사
-                        validation_errors = []
-                        
-                        # 기본 필수 항목 확인
                         if not all([project_name, project_type, project_manager, start_date, end_date, 
                                    budget is not None, actual_cost is not None, description]):
-                            validation_errors.append("필수 항목(*)을 모두 입력해주세요.")
-                        
-                        # 가치 측정 방식에 따른 유효성 검사
-                        if value_type == "매출 창출" and revenue <= 0:
-                            validation_errors.append("매출 창출형 프로젝트는 매출액을 입력해야 합니다.")
-                        elif value_type == "비용 절약" and cost_savings <= 0:
-                            validation_errors.append("비용 절약형 프로젝트는 비용 절약액을 입력해야 합니다.")
-                        
-                        if validation_errors:
-                            for error in validation_errors:
-                                st.error(error)
+                            st.error("필수 항목(*)을 모두 입력해주세요.")
                         else:
                             review_data = {
                                 'project_name': project_name,
@@ -2702,14 +2214,7 @@ def main():
                                 'deliverables': deliverables,
                                 'challenges': challenges,
                                 'lessons_learned': lessons_learned,
-                                'recommendations': recommendations,
-                                'value_type': value_type,
-                                'revenue': revenue,
-                                'cost_savings': cost_savings,
-                                'customer_satisfaction': customer_satisfaction,
-                                'brand_value': brand_value,
-                                'efficiency_improvement': efficiency_improvement,
-                                'risk_reduction': risk_reduction
+                                'recommendations': recommendations
                             }
                             
                             if update_project_review(selected_review['review_id'], review_data):
@@ -2778,56 +2283,12 @@ def main():
                     st.write(f"**유형:** {selected_review['project_type']}")
                     st.write(f"**매니저:** {selected_review['project_manager']}")
                     st.write(f"**상태:** {selected_review['status']}")
-                    st.write(f"**평점:** {selected_review['overall_rating']}/10")
                 
                 with col2:
                     st.write(f"**기간:** {selected_review['start_date']} ~ {selected_review['end_date']}")
                     st.write(f"**예산:** {selected_review['budget']:,}원")
                     st.write(f"**실제 비용:** {selected_review['actual_cost']:,}원")
-                
-                # 가치 지표 표시
-                value_type = selected_review.get('value_type', '매출 창출')
-                st.markdown("---")
-                st.markdown(f"**💰 가치 측정 방식:** {value_type}")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if selected_review.get('revenue', 0) > 0:
-                        st.write(f"**매출액:** {selected_review['revenue']:,}원")
-                        # 매출 기반 ROI 계산
-                        if selected_review['actual_cost'] and selected_review['actual_cost'] > 0:
-                            roi = ((selected_review['revenue'] - selected_review['actual_cost']) / selected_review['actual_cost']) * 100
-                            color = "🟢" if roi > 0 else "🔴" if roi < 0 else "🟡"
-                            st.write(f"**매출 ROI:** {color} {roi:+.1f}%")
-                    
-                    if selected_review.get('cost_savings', 0) > 0:
-                        st.write(f"**비용 절약액:** {selected_review['cost_savings']:,}원")
-                        # 비용 절약 기반 ROI 계산
-                        if selected_review['actual_cost'] and selected_review['actual_cost'] > 0:
-                            savings_roi = (selected_review['cost_savings'] / selected_review['actual_cost']) * 100
-                            st.write(f"**절약 ROI:** 🟢 {savings_roi:.1f}%")
-                
-                with col2:
-                    # 정성적 가치 지표 표시
-                    qualitative_metrics = [
-                        ('customer_satisfaction', '고객 만족도'),
-                        ('brand_value', '브랜드 가치'),
-                        ('efficiency_improvement', '업무 효율성'),
-                        ('risk_reduction', '리스크 감소')
-                    ]
-                    
-                    has_qualitative = any(selected_review.get(key, 0) > 0 for key, _ in qualitative_metrics)
-                    
-                    if has_qualitative:
-                        st.markdown("**📊 정성적 가치 지표:**")
-                        for key, label in qualitative_metrics:
-                            score = selected_review.get(key, 0)
-                            if score > 0:
-                                stars = "⭐" * score
-                                st.write(f"{label}: {stars} ({score}/10)")
-                    else:
-                        st.write("정성적 가치 지표: 없음")
+                    st.write(f"**평점:** {selected_review['overall_rating']}/10")
             
             # 첨부 파일 정보
             project_files = get_project_files(selected_review['review_id'])
@@ -3132,17 +2593,6 @@ def main():
                             )
                             
                             if analysis_result:
-                                # 차트 품질 검증 (디버그 모드에서만)
-                                if st.session_state.get('debug_mode', False):
-                                    chart_validation = validate_mermaid_chart(analysis_result['analysis'])
-                                    if chart_validation['has_chart']:
-                                        if chart_validation['is_valid']:
-                                            st.success(f"✅ {agent_name}: Mermaid 차트가 올바르게 생성되었습니다")
-                                        else:
-                                            st.warning(f"⚠️ {agent_name}: Mermaid 차트에 문제가 있습니다 - {chart_validation['issues']}")
-                                    else:
-                                        st.info(f"ℹ️ {agent_name}: Mermaid 차트가 생성되지 않았습니다")
-                                
                                 individual_analysis_results[agent_type] = analysis_result
                                 analysis_results[agent_type] = analysis_result
                                 
@@ -3329,26 +2779,13 @@ def main():
                                         st.markdown(f"### {agent_type.replace('_', ' ').title()} 분석")
                                         st.markdown(f"**점수:** {result['score']}/10")
                                     
-                                    # 디버그 모드에서 차트 품질 정보 표시
-                                    if st.session_state.get('debug_mode', False):
-                                        chart_validation = validate_mermaid_chart(result['analysis'])
-                                        if chart_validation['has_chart']:
-                                            if chart_validation['is_valid']:
-                                                st.success(f"✅ 차트 품질: 우수 (노드: {chart_validation['nodes_count']}, 엣지: {chart_validation['edges_count']})")
-                                            else:
-                                                st.warning(f"⚠️ 차트 품질 문제: {', '.join(chart_validation['issues'])}")
-                                                with st.expander("차트 원본 코드"):
-                                                    st.code(chart_validation['chart_code'], language="mermaid")
-                                        else:
-                                            st.error("❌ Mermaid 차트를 찾을 수 없습니다")
-                                    
                                     display_mermaid_chart(result['analysis'])
                                     
                                     with st.expander("추천사항"):
-                                        display_mermaid_chart(result['recommendations'])
+                                        st.markdown(result['recommendations'])
                                     
                                     with st.expander("위험평가"):
-                                        display_mermaid_chart(result['risk_assessment'])
+                                        st.markdown(result['risk_assessment'])
         
         # 기존 분석 결과 조회
         st.subheader("📊 기존 분석 결과")
@@ -3427,32 +2864,19 @@ def main():
                         with tab:
                             for analysis in agent_analyses:
                                 with st.expander(f"{analysis['created_at'].strftime('%Y-%m-%d %H:%M')} - {analysis['model_name']} (점수: {analysis['score']}/10)"):
-                                    # 디버그 모드에서 차트 품질 정보 표시
-                                    if st.session_state.get('debug_mode', False):
-                                        chart_validation = validate_mermaid_chart(analysis['analysis_content'])
-                                        if chart_validation['has_chart']:
-                                            if chart_validation['is_valid']:
-                                                st.success(f"✅ 차트 품질: 우수 (노드: {chart_validation['nodes_count']}, 엣지: {chart_validation['edges_count']})")
-                                            else:
-                                                st.warning(f"⚠️ 차트 품질 문제: {', '.join(chart_validation['issues'])}")
-                                                with st.expander("차트 원본 코드", expanded=False):
-                                                    st.code(chart_validation['chart_code'], language="mermaid")
-                                        else:
-                                            st.error("❌ Mermaid 차트를 찾을 수 없습니다")
-                                    
                                     display_mermaid_chart(analysis['analysis_content'])
                                     
                                     col1, col2 = st.columns(2)
                                     with col1:
                                         st.markdown("**추천사항:**")
-                                        display_mermaid_chart(analysis['recommendations'])
+                                        st.markdown(analysis['recommendations'])
                                     
                                     with col2:
                                         st.markdown("**위험평가:**")
-                                        display_mermaid_chart(analysis['risk_assessment'])
+                                        st.markdown(analysis['risk_assessment'])
             else:
-                st.info("📄 첨부된 파일이 없습니다. 파일을 첨부하면 AI가 문서 내용을 분석하여 더 정확한 결과를 제공합니다.")
-                st.caption("💡 프로젝트 수정 탭에서 관련 문서를 추가할 수 있습니다.")
+                st.info("📝 이 프로젝트에 대한 AI 분석 결과가 없습니다.")
+                st.markdown("💡 위의 **'🤖 AI 분석 시작'** 버튼을 클릭하여 AI 분석을 실행해보세요.")
     
     with tab5:
         st.header("프로젝트 목록")
@@ -3460,621 +2884,525 @@ def main():
         reviews = get_project_reviews()
         
         if reviews:
-            st.info(f"📋 총 **{len(reviews)}개**의 프로젝트가 등록되어 있습니다.")
-            
-            # 정렬 및 필터링 옵션
+            # 필터링 옵션
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                sort_by = st.selectbox(
-                    "정렬 기준",
-                    ["최신순", "이름순", "예산순", "매출순", "평점순", "상태순"],
-                    key="project_list_sort"
+                status_filter = st.selectbox(
+                    "상태 필터",
+                    ["전체"] + list(set([r['status'] for r in reviews]))
                 )
             
             with col2:
-                status_filter = st.selectbox(
-                    "상태 필터",
-                    ["전체", "completed", "ongoing", "cancelled", "on_hold"],
-                    key="project_list_status"
+                type_filter = st.selectbox(
+                    "유형 필터",
+                    ["전체"] + list(set([r['project_type'] for r in reviews]))
                 )
             
             with col3:
-                type_filter = st.selectbox(
-                    "유형 필터",
-                    ["전체"] + list(set([review['project_type'] for review in reviews])),
-                    key="project_list_type"
+                sort_by = st.selectbox(
+                    "정렬 기준",
+                    ["생성일", "프로젝트명", "평점", "예산"]
                 )
             
-            # 필터링
+            # 필터링 적용
             filtered_reviews = reviews
             if status_filter != "전체":
                 filtered_reviews = [r for r in filtered_reviews if r['status'] == status_filter]
             if type_filter != "전체":
                 filtered_reviews = [r for r in filtered_reviews if r['project_type'] == type_filter]
             
-            # 정렬
-            if sort_by == "최신순":
+            # 정렬 적용
+            if sort_by == "생성일":
                 filtered_reviews.sort(key=lambda x: x['created_at'], reverse=True)
-            elif sort_by == "이름순":
+            elif sort_by == "프로젝트명":
                 filtered_reviews.sort(key=lambda x: x['project_name'])
-            elif sort_by == "예산순":
-                filtered_reviews.sort(key=lambda x: x['budget'], reverse=True)
-            elif sort_by == "매출순":
-                filtered_reviews.sort(key=lambda x: x.get('revenue', 0), reverse=True)
-            elif sort_by == "평점순":
+            elif sort_by == "평점":
                 filtered_reviews.sort(key=lambda x: x['overall_rating'], reverse=True)
-            elif sort_by == "상태순":
-                filtered_reviews.sort(key=lambda x: x['status'])
+            elif sort_by == "예산":
+                filtered_reviews.sort(key=lambda x: x['budget'], reverse=True)
             
-            st.markdown(f"**필터 결과:** {len(filtered_reviews)}개 프로젝트")
-            
-            # 프로젝트 카드 표시
-            for i, review in enumerate(filtered_reviews):
-                with st.container():
-                    # 상태에 따른 색상 및 아이콘
-                    status_info = {
-                        'completed': ('🟢', '완료'),
-                        'ongoing': ('🟡', '진행중'),
-                        'cancelled': ('🔴', '취소'),
-                        'on_hold': ('🟠', '보류')
-                    }
-                    
-                    status_icon, status_text = status_info.get(review['status'], ('⚪', review['status']))
-                    
-                    # 프로젝트 헤더
-                    col1, col2, col3 = st.columns([3, 1, 1])
+            # 프로젝트 목록 표시
+            for review in filtered_reviews:
+                status_emoji = {
+                    'completed': '✅',
+                    'ongoing': '🔄',
+                    'cancelled': '❌',
+                    'on_hold': '⏸️'
+                }.get(review['status'], '❓')
+                
+                with st.expander(f"{status_emoji} {review['project_name']} (평점: {review['overall_rating']}/10)"):
+                    col1, col2, col3 = st.columns([2, 2, 1])
                     
                     with col1:
-                        st.markdown(f"### {review['project_name']}")
-                        st.markdown(f"**유형:** {review['project_type']} | **매니저:** {review['project_manager']}")
+                        st.write(f"**유형:** {review['project_type']}")
+                        st.write(f"**매니저:** {review['project_manager']}")
+                        st.write(f"**기간:** {review['start_date']} ~ {review['end_date']}")
+                        st.write(f"**상태:** {review['status']}")
                     
                     with col2:
-                        st.markdown(f"**상태**")
-                        st.markdown(f"{status_icon} {status_text}")
+                        st.write(f"**예산:** {review['budget']:,}원")
+                        st.write(f"**실제 비용:** {review['actual_cost']:,}원")
+                        budget_variance = ((review['actual_cost'] - review['budget']) / review['budget'] * 100) if review['budget'] > 0 else 0
+                        st.write(f"**예산 차이:** {budget_variance:+.1f}%")
+                        st.write(f"**작성자:** {review['created_by']}")
                     
                     with col3:
-                        st.markdown(f"**평점**")
-                        stars = "⭐" * review['overall_rating']
-                        st.markdown(f"{stars} ({review['overall_rating']}/10)")
+                        # PDF 리포트 생성
+                        ai_analyses = get_ai_analysis(review['review_id'])
+                        pdf_data = generate_pdf_report(review, ai_analyses)
+                        
+                        if pdf_data:
+                            st.download_button(
+                                label="📄 PDF 리포트",
+                                data=pdf_data,
+                                file_name=f"{review['project_name']}_report.pdf",
+                                mime="application/pdf",
+                                key=f"pdf_download_{review['review_id']}"
+                            )
+                        
+                        # 수정/삭제 버튼
+                        col_edit, col_delete = st.columns(2)
+                        
+                        with col_edit:
+                            if st.button("✏️ 수정", key=f"edit_{review['review_id']}"):
+                                st.session_state['edit_project_id'] = review['review_id']
+                                st.info("프로젝트 수정 탭으로 이동하여 수정하세요.")
+                        
+                        with col_delete:
+                            if st.button("🗑️ 삭제", key=f"delete_{review['review_id']}"):
+                                if st.session_state.get(f"confirm_delete_{review['review_id']}", False):
+                                    if delete_project_review(review['review_id']):
+                                        st.success(f"✅ 프로젝트 '{review['project_name']}'이 삭제되었습니다.")
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ 프로젝트 삭제에 실패했습니다.")
+                                else:
+                                    st.session_state[f"confirm_delete_{review['review_id']}"] = True
+                                    st.warning("⚠️ 다시 한 번 클릭하여 삭제를 확인하세요.")
                     
                     # 프로젝트 상세 정보
-                    col1, col2 = st.columns(2)
+                    if review['description']:
+                        st.markdown("**프로젝트 설명:**")
+                        st.markdown(review['description'])
                     
-                    with col1:
-                        st.markdown("**📅 프로젝트 기간**")
-                        st.write(f"{review['start_date']} ~ {review['end_date']}")
-                        
-                        st.markdown("**💰 예산 및 비용**")
-                        st.write(f"예산: {review['budget']:,}원")
-                        st.write(f"실제 비용: {review['actual_cost']:,}원")
-                        
-                        # 예산 대비 실제 비용 비율
-                        if review['budget'] > 0:
-                            cost_ratio = (review['actual_cost'] / review['budget']) * 100
-                            if cost_ratio <= 100:
-                                st.write(f"예산 대비: 🟢 {cost_ratio:.1f}%")
-                            elif cost_ratio <= 120:
-                                st.write(f"예산 대비: 🟡 {cost_ratio:.1f}%")
-                            else:
-                                st.write(f"예산 대비: 🔴 {cost_ratio:.1f}%")
+                    if review['objectives']:
+                        st.markdown("**목표:**")
+                        st.markdown(review['objectives'])
                     
-                    with col2:
-                        # 가치 지표 표시
-                        value_type = review.get('value_type', '매출 창출')
-                        st.markdown(f"**💎 가치 측정: {value_type}**")
-                        
-                        # 매출 및 ROI
-                        if review.get('revenue', 0) > 0:
-                            st.write(f"매출액: {review['revenue']:,}원")
-                            if review['actual_cost'] > 0:
-                                roi = ((review['revenue'] - review['actual_cost']) / review['actual_cost']) * 100
-                                color = "🟢" if roi > 0 else "🔴" if roi < 0 else "🟡"
-                                st.write(f"매출 ROI: {color} {roi:+.1f}%")
-                        
-                        # 비용 절약
-                        if review.get('cost_savings', 0) > 0:
-                            st.write(f"비용 절약: {review['cost_savings']:,}원")
-                            if review['actual_cost'] > 0:
-                                savings_roi = (review['cost_savings'] / review['actual_cost']) * 100
-                                st.write(f"절약 ROI: 🟢 {savings_roi:.1f}%")
-                        
-                        # 정성적 가치 지표
-                        qualitative_scores = [
-                            review.get('customer_satisfaction', 0),
-                            review.get('brand_value', 0),
-                            review.get('efficiency_improvement', 0),
-                            review.get('risk_reduction', 0)
-                        ]
-                        
-                        if any(score > 0 for score in qualitative_scores):
-                            valid_scores = [s for s in qualitative_scores if s > 0]
-                            avg_qualitative = sum(valid_scores) / len(valid_scores)
-                            st.write(f"정성적 가치: ⭐ {avg_qualitative:.1f}/10")
+                    if review['challenges']:
+                        st.markdown("**주요 도전과제:**")
+                        st.markdown(review['challenges'])
                     
-                    # 설명
-                    if review.get('description'):
-                        with st.expander("📝 프로젝트 설명"):
-                            st.write(review['description'])
+                    if review['lessons_learned']:
+                        st.markdown("**교훈:**")
+                        st.markdown(review['lessons_learned'])
                     
-                    # 팀원 정보
-                    if review.get('team_members'):
-                        st.markdown("**👥 팀원:** " + review['team_members'])
+                    # 첨부 파일 목록
+                    project_files = get_project_files(review['review_id'])
+                    if project_files:
+                        st.markdown("**첨부 파일:**")
+                        for file in project_files:
+                            # expander 대신 컨테이너와 버튼 사용
+                            file_container = st.container()
+                            with file_container:
+                                col1, col2, col3 = st.columns([3, 1, 1])
+                                
+                                with col1:
+                                    st.write(f"📄 **{file['filename']}** ({file['file_type'].upper()})")
+                                    st.caption(f"크기: {file['file_size']:,} bytes | 업로드: {file['uploaded_at'].strftime('%Y-%m-%d %H:%M')}")
+                                
+                                with col2:
+                                    # 원본 파일 다운로드
+                                    file_binary = get_file_binary_data(file['file_id'])
+                                    if file_binary:
+                                        mime_type = get_file_mime_type(file['file_type'])
+                                        st.download_button(
+                                            label="📥 원본 파일",
+                                            data=file_binary['binary_data'],
+                                            file_name=file['filename'],
+                                            mime=mime_type,
+                                            key=f"list_download_original_{file['file_id']}",
+                                            help="원본 파일 형식으로 다운로드"
+                                        )
+                                    else:
+                                        # 텍스트 내용만 다운로드 (구버전 호환)
+                                        file_content = file['file_content'].encode('utf-8')
+                                        st.download_button(
+                                            label="📄 텍스트 내용",
+                                            data=file_content,
+                                            file_name=f"{file['filename']}_content.txt",
+                                            mime="text/plain",
+                                            key=f"list_download_{file['file_id']}"
+                                        )
+                                
+                                with col3:
+                                    # 파일 미리보기 토글
+                                    if st.button("👁️ 미리보기", key=f"list_preview_{file['file_id']}"):
+                                        st.session_state[f"list_show_preview_{file['file_id']}"] = not st.session_state.get(f"list_show_preview_{file['file_id']}", False)
+                                
+                                # 파일 미리보기 표시
+                                if st.session_state.get(f"list_show_preview_{file['file_id']}", False):
+                                    st.markdown("---")
+                                    st.subheader(f"📖 {file['filename']} 미리보기")
+                                    
+                                    # 원본 파일 데이터 가져오기
+                                    file_binary = get_file_binary_data(file['file_id'])
+                                    
+                                    if file_binary:
+                                        # 파일 미리보기 함수 호출
+                                        preview_success = display_file_preview(file_binary, file['file_type'], file['filename'])
+                                        
+                                        # 미리보기가 실패하거나 지원하지 않는 형식인 경우 텍스트 내용 표시
+                                        if not preview_success and file['file_content']:
+                                            st.subheader("📄 추출된 텍스트 내용")
+                                            content = file['file_content']
+                                            if content.startswith('[') and content.endswith(']'):
+                                                st.info(content)
+                                            elif len(content) > 1000:
+                                                st.text_area(
+                                                    "파일 내용 (처음 1000자)",
+                                                    value=content[:1000] + "\n\n... (더 보려면 다운로드하세요)",
+                                                    height=200,
+                                                    disabled=True,
+                                                    key=f"list_preview_text_{file['file_id']}"
+                                                )
+                                            else:
+                                                st.text_area(
+                                                    "파일 전체 내용",
+                                                    value=content,
+                                                    height=200,
+                                                    disabled=True,
+                                                    key=f"list_full_text_{file['file_id']}"
+                                                )
+                                    else:
+                                        # 구버전 파일 - 텍스트 내용만 표시
+                                        if file['file_content']:
+                                            st.subheader("📄 추출된 텍스트 내용")
+                                            content = file['file_content']
+                                            if content.startswith('[') and content.endswith(']'):
+                                                st.info(content)
+                                            elif len(content) > 1000:
+                                                st.text_area(
+                                                    "파일 내용 (처음 1000자)",
+                                                    value=content[:1000] + "\n\n... (더 보려면 다운로드하세요)",
+                                                    height=200,
+                                                    disabled=True,
+                                                    key=f"list_old_preview_{file['file_id']}"
+                                                )
+                                            else:
+                                                st.text_area(
+                                                    "파일 전체 내용",
+                                                    value=content,
+                                                    height=200,
+                                                    disabled=True,
+                                                    key=f"list_old_full_{file['file_id']}"
+                                                )
+                                        else:
+                                            st.info("파일 내용이 없습니다.")
+                                    
+                                    # 미리보기 숨기기 버튼
+                                    if st.button("🙈 미리보기 숨기기", key=f"list_hide_preview_{file['file_id']}"):
+                                        st.session_state[f"list_show_preview_{file['file_id']}"] = False
+                                        st.rerun()
+                                
+                                st.divider()  # 파일 간 구분선
                     
-                    # 구분선
-                    if i < len(filtered_reviews) - 1:
-                        st.markdown("---")
-            
-            # 엑셀/CSV 내보내기
-            st.markdown("---")
-            st.subheader("📊 데이터 내보내기")
-            
-            if filtered_reviews:
-                # 데이터프레임으로 변환
-                export_data = []
-                for review in filtered_reviews:
-                    export_row = {
-                        '프로젝트명': review['project_name'],
-                        '유형': review['project_type'],
-                        '매니저': review['project_manager'],
-                        '상태': review['status'],
-                        '시작일': review['start_date'],
-                        '종료일': review['end_date'],
-                        '예산': review['budget'],
-                        '실제비용': review['actual_cost'],
-                        '평점': review['overall_rating'],
-                        '가치측정방식': review.get('value_type', ''),
-                        '매출액': review.get('revenue', 0),
-                        '비용절약액': review.get('cost_savings', 0),
-                        '고객만족도': review.get('customer_satisfaction', 0),
-                        '브랜드가치': review.get('brand_value', 0),
-                        '업무효율성': review.get('efficiency_improvement', 0),
-                        '리스크감소': review.get('risk_reduction', 0),
-                        '등록일': review['created_at'].strftime('%Y-%m-%d')
-                    }
-                    export_data.append(export_row)
-                
-                export_df = pd.DataFrame(export_data)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    csv_data = export_to_csv(export_df, "filtered_projects.csv")
-                    st.download_button(
-                        label="📄 CSV 다운로드",
-                        data=csv_data,
-                        file_name=f"프로젝트목록_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        key="project_list_csv_download"
-                    )
-                
-                with col2:
-                    excel_data = export_to_excel(export_df, "filtered_projects.xlsx")
-                    st.download_button(
-                        label="📊 Excel 다운로드",
-                        data=excel_data,
-                        file_name=f"프로젝트목록_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="project_list_excel_download"
-                    )
+                    # AI 분석 요약
+                    ai_analyses = get_ai_analysis(review['review_id'])
+                    if ai_analyses:
+                        st.markdown("**AI 분석 요약:**")
+                        avg_score = sum([a['score'] for a in ai_analyses]) / len(ai_analyses)
+                        st.write(f"평균 AI 점수: {avg_score:.1f}/10")
+                        st.write(f"분석 횟수: {len(ai_analyses)}회")
         else:
             st.info("등록된 프로젝트가 없습니다.")
     
     with tab6:
-        st.header("🔍 파일 검색 및 내용 조회")
-        
-        # 검색 상태 초기화
-        if 'file_search_results' not in st.session_state:
-            st.session_state.file_search_results = None
-        if 'last_search_params' not in st.session_state:
-            st.session_state.last_search_params = {}
+        st.header("파일 검색 및 내용 조회")
         
         # 검색 옵션
-        col1, col2, col3 = st.columns([2, 1, 1])
+        col1, col2 = st.columns(2)
         
         with col1:
             search_term = st.text_input(
-                "🔎 검색어 입력",
-                placeholder="파일명, 내용, 프로젝트명으로 검색...",
-                help="파일명, 파일 내용, 프로젝트명에서 검색합니다",
-                key="file_search_term"
+                "검색어 입력",
+                placeholder="파일명, 파일 내용, 프로젝트명으로 검색",
+                help="파일명, 파일 내용, 프로젝트명에서 검색합니다"
             )
         
         with col2:
-            # 파일 타입 필터
-            all_file_types = get_all_file_types()
-            file_type_filter = st.selectbox(
-                "📁 파일 타입",
-                ["전체"] + all_file_types,
-                key="file_search_type_filter"
-            )
-        
-        with col3:
-            # 검색 결과 정렬
-            sort_option = st.selectbox(
-                "🔄 정렬",
-                ["최신순", "파일명순", "크기순", "프로젝트순"],
-                key="file_search_sort"
-            )
-        
-        # 고급 검색 옵션
-        with st.expander("🎛️ 고급 검색 옵션", expanded=False):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # 파일 크기 필터
-                st.markdown("**📏 파일 크기 필터**")
-                size_filter = st.radio(
-                    "크기 범위",
-                    ["전체", "1MB 미만", "1MB-10MB", "10MB-50MB", "50MB 이상"],
-                    horizontal=True,
-                    key="file_size_filter"
-                )
-            
-            with col2:
-                # 업로드 날짜 필터
-                st.markdown("**📅 업로드 날짜 필터**")
-                date_filter = st.radio(
-                    "기간",
-                    ["전체", "오늘", "이번 주", "이번 달", "3개월 이내", "1년 이내"],
-                    horizontal=True,
-                    key="file_date_filter"
-                )
-        
-        # 현재 검색 파라미터
-        current_search_params = {
-            'search_term': search_term,
-            'file_type_filter': file_type_filter,
-            'sort_option': sort_option,
-            'size_filter': size_filter,
-            'date_filter': date_filter
-        }
-        
-        # 검색 파라미터가 변경되었는지 확인
-        params_changed = st.session_state.last_search_params != current_search_params
+            file_types = ["전체"] + get_all_file_types()
+            selected_file_type = st.selectbox("파일 타입 필터", file_types)
         
         # 검색 실행
-        search_executed = False
-        if st.button("🔍 검색", type="primary", key="execute_file_search"):
-            search_executed = True
-        elif search_term and (params_changed or st.session_state.file_search_results is None):
-            search_executed = True
-        elif not search_term and st.session_state.last_search_params.get('search_term'):
-            # 검색어가 삭제된 경우 결과 초기화
-            st.session_state.file_search_results = None
-            st.session_state.last_search_params = current_search_params
-        
-        # 검색 실행
-        if search_executed:
-            # 파일 검색 실행
-            search_results = search_files(
-                search_term=search_term if search_term else None,
-                file_type=file_type_filter if file_type_filter != "전체" else None
-            )
+        if st.button("🔍 검색", type="primary") or search_term:
+            search_results = search_files(search_term, selected_file_type)
             
-            # 파일 크기 필터 적용
-            if size_filter != "전체":
-                if size_filter == "1MB 미만":
-                    search_results = [f for f in search_results if (f.get('file_size') or 0) < 1024*1024]
-                elif size_filter == "1MB-10MB":
-                    search_results = [f for f in search_results if 1024*1024 <= (f.get('file_size') or 0) < 10*1024*1024]
-                elif size_filter == "10MB-50MB":
-                    search_results = [f for f in search_results if 10*1024*1024 <= (f.get('file_size') or 0) < 50*1024*1024]
-                elif size_filter == "50MB 이상":
-                    search_results = [f for f in search_results if (f.get('file_size') or 0) >= 50*1024*1024]
-            
-            # 날짜 필터 적용
-            if date_filter != "전체":
-                now = datetime.now()
-                if date_filter == "오늘":
-                    cutoff_date = now - timedelta(days=1)
-                elif date_filter == "이번 주":
-                    cutoff_date = now - timedelta(weeks=1)
-                elif date_filter == "이번 달":
-                    cutoff_date = now - timedelta(days=30)
-                elif date_filter == "3개월 이내":
-                    cutoff_date = now - timedelta(days=90)
-                elif date_filter == "1년 이내":
-                    cutoff_date = now - timedelta(days=365)
-                
-                search_results = [f for f in search_results if f['uploaded_at'] >= cutoff_date]
-            
-            # 정렬 적용
-            if sort_option == "최신순":
-                search_results.sort(key=lambda x: x['uploaded_at'], reverse=True)
-            elif sort_option == "파일명순":
-                search_results.sort(key=lambda x: x['filename'])
-            elif sort_option == "크기순":
-                search_results.sort(key=lambda x: x.get('file_size', 0), reverse=True)
-            elif sort_option == "프로젝트순":
-                search_results.sort(key=lambda x: x['project_name'])
-            
-            # 검색 결과를 세션 스테이트에 저장
-            st.session_state.file_search_results = search_results
-            st.session_state.last_search_params = current_search_params
-        
-        # 저장된 검색 결과 사용
-        search_results = st.session_state.file_search_results
-        
-        # 검색 결과 표시
-        if search_results is not None:
             if search_results:
-                # 검색 결과 통계
-                total_files = len(search_results)
-                total_size = sum([f.get('file_size', 0) for f in search_results])
-                file_types_count = len(set([f['file_type'] for f in search_results]))
-                projects_count = len(set([f['project_name'] for f in search_results]))
+                st.success(f"🎯 {len(search_results)}개의 파일을 찾았습니다.")
                 
-                st.markdown("---")
-                st.markdown("### 📊 검색 결과 통계")
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("📄 총 파일 수", total_files)
-                with col2:
-                    st.metric("💾 총 용량", f"{total_size / (1024*1024):.1f} MB")
-                with col3:
-                    st.metric("📁 파일 형식", f"{file_types_count}종류")
-                with col4:
-                    st.metric("📋 프로젝트", f"{projects_count}개")
-                
-                # 파일 타입별 분포 차트
-                if total_files > 0:
-                    type_counts = {}
-                    for file in search_results:
-                        file_type = file['file_type']
-                        type_counts[file_type] = type_counts.get(file_type, 0) + 1
-                    
-                    if len(type_counts) > 1:
-                        fig = px.pie(
-                            values=list(type_counts.values()),
-                            names=list(type_counts.keys()),
-                            title="📊 파일 타입별 분포"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                st.markdown("---")
-                st.markdown(f"### 📋 검색 결과 ({total_files}개 파일)")
-                
-                # 검색 결과 표시
-                for i, file in enumerate(search_results):
-                    with st.container():
-                        col1, col2, col3 = st.columns([3, 1, 1])
+                for file in search_results:
+                    with st.expander(f"📄 {file['filename']} ({file['file_type'].upper()}) - {file['project_name']}"):
+                        # 파일 정보
+                        col1, col2, col3 = st.columns(3)
                         
                         with col1:
-                            # 파일 아이콘
-                            file_icons = {
-                                'pdf': '📄', 'docx': '📝', 'doc': '📝', 'txt': '📄', 'md': '📄',
-                                'xlsx': '📊', 'xls': '📊', 'csv': '📈',
-                                'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️',
-                                'zip': '🗜️', 'rar': '🗜️',
-                                'json': '🔧', 'xml': '🔧', 'html': '🌐'
-                            }
-                            icon = file_icons.get(file['file_type'].lower(), '📁')
-                            
-                            st.markdown(f"**{icon} {file['filename']}**")
-                            st.markdown(f"📋 프로젝트: {file['project_name']} | 📂 유형: {file['project_type']}")
-                            
-                            # 파일 크기와 업로드 날짜
-                            file_size_mb = (file.get('file_size', 0)) / (1024*1024)
-                            upload_date = file['uploaded_at'].strftime('%Y-%m-%d %H:%M')
-                            st.caption(f"💾 크기: {file_size_mb:.2f}MB | 📅 업로드: {upload_date}")
+                            st.write(f"**프로젝트:** {file['project_name']}")
+                            st.write(f"**프로젝트 유형:** {file['project_type']}")
+                            st.write(f"**작성자:** {file['created_by']}")
                         
                         with col2:
-                            # 파일 타입과 작성자
-                            st.markdown(f"**파일 형식**")
-                            st.write(f"📁 {file['file_type'].upper()}")
-                            if file.get('created_by'):
-                                st.caption(f"✍️ {file['created_by']}")
+                            st.write(f"**파일 크기:** {file['file_size']:,} bytes")
+                            st.write(f"**업로드 시간:** {file['uploaded_at'].strftime('%Y-%m-%d %H:%M:%S')}")
                         
                         with col3:
-                            # 액션 버튼들
-                            col_download, col_preview = st.columns(2)
-                            
-                            with col_download:
-                                # 다운로드 버튼
-                                file_binary = get_file_binary_data(file['file_id'])
-                                if file_binary and file_binary.get('binary_data'):
-                                    st.download_button(
-                                        label="⬇️",
-                                        data=file_binary['binary_data'],
-                                        file_name=file['filename'],
-                                        mime=get_file_mime_type(file['file_type']),
-                                        key=f"download_search_{file['file_id']}",
-                                        help="다운로드"
-                                    )
-                                else:
-                                    st.button("⬇️", disabled=True, key=f"download_disabled_{file['file_id']}", help="다운로드 불가")
-                            
-                            with col_preview:
-                                # 미리보기 버튼
-                                preview_key = f"show_search_preview_{file['file_id']}"
-                                is_showing = st.session_state.get(preview_key, False)
-                                
-                                if st.button("👁️" if not is_showing else "🙈", key=f"preview_search_{file['file_id']}", help="미리보기" if not is_showing else "숨기기"):
-                                    st.session_state[preview_key] = not is_showing
-                                    st.rerun()
-                        
-                        # 파일 내용 미리보기 (접힌 상태로)
-                        if file.get('file_content'):
-                            with st.expander("📄 추출된 텍스트 내용", expanded=False):
-                                content = file['file_content']
-                                if content.startswith('[') and content.endswith(']'):
-                                    st.info(content)
-                                elif len(content) > 1000:
-                                    st.text_area(
-                                        "내용 미리보기 (처음 1000자)",
-                                        value=content[:1000] + "\n\n... (더 많은 내용이 있습니다)",
-                                        height=200,
-                                        disabled=True,
-                                        key=f"content_preview_{file['file_id']}"
-                                    )
-                                else:
-                                    st.text_area(
-                                        "파일 내용",
-                                        value=content,
-                                        height=200,
-                                        disabled=True,
-                                        key=f"full_content_preview_{file['file_id']}"
-                                    )
-                        
-                        # 파일 미리보기 표시
-                        if st.session_state.get(f"show_search_preview_{file['file_id']}", False):
-                            st.markdown("---")
-                            st.subheader("🔍 파일 미리보기")
-                            
+                            # 원본 파일 다운로드
                             file_binary = get_file_binary_data(file['file_id'])
                             if file_binary:
+                                mime_type = get_file_mime_type(file['file_type'])
+                                st.download_button(
+                                    label="📥 원본 파일",
+                                    data=file_binary['binary_data'],
+                                    file_name=file['filename'],
+                                    mime=mime_type,
+                                    key=f"search_download_original_{file['file_id']}",
+                                    help="원본 파일 형식으로 다운로드"
+                                )
+                                
+                                # 텍스트 내용 다운로드 (AI 분석용)
+                                if file['file_content'] and not file['file_content'].startswith('['):
+                                    file_content = file['file_content'].encode('utf-8')
+                                    st.download_button(
+                                        label="📄 텍스트 내용",
+                                        data=file_content,
+                                        file_name=f"{file['filename']}_content.txt",
+                                        mime="text/plain",
+                                        key=f"search_download_text_{file['file_id']}",
+                                        help="추출된 텍스트 내용 다운로드"
+                                    )
+                            else:
+                                # 구버전 호환 - 텍스트만 다운로드
+                                file_content = file['file_content'].encode('utf-8')
+                                st.download_button(
+                                    label="📄 텍스트 내용",
+                                    data=file_content,
+                                    file_name=f"{file['filename']}_content.txt",
+                                    mime="text/plain",
+                                    key=f"search_download_{file['file_id']}"
+                                )
+                        
+                        # 검색어 하이라이트 기능
+                        if file['file_content']:
+                            content = file['file_content']
+                            
+                            # 검색어가 있으면 하이라이트
+                            if search_term and search_term.strip():
+                                # 검색어 주변 컨텍스트 표시
+                                search_lower = search_term.lower()
+                                content_lower = content.lower()
+                                
+                                if search_lower in content_lower:
+                                    # 검색어가 포함된 부분 찾기
+                                    start_idx = content_lower.find(search_lower)
+                                    context_start = max(0, start_idx - 200)
+                                    context_end = min(len(content), start_idx + len(search_term) + 200)
+                                    
+                                    context = content[context_start:context_end]
+                                    if context_start > 0:
+                                        context = "..." + context
+                                    if context_end < len(content):
+                                        context = context + "..."
+                                    
+                                    st.markdown("**검색어 주변 내용:**")
+                                    st.text_area(
+                                        f"'{search_term}' 검색 결과",
+                                        value=context,
+                                        height=150,
+                                        disabled=True,
+                                        key=f"search_context_{file['file_id']}"
+                                    )
+                            
+                            # 파일 미리보기 (버튼으로 토글)
+                            if st.button("📖 파일 미리보기", key=f"search_preview_{file['file_id']}"):
+                                st.session_state[f"search_show_preview_{file['file_id']}"] = not st.session_state.get(f"search_show_preview_{file['file_id']}", False)
+                            
+                            if st.session_state.get(f"search_show_preview_{file['file_id']}", False):
+                                st.markdown("---")
+                                
+                                # 원본 파일 데이터 가져오기
+                                file_binary = get_file_binary_data(file['file_id'])
+                                
+                                if file_binary:
+                                    # 파일 미리보기 함수 호출
+                                    preview_success = display_file_preview(file_binary, file['file_type'], file['filename'])
+                                    
+                                    # 미리보기가 실패하거나 지원하지 않는 형식인 경우 텍스트 내용 표시
+                                    if not preview_success and content:
+                                        st.subheader("📄 추출된 텍스트 내용")
+                                        if len(content) > 3000:
+                                            st.text_area(
+                                                "파일 내용 (처음 3000자)",
+                                                value=content[:3000] + "\n\n... (전체 내용을 보려면 다운로드하세요)",
+                                                height=400,
+                                                disabled=True,
+                                                key=f"search_full_text_{file['file_id']}"
+                                            )
+                                        else:
+                                            st.text_area(
+                                                "파일 전체 내용",
+                                                value=content,
+                                                height=400,
+                                                disabled=True,
+                                                key=f"search_complete_text_{file['file_id']}"
+                                            )
+                                else:
+                                    # 구버전 파일 - 텍스트 내용만 표시
+                                    if content:
+                                        st.subheader("📄 추출된 텍스트 내용")
+                                        if len(content) > 3000:
+                                            st.text_area(
+                                                "파일 내용 (처음 3000자)",
+                                                value=content[:3000] + "\n\n... (전체 내용을 보려면 다운로드하세요)",
+                                                height=400,
+                                                disabled=True,
+                                                key=f"search_old_full_{file['file_id']}"
+                                            )
+                                        else:
+                                            st.text_area(
+                                                "파일 전체 내용",
+                                                value=content,
+                                                height=400,
+                                                disabled=True,
+                                                key=f"search_old_complete_{file['file_id']}"
+                                            )
+                                    else:
+                                        st.info("파일 내용이 없습니다.")
+                                
+                                # 미리보기 숨기기 버튼
+                                if st.button("🙈 미리보기 숨기기", key=f"search_hide_preview_{file['file_id']}"):
+                                    st.session_state[f"search_show_preview_{file['file_id']}"] = False
+                                    st.rerun()
+                        else:
+                            st.info("파일 내용이 없습니다.")
+                        
+                        # 관련 프로젝트로 이동 버튼
+                        if st.button(f"📋 '{file['project_name']}' 프로젝트 보기", key=f"goto_project_{file['file_id']}"):
+                            st.info("프로젝트 목록 탭에서 해당 프로젝트를 확인하세요.")
+            
+            elif search_term:
+                st.warning("🔍 검색 결과가 없습니다.")
+            
+        else:
+            st.info("검색어를 입력하거나 검색 버튼을 클릭하세요.")
+            
+            # 최근 업로드된 파일들 표시
+            st.subheader("최근 업로드된 파일들")
+            recent_files = search_files()[:5]  # 최근 5개 파일
+            
+            if recent_files:
+                for file in recent_files:
+                    with st.expander(f"📄 {file['filename']} - {file['project_name']}"):
+                        col1, col2 = st.columns([3, 1])
+                        
+                        with col1:
+                            st.write(f"**프로젝트:** {file['project_name']}")
+                            st.write(f"**업로드:** {file['uploaded_at'].strftime('%Y-%m-%d %H:%M')}")
+                        
+                        with col2:
+                            # 파일 미리보기 버튼
+                            if st.button("👁️ 미리보기", key=f"recent_preview_{file['file_id']}"):
+                                st.session_state[f"recent_show_preview_{file['file_id']}"] = not st.session_state.get(f"recent_show_preview_{file['file_id']}", False)
+                            
+                            # 원본 파일 다운로드
+                            file_binary = get_file_binary_data(file['file_id'])
+                            if file_binary:
+                                mime_type = get_file_mime_type(file['file_type'])
+                                st.download_button(
+                                    label="📥 원본 파일",
+                                    data=file_binary['binary_data'],
+                                    file_name=file['filename'],
+                                    mime=mime_type,
+                                    key=f"recent_download_original_{file['file_id']}",
+                                    help="원본 파일 형식으로 다운로드"
+                                )
+                            else:
+                                # 구버전 호환 - 텍스트만 다운로드
+                                file_content = file['file_content'].encode('utf-8')
+                                st.download_button(
+                                    label="📄 텍스트 내용",
+                                    data=file_content,
+                                    file_name=f"{file['filename']}_content.txt",
+                                    mime="text/plain",
+                                    key=f"recent_download_{file['file_id']}"
+                                )
+                        
+                        # 파일 미리보기 표시
+                        if st.session_state.get(f"recent_show_preview_{file['file_id']}", False):
+                            st.markdown("---")
+                            st.subheader(f"📖 {file['filename']} 미리보기")
+                            
+                            # 원본 파일 데이터 가져오기
+                            file_binary = get_file_binary_data(file['file_id'])
+                            
+                            if file_binary:
+                                # 파일 미리보기 함수 호출
                                 preview_success = display_file_preview(file_binary, file['file_type'], file['filename'])
                                 
-                                if not preview_success and file.get('file_content'):
+                                # 미리보기가 실패하거나 지원하지 않는 형식인 경우 텍스트 내용 표시
+                                if not preview_success and file['file_content']:
                                     st.subheader("📄 추출된 텍스트 내용")
                                     content = file['file_content']
-                                    if not (content.startswith('[') and content.endswith(']')):
+                                    if content.startswith('[') and content.endswith(']'):
+                                        st.info(content)
+                                    elif len(content) > 1000:
                                         st.text_area(
-                                            "파일 내용",
-                                            value=content,
-                                            height=400,
+                                            "파일 내용 (처음 1000자)",
+                                            value=content[:1000] + "\n\n... (더 보려면 다운로드하세요)",
+                                            height=200,
                                             disabled=True,
-                                            key=f"detailed_preview_{file['file_id']}"
+                                            key=f"recent_preview_text_{file['file_id']}"
+                                        )
+                                    else:
+                                        st.text_area(
+                                            "파일 전체 내용",
+                                            value=content,
+                                            height=200,
+                                            disabled=True,
+                                            key=f"recent_full_text_{file['file_id']}"
                                         )
                             else:
-                                st.error("파일 데이터를 불러올 수 없습니다.")
-                        
-                        # 구분선
-                        if i < len(search_results) - 1:
-                            st.markdown("---")
-                
-                # 검색 결과 내보내기
-                if search_results:
-                    st.markdown("---")
-                    st.subheader("📊 검색 결과 내보내기")
-                    
-                    # 검색 결과를 데이터프레임으로 변환
-                    export_data = []
-                    for file in search_results:
-                        export_row = {
-                            '파일명': file['filename'],
-                            '파일타입': file['file_type'],
-                            '프로젝트명': file['project_name'],
-                            '프로젝트유형': file['project_type'],
-                            '파일크기(MB)': (file.get('file_size', 0)) / (1024*1024),
-                            '업로드날짜': file['uploaded_at'].strftime('%Y-%m-%d %H:%M'),
-                            '작성자': file.get('created_by', ''),
-                            '내용미리보기': (file.get('file_content', '') or '')[:200] + ('...' if len(file.get('file_content', '') or '') > 200 else '')
-                        }
-                        export_data.append(export_row)
-                    
-                    export_df = pd.DataFrame(export_data)
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        csv_data = export_to_csv(export_df, "file_search_results.csv")
-                        st.download_button(
-                            label="📄 검색결과 CSV 다운로드",
-                            data=csv_data,
-                            file_name=f"파일검색결과_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                            mime="text/csv",
-                            key="file_search_csv_download"
-                        )
-                    
-                    with col2:
-                        excel_data = export_to_excel(export_df, "file_search_results.xlsx")
-                        st.download_button(
-                            label="📊 검색결과 Excel 다운로드",
-                            data=excel_data,
-                            file_name=f"파일검색결과_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="file_search_excel_download"
-                        )
-            
+                                # 구버전 파일 - 텍스트 내용만 표시
+                                if file['file_content']:
+                                    st.subheader("📄 추출된 텍스트 내용")
+                                    content = file['file_content']
+                                    if content.startswith('[') and content.endswith(']'):
+                                        st.info(content)
+                                    elif len(content) > 1000:
+                                        st.text_area(
+                                            "파일 내용 (처음 1000자)",
+                                            value=content[:1000] + "\n\n... (더 보려면 다운로드하세요)",
+                                            height=200,
+                                            disabled=True,
+                                            key=f"recent_old_preview_{file['file_id']}"
+                                        )
+                                    else:
+                                        st.text_area(
+                                            "파일 전체 내용",
+                                            value=content,
+                                            height=200,
+                                            disabled=True,
+                                            key=f"recent_old_full_{file['file_id']}"
+                                        )
+                                else:
+                                    st.info("파일 내용이 없습니다.")
+                            
+                            # 미리보기 숨기기 버튼
+                            if st.button("🙈 미리보기 숨기기", key=f"recent_hide_preview_{file['file_id']}"):
+                                st.session_state[f"recent_show_preview_{file['file_id']}"] = False
+                                st.rerun()
             else:
-                st.info("🔍 검색 결과가 없습니다.")
-                st.markdown("""
-                **검색 팁:**
-                - 파일명의 일부만 입력해도 검색됩니다
-                - 파일 내용에서도 검색이 가능합니다
-                - 프로젝트명으로도 검색할 수 있습니다
-                - 고급 검색 옵션을 활용해보세요
-                """)
-        
-        else:
-            # 검색 전 초기 화면
-            st.markdown("---")
-            st.markdown("### 💡 파일 검색 도움말")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("""
-                **🔍 검색 기능:**
-                - **파일명 검색**: 파일 이름으로 검색
-                - **내용 검색**: 파일 내부 텍스트 검색
-                - **프로젝트 검색**: 프로젝트명으로 검색
-                - **복합 검색**: 여러 조건 동시 적용
-                """)
-            
-            with col2:
-                st.markdown("""
-                **📁 지원 파일 형식:**
-                - **문서**: PDF, DOCX, DOC, TXT, MD
-                - **데이터**: XLSX, XLS, CSV, JSON, XML
-                - **이미지**: JPG, JPEG, PNG, GIF
-                - **압축**: ZIP, RAR
-                - **기타**: HTML 등
-                """)
-            
-            # 전체 파일 통계
-            all_files = search_files()
-            if all_files:
-                st.markdown("---")
-                st.markdown("### 📊 전체 파일 현황")
-                
-                total_files = len(all_files)
-                total_size = sum([f.get('file_size', 0) for f in all_files])
-                file_types = list(set([f['file_type'] for f in all_files]))
-                projects = list(set([f['project_name'] for f in all_files]))
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("📄 총 파일", total_files)
-                with col2:
-                    st.metric("💾 총 용량", f"{total_size / (1024*1024):.1f} MB")
-                with col3:
-                    st.metric("📁 파일 형식", f"{len(file_types)}종류")
-                with col4:
-                    st.metric("📋 프로젝트", f"{len(projects)}개")
-                
-                # 파일 타입별 통계
-                if len(file_types) > 1:
-                    type_counts = {}
-                    for file in all_files:
-                        file_type = file['file_type']
-                        type_counts[file_type] = type_counts.get(file_type, 0) + 1
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # 파일 타입별 개수
-                        fig_count = px.bar(
-                            x=list(type_counts.keys()),
-                            y=list(type_counts.values()),
-                            title="📊 파일 타입별 개수",
-                            labels={'x': '파일 타입', 'y': '개수'}
-                        )
-                        st.plotly_chart(fig_count, use_container_width=True)
-                    
-                    with col2:
-                        # 파일 타입별 분포
-                        fig_pie = px.pie(
-                            values=list(type_counts.values()),
-                            names=list(type_counts.keys()),
-                            title="📊 파일 타입별 분포"
-                        )
-                        st.plotly_chart(fig_pie, use_container_width=True)
-            else:
-                st.info("📄 아직 업로드된 파일이 없습니다.")
+                st.info("업로드된 파일이 없습니다.")
 
 if __name__ == "__main__":
     main() 
