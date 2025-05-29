@@ -2703,9 +2703,9 @@ def main():
                     success = update_stock(
                         product_id=selected_product['product_id'],
                         quantity_change=quantity,
-                        change_type='A/S지원입고',
+                        change_type='입고',
                         reference_number=reference_number,
-                        notes=notes_detail,
+                        notes=f"[A/S지원] {notes_detail}",
                         destination=f"공급처: {selected_supplier['supplier_name']}"
                     )
                     
@@ -2779,7 +2779,8 @@ def main():
                     FROM inventory_transactions t
                     JOIN products_logistics p ON t.product_id = p.product_id
                     JOIN suppliers s ON p.supplier_id = s.supplier_id
-                    WHERE t.change_type = 'A/S지원입고'
+                    WHERE t.change_type = '입고'
+                    AND t.notes LIKE '%[A/S지원]%'
                     AND DATE(t.date) >= %s 
                     AND DATE(t.date) <= %s
                 """
@@ -2888,7 +2889,8 @@ def main():
                     FROM inventory_transactions t
                     JOIN products_logistics p ON t.product_id = p.product_id
                     JOIN suppliers s ON p.supplier_id = s.supplier_id
-                    WHERE t.change_type = 'A/S지원입고'
+                    WHERE t.change_type = '입고'
+                    AND t.notes LIKE '%[A/S지원]%'
                     AND DATE(t.date) >= %s 
                     AND DATE(t.date) <= %s
                     GROUP BY s.supplier_id, s.supplier_name
@@ -2906,7 +2908,8 @@ def main():
                     FROM inventory_transactions t
                     JOIN products_logistics p ON t.product_id = p.product_id
                     JOIN suppliers s ON p.supplier_id = s.supplier_id
-                    WHERE t.change_type = 'A/S지원입고'
+                    WHERE t.change_type = '입고'
+                    AND t.notes LIKE '%[A/S지원]%'
                     AND DATE(t.date) >= %s 
                     AND DATE(t.date) <= %s
                     GROUP BY p.product_id, p.model_name, s.supplier_name
@@ -2922,7 +2925,8 @@ def main():
                         SUM(t.quantity) as total_quantity
                     FROM inventory_transactions t
                     JOIN products_logistics p ON t.product_id = p.product_id
-                    WHERE t.change_type = 'A/S지원입고'
+                    WHERE t.change_type = '입고'
+                    AND t.notes LIKE '%[A/S지원]%'
                     AND DATE(t.date) >= %s 
                     AND DATE(t.date) <= %s
                     GROUP BY DATE_FORMAT(t.date, '%%Y-%%m')
@@ -3006,14 +3010,31 @@ def main():
                         st.subheader("📅 월별 A/S 지원 추이")
                         df_monthly = pd.DataFrame(monthly_stats)
                         
-                        fig4 = px.line(
-                            df_monthly,
-                            x='month',
-                            y=['support_count', 'total_quantity'],
-                            title='월별 A/S 지원 추이',
-                            labels={'month': '월', 'value': '수량', 'variable': '구분'}
-                        )
-                        st.plotly_chart(fig4, use_container_width=True)
+                        # 데이터 타입 통일 (정수형으로 변환)
+                        df_monthly['support_count'] = pd.to_numeric(df_monthly['support_count'], errors='coerce').fillna(0).astype(int)
+                        df_monthly['total_quantity'] = pd.to_numeric(df_monthly['total_quantity'], errors='coerce').fillna(0).astype(int)
+                        
+                        # 두 개의 차트를 나누어서 생성
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            fig4_1 = px.line(
+                                df_monthly,
+                                x='month',
+                                y='support_count',
+                                title='월별 A/S 지원 횟수',
+                                labels={'month': '월', 'support_count': '지원 횟수'}
+                            )
+                            st.plotly_chart(fig4_1, use_container_width=True)
+                        
+                        with col2:
+                            fig4_2 = px.line(
+                                df_monthly,
+                                x='month',
+                                y='total_quantity',
+                                title='월별 A/S 지원 수량',
+                                labels={'month': '월', 'total_quantity': '총 지원 수량'}
+                            )
+                            st.plotly_chart(fig4_2, use_container_width=True)
                         
                         st.dataframe(
                             df_monthly,
