@@ -31,7 +31,7 @@ def get_connection():
         st.error(f"Database connection failed: {str(e)}")
         return None
 
-st.title("🌐 JV Process Management")
+st.title("🌐 JV Process Management Portal")
 
 st.session_state.authenticated = False
 
