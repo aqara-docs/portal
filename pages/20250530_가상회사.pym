@@ -1,0 +1,880 @@
+import streamlit as st
+import os
+from datetime import datetime
+import time
+import random
+from dotenv import load_dotenv
+from openai import OpenAI
+import anthropic
+from langchain_anthropic import ChatAnthropic
+import json
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 환경 변수 로드
+load_dotenv()
+
+# 페이지 설정
+st.set_page_config(
+    page_title="🏢 가상회사 C-Level 멀티에이전트",
+    page_icon="🏢",
+    layout="wide"
+)
+
+# 스타일링
+st.markdown("""
+<style>
+.persona-card {
+    background: linear-gradient(145deg, #f0f2f6, #ffffff);
+    border-radius: 15px;
+    padding: 20px;
+    margin: 10px 0;
+    box-shadow: 5px 5px 15px #d1d9e6, -5px -5px 15px #ffffff;
+    border-left: 5px solid #0066cc;
+}
+
+.persona-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.persona-emoji {
+    font-size: 2.5rem;
+    margin-right: 15px;
+}
+
+.persona-title {
+    color: #0066cc;
+    font-size: 1.3rem;
+    font-weight: bold;
+    margin: 0;
+}
+
+.persona-subtitle {
+    color: #666;
+    font-size: 0.9rem;
+    margin: 0;
+}
+
+.result-container {
+    background: linear-gradient(145deg, #f8f9fa, #ffffff);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 15px 0;
+    border-left: 4px solid #28a745;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.result-container h4 {
+    color: #28a745;
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.ceo-final {
+    background: linear-gradient(145deg, #fff3cd, #ffeaa7);
+    border-left: 4px solid #f39c12;
+    border-radius: 15px;
+    padding: 20px;
+    margin: 20px 0;
+    box-shadow: 0 4px 15px rgba(243, 156, 18, 0.2);
+}
+
+.progress-indicator {
+    background: linear-gradient(145deg, #0066cc, #0052a3);
+    color: white;
+    text-align: center;
+    padding: 15px 20px;
+    border-radius: 12px;
+    margin: 15px 0;
+    box-shadow: 0 4px 12px rgba(0, 102, 204, 0.3);
+    border: none;
+}
+
+.progress-indicator strong {
+    font-size: 1.1rem;
+    font-weight: 600;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+}
+
+.progress-section {
+    background: #f8f9fa;
+    border-radius: 15px;
+    padding: 25px;
+    margin: 20px 0;
+    border: 2px solid #e9ecef;
+}
+
+.progress-section h2 {
+    color: #0066cc;
+    text-align: center;
+    margin-bottom: 20px;
+    font-size: 1.5rem;
+}
+
+.analysis-complete {
+    background: linear-gradient(145deg, #d4edda, #c3e6cb);
+    border: 2px solid #28a745;
+    border-radius: 12px;
+    padding: 15px;
+    margin: 10px 0;
+    text-align: center;
+}
+
+.analysis-complete h4 {
+    color: #155724;
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.ceo-synthesis {
+    background: linear-gradient(145deg, #ffeaa7, #fdcb6e);
+    border: 2px solid #f39c12;
+    border-radius: 12px;
+    padding: 20px;
+    margin: 15px 0;
+    text-align: center;
+}
+
+.ceo-synthesis strong {
+    color: #8e5b00;
+    font-size: 1.2rem;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+}
+
+.main-title {
+    text-align: center;
+    color: #0066cc;
+    margin-bottom: 10px;
+}
+
+.main-subtitle {
+    text-align: center;
+    color: #666;
+    font-size: 1.1rem;
+    margin-bottom: 30px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# C-Level 페르소나 정의
+PERSONAS = {
+    "CTO": {
+        "name": "Chief Technology Officer",
+        "emoji": "💻",
+        "role": "기술 전략 및 혁신 책임자",
+        "expertise": "기술 아키텍처, 개발 전략, 혁신, 디지털 전환",
+        "perspective": "기술적 타당성, 구현 가능성, 기술 트렌드, 보안, 확장성을 중심으로 분석",
+        "system_prompt": """당신은 경험이 풍부한 CTO(Chief Technology Officer)입니다. 
+기술 전략, 시스템 아키텍처, 개발 방법론, 보안, 확장성 관점에서 분석하고 조언합니다.
+항상 기술적 타당성과 구현 가능성을 우선적으로 고려하며, 최신 기술 트렌드를 반영합니다.
+실용적이고 구체적인 기술 솔루션을 제시합니다."""
+    },
+    "CSO_Strategy": {
+        "name": "Chief Strategy Officer",
+        "emoji": "🎯",
+        "role": "전략 기획 및 사업 개발 책임자",
+        "expertise": "사업 전략, 시장 분석, 경쟁 분석, 성장 전략",
+        "perspective": "시장 기회, 경쟁 우위, 성장 잠재력, 리스크 분석을 중심으로 전략적 관점 제시",
+        "system_prompt": """당신은 전략적 사고가 뛰어난 CSO(Chief Strategy Officer)입니다.
+시장 분석, 경쟁 분석, 사업 모델, 성장 전략을 전문으로 합니다.
+장기적 관점에서 전략적 기회와 위험을 평가하고, 지속 가능한 성장 방안을 제시합니다.
+데이터 기반의 논리적이고 체계적인 전략을 수립합니다."""
+    },
+    "CMO": {
+        "name": "Chief Marketing Officer",
+        "emoji": "📢",
+        "role": "마케팅 및 브랜드 전략 책임자",
+        "expertise": "브랜드 전략, 고객 경험, 디지털 마케팅, 시장 조사",
+        "perspective": "고객 니즈, 브랜드 포지셔닝, 마케팅 채널, 고객 경험을 중심으로 분석",
+        "system_prompt": """당신은 창의적이고 고객 중심적인 CMO(Chief Marketing Officer)입니다.
+브랜드 전략, 고객 경험, 마케팅 캠페인, 시장 포지셔닝을 전문으로 합니다.
+고객의 관점에서 가치를 창출하고, 효과적인 마케팅 전략을 수립합니다.
+데이터 기반 마케팅과 창의적 아이디어를 결합합니다."""
+    },
+    "CFO": {
+        "name": "Chief Financial Officer",
+        "emoji": "💰",
+        "role": "재무 전략 및 리스크 관리 책임자",
+        "expertise": "재무 분석, 투자 평가, 리스크 관리, 수익성 분석",
+        "perspective": "재무적 타당성, 투자 수익률, 비용 효율성, 리스크 관리를 중심으로 분석",
+        "system_prompt": """당신은 신중하고 분석적인 CFO(Chief Financial Officer)입니다.
+재무 분석, 투자 평가, 예산 계획, 리스크 관리를 전문으로 합니다.
+모든 결정을 재무적 관점에서 평가하고, 수익성과 지속가능성을 중시합니다.
+정확한 수치 분석과 신중한 재무 전략을 제시합니다."""
+    },
+    "CSO_Sales": {
+        "name": "Chief Sales Officer",
+        "emoji": "🤝",
+        "role": "영업 전략 및 고객 관계 책임자",
+        "expertise": "영업 전략, 고객 관계 관리, 시장 개발, 파트너십",
+        "perspective": "영업 효율성, 고객 만족도, 시장 확대, 수익 창출을 중심으로 분석",
+        "system_prompt": """당신은 성과 지향적이고 관계 중심적인 CSO(Chief Sales Officer)입니다.
+영업 전략, 고객 관계 관리, 시장 개발, 파트너십 구축을 전문으로 합니다.
+고객과의 관계를 중시하며, 실질적인 매출 성과를 추구합니다.
+시장 동향을 파악하고 효과적인 영업 전략을 수립합니다."""
+    },
+    "CIO": {
+        "name": "Chief Information Officer",
+        "emoji": "🔐",
+        "role": "정보시스템 및 데이터 전략 책임자",
+        "expertise": "정보시스템, 데이터 관리, IT 거버넌스, 디지털 인프라",
+        "perspective": "시스템 효율성, 데이터 활용, 보안, IT 거버넌스를 중심으로 분석",
+        "system_prompt": """당신은 체계적이고 보안 중심적인 CIO(Chief Information Officer)입니다.
+정보시스템, 데이터 관리, IT 거버넌스, 사이버 보안을 전문으로 합니다.
+정보 자산의 효율적 활용과 보안을 중시하며, 체계적인 IT 전략을 수립합니다.
+데이터 기반 의사결정을 지원하는 시스템을 구축합니다."""
+    }
+}
+
+# CEO 페르소나 (사용자)
+CEO_PERSONA = {
+    "name": "Chief Executive Officer",
+    "emoji": "👑",
+    "role": "최고경영자 (사용자 페르소나)",
+    "expertise": "종합적 경영 판단, 의사결정, 리더십, 비전 제시",
+    "perspective": "전체적 관점에서 종합 분석하고 최종 의사결정 지원",
+    "system_prompt": """당신은 경험이 풍부한 CEO(Chief Executive Officer)입니다.
+각 임원진들의 분석과 제안을 종합하여 최종적인 의사결정을 내립니다.
+전체적인 관점에서 균형 잡힌 판단을 하며, 회사의 비전과 목표에 맞는 방향을 제시합니다.
+리더십과 실행력을 겸비한 통합적 사고를 보여줍니다."""
+}
+
+# C-Level 페르소나별 분석 단계 정의
+PERSONA_ANALYSIS_STAGES = {
+    "CTO": [
+        {"progress": 15, "message": "기술 요구사항 분석 중..."},
+        {"progress": 30, "message": "시스템 아키텍처 검토 중..."},
+        {"progress": 45, "message": "기술 트렌드 조사 중..."},
+        {"progress": 60, "message": "구현 가능성 평가 중..."},
+        {"progress": 75, "message": "보안 및 확장성 검토 중..."},
+        {"progress": 90, "message": "기술 솔루션 수립 중..."},
+        {"progress": 100, "message": "기술 분석 완료!"}
+    ],
+    "CSO_Strategy": [
+        {"progress": 12, "message": "시장 환경 분석 중..."},
+        {"progress": 28, "message": "경쟁사 현황 조사 중..."},
+        {"progress": 42, "message": "성장 기회 탐색 중..."},
+        {"progress": 58, "message": "전략적 위험 평가 중..."},
+        {"progress": 72, "message": "사업 모델 검토 중..."},
+        {"progress": 88, "message": "전략 방향 수립 중..."},
+        {"progress": 100, "message": "전략 분석 완료!"}
+    ],
+    "CMO": [
+        {"progress": 18, "message": "고객 니즈 분석 중..."},
+        {"progress": 32, "message": "브랜드 포지셔닝 검토 중..."},
+        {"progress": 48, "message": "마케팅 채널 조사 중..."},
+        {"progress": 62, "message": "고객 경험 설계 중..."},
+        {"progress": 78, "message": "캠페인 전략 수립 중..."},
+        {"progress": 92, "message": "마케팅 플랜 완성 중..."},
+        {"progress": 100, "message": "마케팅 분석 완료!"}
+    ],
+    "CFO": [
+        {"progress": 10, "message": "재무 데이터 수집 중..."},
+        {"progress": 25, "message": "투자 수익률 계산 중..."},
+        {"progress": 40, "message": "리스크 요인 분석 중..."},
+        {"progress": 55, "message": "비용 구조 검토 중..."},
+        {"progress": 70, "message": "수익성 모델링 중..."},
+        {"progress": 85, "message": "재무 전략 수립 중..."},
+        {"progress": 100, "message": "재무 분석 완료!"}
+    ],
+    "CSO_Sales": [
+        {"progress": 16, "message": "시장 규모 조사 중..."},
+        {"progress": 34, "message": "고객 세그먼트 분석 중..."},
+        {"progress": 50, "message": "영업 채널 평가 중..."},
+        {"progress": 66, "message": "파트너십 기회 탐색 중..."},
+        {"progress": 80, "message": "영업 전략 설계 중..."},
+        {"progress": 94, "message": "실행 계획 수립 중..."},
+        {"progress": 100, "message": "영업 분석 완료!"}
+    ],
+    "CIO": [
+        {"progress": 14, "message": "시스템 현황 분석 중..."},
+        {"progress": 29, "message": "데이터 구조 검토 중..."},
+        {"progress": 44, "message": "보안 요구사항 평가 중..."},
+        {"progress": 59, "message": "IT 거버넌스 설계 중..."},
+        {"progress": 74, "message": "인프라 최적화 계획 중..."},
+        {"progress": 89, "message": "정보전략 수립 중..."},
+        {"progress": 100, "message": "정보시스템 분석 완료!"}
+    ]
+}
+
+# 세션 상태 초기화
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
+
+if 'current_analysis' not in st.session_state:
+    st.session_state.current_analysis = {}
+
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
+
+# 모델 선택 및 설정
+if 'selected_model' not in st.session_state:
+    st.session_state.selected_model = 'claude-3-5-sonnet-latest'
+
+# 사이드바 설정
+st.sidebar.title("🏢 C-Level 멀티에이전트 설정")
+
+# 모델 선택
+available_models = []
+has_anthropic_key = os.environ.get('ANTHROPIC_API_KEY') is not None
+if has_anthropic_key:
+    available_models.extend([
+        'claude-3-5-sonnet-latest',
+        'claude-3-5-haiku-latest',
+    ])
+has_openai_key = os.environ.get('OPENAI_API_KEY') is not None
+if has_openai_key:
+    available_models.extend(['gpt-4o', 'gpt-4o-mini'])
+
+if not available_models:
+    st.sidebar.error("API 키가 설정되지 않았습니다.")
+    st.stop()
+
+selected_model = st.sidebar.selectbox(
+    '🧠 AI 모델 선택',
+    options=available_models,
+    index=available_models.index(st.session_state.selected_model) if st.session_state.selected_model in available_models else 0,
+    help='Claude는 ANTHROPIC_API_KEY, OpenAI는 OPENAI_API_KEY 필요'
+)
+
+if selected_model != st.session_state.selected_model:
+    st.session_state.selected_model = selected_model
+
+st.sidebar.markdown("---")
+
+# 페르소나별 커스텀 프롬프트 설정
+st.sidebar.subheader("🎭 페르소나별 커스텀 프롬프트")
+st.sidebar.markdown("*각 임원진에게 특별한 지시사항이 있다면 입력하세요*")
+
+persona_prompts = {}
+for persona_key, persona_info in PERSONAS.items():
+    with st.sidebar.expander(f"{persona_info['emoji']} {persona_info['name']}"):
+        st.markdown(f"**역할**: {persona_info['role']}")
+        st.markdown(f"**전문분야**: {persona_info['expertise']}")
+        
+        prompt_key = f"custom_prompt_{persona_key}"
+        if prompt_key not in st.session_state:
+            st.session_state[prompt_key] = ""
+        
+        persona_prompts[persona_key] = st.text_area(
+            f"커스텀 프롬프트",
+            value=st.session_state[prompt_key],
+            key=prompt_key,
+            height=100,
+            placeholder=f"{persona_info['name']}에게 특별히 분석해달라고 요청할 내용을 입력하세요...",
+            help=f"{persona_info['perspective']}"
+        )
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📊 분석 현황")
+if st.session_state.current_analysis:
+    completed = len([k for k, v in st.session_state.current_analysis.items() if v.get('completed', False)])
+    total = len(PERSONAS)
+    st.sidebar.progress(completed / total)
+    st.sidebar.write(f"진행률: {completed}/{total}")
+
+# AI 분석 함수
+def get_ai_response(prompt, model_name, system_prompt=""):
+    """AI 모델로부터 응답을 받는 함수"""
+    try:
+        if model_name.startswith('claude'):
+            client = ChatAnthropic(
+                model=model_name, 
+                api_key=os.getenv('ANTHROPIC_API_KEY'), 
+                temperature=0.7, 
+                max_tokens=4000
+            )
+            response = client.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ])
+            return response.content if hasattr(response, 'content') else str(response)
+        else:
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+                raise ValueError("OpenAI API 키가 올바르지 않습니다.")
+            
+            client = OpenAI(api_key=openai_key)
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=4000,
+                temperature=0.7
+            )
+            return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"AI 응답 중 오류: {str(e)}")
+        return None
+
+def analyze_with_persona(user_query, persona_key, persona_info, custom_prompt=""):
+    """특정 페르소나로 분석 수행"""
+    # 기본 프롬프트 구성
+    analysis_prompt = f"""
+다음 주제/질문에 대해 {persona_info['role']} 관점에서 전문적으로 분석해주세요:
+
+【주제/질문】
+{user_query}
+
+【분석 요구사항】
+- {persona_info['perspective']}
+- 구체적이고 실행 가능한 제안 포함
+- 본인의 전문 분야에 특화된 인사이트 제공
+- 다른 부서와의 협업 방안 고려
+
+"""
+    
+    # 커스텀 프롬프트가 있다면 추가
+    if custom_prompt and custom_prompt.strip():
+        analysis_prompt += f"""
+【추가 분석 요청사항】
+{custom_prompt.strip()}
+
+"""
+    
+    analysis_prompt += """
+【응답 형식】
+## 핵심 분석
+(2-3줄로 핵심 포인트 요약)
+
+## 상세 분석
+(전문 분야 관점에서 상세한 분석)
+
+## 실행 제안
+(구체적이고 실행 가능한 액션 아이템들)
+
+## 다른 부서 협업 방안
+(다른 C-level과의 협업이 필요한 부분)
+
+## 리스크 및 고려사항
+(주의해야 할 점들)
+"""
+    
+    return get_ai_response(analysis_prompt, selected_model, persona_info['system_prompt'])
+
+def analyze_persona_concurrent(args):
+    """ThreadPoolExecutor에서 사용할 래퍼 함수"""
+    user_query, persona_key, persona_info, custom_prompt = args
+    try:
+        result = analyze_with_persona(user_query, persona_key, persona_info, custom_prompt)
+        return persona_key, result, True
+    except Exception as e:
+        return persona_key, str(e), False
+
+def run_concurrent_analysis_with_progress(user_query, persona_prompts, persona_status, persona_progress):
+    """모든 페르소나 분석을 동시에 실행하면서 진행률 업데이트"""
+    
+    # 분석 작업 준비
+    tasks = []
+    for persona_key, persona_info in PERSONAS.items():
+        custom_prompt = persona_prompts.get(persona_key, "")
+        tasks.append((user_query, persona_key, persona_info, custom_prompt))
+    
+    # 각 페르소나별 진행 상태 추적
+    persona_stages = {}
+    for persona_key in PERSONAS.keys():
+        persona_stages[persona_key] = {
+            'current_stage': 0,
+            'last_update': time.time(),
+            'stage_duration': random.uniform(2.0, 4.0)  # 각 단계당 2-4초
+        }
+    
+    # 진행률 애니메이션을 위한 함수
+    def animate_progress():
+        while True:
+            current_time = time.time()
+            
+            all_completed = True
+            for persona_key, persona_info in PERSONAS.items():
+                if persona_key not in st.session_state.get('completed_personas', set()):
+                    all_completed = False
+                    
+                    stages = PERSONA_ANALYSIS_STAGES[persona_key]
+                    stage_info = persona_stages[persona_key]
+                    
+                    # 현재 단계 확인
+                    if stage_info['current_stage'] < len(stages):
+                        current_stage = stages[stage_info['current_stage']]
+                        
+                        # 단계 진행 시간 체크
+                        elapsed_since_update = current_time - stage_info['last_update']
+                        
+                        if elapsed_since_update >= stage_info['stage_duration']:
+                            # 다음 단계로 진행
+                            stage_info['current_stage'] += 1
+                            stage_info['last_update'] = current_time
+                            stage_info['stage_duration'] = random.uniform(1.5, 3.5)  # 다음 단계 시간
+                            
+                            # 새로운 단계가 있으면 업데이트
+                            if stage_info['current_stage'] < len(stages):
+                                new_stage = stages[stage_info['current_stage']]
+                                
+                                # 진행률 바 업데이트
+                                if persona_progress[persona_key] is not None:
+                                    persona_progress[persona_key].progress(new_stage['progress'])
+                                
+                                # 상태 메시지 업데이트
+                                persona_status[persona_key].markdown(f"""
+                                <div class="progress-indicator">
+                                    <strong>⚡ {persona_info['emoji']} {persona_info['name']}</strong><br>
+                                    <span style="font-size: 0.9rem;">{new_stage['message']} ({new_stage['progress']}%)</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            # 현재 단계 내에서 부드러운 진행
+                            if stage_info['current_stage'] > 0:
+                                prev_progress = stages[stage_info['current_stage'] - 1]['progress']
+                                curr_progress = current_stage['progress']
+                                
+                                # 단계 내 진행률 계산
+                                stage_progress = min(elapsed_since_update / stage_info['stage_duration'], 1.0)
+                                interpolated_progress = prev_progress + (curr_progress - prev_progress) * stage_progress
+                                
+                                # 부드러운 진행률 업데이트
+                                if persona_progress[persona_key] is not None:
+                                    persona_progress[persona_key].progress(int(interpolated_progress))
+                                
+                                # 메시지는 현재 단계 유지
+                                persona_status[persona_key].markdown(f"""
+                                <div class="progress-indicator">
+                                    <strong>⚡ {persona_info['emoji']} {persona_info['name']}</strong><br>
+                                    <span style="font-size: 0.9rem;">{current_stage['message']} ({int(interpolated_progress)}%)</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+            
+            if all_completed:
+                break
+                
+            time.sleep(0.3)  # 더 빈번한 업데이트 (0.3초마다)
+    
+    # 완료된 페르소나 추적을 위한 세션 상태 초기화
+    st.session_state['completed_personas'] = set()
+    
+    # 진행률 애니메이션 시작 (별도 스레드)
+    progress_thread = threading.Thread(target=animate_progress)
+    progress_thread.daemon = True
+    progress_thread.start()
+    
+    # ThreadPoolExecutor로 동시 실행
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(PERSONAS)) as executor:
+        # 모든 작업을 동시에 시작
+        future_to_persona = {
+            executor.submit(analyze_persona_concurrent, task): task[1] 
+            for task in tasks
+        }
+        
+        # 완료되는 순서대로 결과 수집
+        for future in as_completed(future_to_persona):
+            persona_key = future_to_persona[future]
+            try:
+                persona_key, result, success = future.result()
+                results[persona_key] = {
+                    'result': result,
+                    'success': success,
+                    'completed': True,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                # 완료된 페르소나 마킹
+                st.session_state['completed_personas'].add(persona_key)
+                
+                # 진행률을 100%로 설정
+                if persona_progress[persona_key] is not None:
+                    persona_progress[persona_key].progress(100)
+                
+                # 완료 상태로 업데이트
+                persona_info = PERSONAS[persona_key]
+                if success:
+                    completion_message = PERSONA_ANALYSIS_STAGES[persona_key][-1]['message']
+                    persona_status[persona_key].markdown(f"""
+                    <div class="analysis-complete">
+                        <h4>🎉 {persona_info['emoji']} {persona_info['name']}</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #155724;">
+                            {completion_message}<br>
+                            완료 시간: {datetime.fromisoformat(results[persona_key]['timestamp']).strftime('%H:%M:%S')}
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    persona_status[persona_key].markdown(f"""
+                    <div style="background: #f8d7da; border: 2px solid #dc3545; border-radius: 12px; padding: 15px; margin: 10px 0; text-align: center;">
+                        <h4 style="color: #721c24; margin: 0;">❌ {persona_info['emoji']} {persona_info['name']} 분석 오류</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #721c24;">
+                            오류 시간: {datetime.fromisoformat(results[persona_key]['timestamp']).strftime('%H:%M:%S')}
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+            except Exception as e:
+                results[persona_key] = {
+                    'result': str(e),
+                    'success': False,
+                    'completed': True,
+                    'timestamp': datetime.now().isoformat()
+                }
+                st.session_state['completed_personas'].add(persona_key)
+    
+    return results
+
+def synthesize_ceo_analysis(user_query, persona_analyses):
+    """CEO 관점에서 모든 분석을 종합"""
+    synthesis_prompt = f"""
+다음은 우리 회사 C-level 임원진들이 분석한 내용입니다. 
+CEO로서 이들의 분석을 종합하여 최종 의사결정을 위한 통합 보고서를 작성해주세요.
+
+【원래 주제/질문】
+{user_query}
+
+【각 임원진 분석 결과】
+"""
+    
+    for persona_key, analysis in persona_analyses.items():
+        if analysis and analysis.get('result'):
+            persona_info = PERSONAS[persona_key]
+            synthesis_prompt += f"""
+--- {persona_info['emoji']} {persona_info['name']} 분석 ---
+{analysis['result']}
+
+"""
+    
+    synthesis_prompt += """
+【CEO 종합 분석 요구사항】
+- 각 임원진의 관점을 균형있게 고려
+- 전사적 관점에서의 우선순위 설정
+- 실현 가능한 통합 실행 계획 수립
+- 리스크와 기회 요인의 종합적 평가
+- 명확한 의사결정 방향 제시
+
+【응답 형식】
+## 🎯 핵심 결론 및 의사결정
+(CEO로서의 최종 판단과 결정사항)
+
+## 📊 임원진 분석 종합
+(각 임원진 의견의 핵심 포인트들)
+
+## 🚀 통합 실행 계획
+(단계별 실행 방안)
+
+## ⚖️ 리스크 vs 기회
+(종합적 리스크-기회 분석)
+
+## 📈 성공 지표 및 모니터링
+(성과 측정 방법)
+
+## 💡 CEO 최종 메시지
+(조직에 전달할 핵심 메시지)
+"""
+    
+    return get_ai_response(synthesis_prompt, selected_model, CEO_PERSONA['system_prompt'])
+
+# 메인 인터페이스
+st.markdown('<h1 class="main-title">🏢 가상회사 C-Level 멀티에이전트</h1>', unsafe_allow_html=True)
+st.markdown('<p class="main-subtitle"><strong>당신은 CEO입니다. C-level 임원진들이 협력하여 분석하고, 최종 종합 보고서를 제공합니다.</strong></p>', unsafe_allow_html=True)
+
+# 현재 설정 정보 표시
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.markdown(f"**선택된 모델**: {selected_model}")
+with col2:
+    if st.button("🔄 초기화", help="모든 분석 결과를 초기화합니다"):
+        st.session_state.current_analysis = {}
+        st.session_state.analysis_complete = False
+        st.rerun()
+
+# 임원진 소개
+st.markdown("## 👥 C-Level 임원진")
+cols = st.columns(3)
+for i, (persona_key, persona_info) in enumerate(PERSONAS.items()):
+    with cols[i % 3]:
+        st.markdown(f"""
+        <div class="persona-card">
+            <div class="persona-header">
+                <div class="persona-emoji">{persona_info['emoji']}</div>
+                <div>
+                    <div class="persona-title">{persona_info['name']}</div>
+                    <div class="persona-subtitle">{persona_info['role']}</div>
+                </div>
+            </div>
+            <div style="font-size: 0.85rem; color: #666;">
+                {persona_info['expertise']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# 메인 입력
+user_query = st.text_area(
+    "📝 CEO님, 어떤 주제에 대해 C-level 임원진들의 분석이 필요하신가요?",
+    height=120,
+    placeholder="예: 새로운 AI 서비스 론칭 전략에 대해 분석해주세요...\n예: 디지털 전환을 위한 투자 계획을 검토해주세요...\n예: 해외 시장 진출 방안을 분석해주세요..."
+)
+
+if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_container_width=True):
+    if not user_query.strip():
+        st.warning("분석할 주제를 입력해주세요.")
+    else:
+        st.session_state.current_analysis = {}
+        st.session_state.analysis_complete = False
+        
+        # 진행 상황 표시
+        progress_container = st.container()
+        
+        with progress_container:
+            st.markdown("""
+            <div class="progress-section">
+                <h2>🚀 C-Level 임원진 동시 분석 시작!</h2>
+                <p style="text-align: center; color: #666; margin-top: 10px;">
+                    모든 임원진이 동시에 분석을 시작합니다...
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # 모든 페르소나에 대해 "분석 시작" 상태 표시
+            persona_status = {}
+            persona_progress = {}
+            for persona_key, persona_info in PERSONAS.items():
+                persona_status[persona_key] = st.empty()
+                
+                # 첫 번째 단계로 초기 상태 표시
+                first_stage = PERSONA_ANALYSIS_STAGES[persona_key][0]
+                persona_status[persona_key].markdown(f"""
+                <div class="progress-indicator">
+                    <strong>🚀 {persona_info['emoji']} {persona_info['name']}</strong><br>
+                    <span style="font-size: 0.9rem;">{first_stage['message']} (0%)</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # 진행률 바 추가
+                persona_progress[persona_key] = st.progress(0)
+                st.markdown(f"<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
+            
+            # 동시 분석 실행
+            with st.spinner("🔥 모든 C-Level 임원진이 동시에 분석 중입니다..."):
+                # 실제 동시 분석 수행
+                analysis_results = run_concurrent_analysis_with_progress(user_query, persona_prompts, persona_status, persona_progress)
+                
+                # 결과를 세션에 저장
+                for persona_key, result_data in analysis_results.items():
+                    st.session_state.current_analysis[persona_key] = result_data
+                
+                # 분석 결과 표시 (expander로)
+                st.markdown("### 📋 상세 분석 결과")
+                for persona_key, result_data in analysis_results.items():
+                    persona_info = PERSONAS[persona_key]
+                    
+                    if result_data['success']:
+                        with st.expander(f"📋 {persona_info['emoji']} {persona_info['name']} 상세 분석 결과", expanded=False):
+                            st.markdown(result_data['result'])
+                    else:
+                        with st.expander(f"❌ {persona_info['emoji']} {persona_info['name']} 오류 상세", expanded=False):
+                            st.error(f"분석 중 오류 발생: {result_data['result']}")
+            
+            # 성공한 분석만 CEO 종합 분석에 사용
+            successful_analyses = {
+                k: v for k, v in st.session_state.current_analysis.items() 
+                if v.get('success', False)
+            }
+            
+            if successful_analyses:
+                # CEO 종합 분석
+                st.markdown("---")
+                st.markdown("""
+                <div class="ceo-synthesis">
+                    <strong>👑 CEO 최종 종합 분석 중...</strong>
+                    <p style="margin: 10px 0; font-size: 0.9rem;">
+                        모든 임원진의 동시 분석 결과를 종합합니다
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                with st.spinner("CEO 최종 종합 분석 중..."):
+                    ceo_synthesis = synthesize_ceo_analysis(user_query, successful_analyses)
+                    
+                    if ceo_synthesis:
+                        st.session_state.current_analysis['CEO'] = {
+                            'result': ceo_synthesis,
+                            'completed': True,
+                            'timestamp': datetime.now().isoformat()
+                        }
+                        st.session_state.analysis_complete = True
+            else:
+                st.error("❌ 모든 임원진 분석이 실패했습니다. 다시 시도해주세요.")
+        
+        # 진행 상황 표시 제거
+        progress_container.empty()
+        
+        if st.session_state.analysis_complete:
+            st.balloons()
+            st.success("🎉 동시 분석이 모두 완료되었습니다!")
+
+# 분석 결과 표시
+if st.session_state.analysis_complete and 'CEO' in st.session_state.current_analysis:
+    st.markdown("---")
+    st.markdown("## 👑 CEO 최종 종합 보고서")
+    
+    st.markdown(f"""
+    <div class="ceo-final">
+        <h3>👑 CEO 최종 의사결정 보고서</h3>
+        <p><strong>분석 완료 시간:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown(st.session_state.current_analysis['CEO']['result'])
+    
+    # 개별 임원진 분석 결과 (접을 수 있는 형태)
+    st.markdown("## 📋 개별 임원진 분석 결과")
+    
+    for persona_key, persona_info in PERSONAS.items():
+        if persona_key in st.session_state.current_analysis:
+            analysis_data = st.session_state.current_analysis[persona_key]
+            with st.expander(f"{persona_info['emoji']} {persona_info['name']} 상세 분석"):
+                st.markdown(f"**분석 시간:** {analysis_data['timestamp']}")
+                st.markdown("---")
+                st.markdown(analysis_data['result'])
+
+# 사용법 안내
+with st.expander("💡 사용법 안내"):
+    st.markdown("""
+    ### 🏢 C-Level 멀티에이전트 시스템 사용법
+    
+    1. **모델 선택**: 사이드바에서 사용할 AI 모델을 선택하세요
+    2. **커스텀 프롬프트**: 각 임원진에게 특별한 분석을 요청하고 싶다면 사이드바에서 설정하세요
+    3. **주제 입력**: 메인 창에서 분석하고 싶은 주제나 질문을 입력하세요
+    4. **동시 분석**: 모든 C-Level 임원진이 **실제로 동시에** 분석합니다 🚀
+    5. **CEO 종합**: 모든 분석이 끝나면 CEO(당신)가 최종 종합 의사결정을 제시합니다
+    
+    ### 🎭 페르소나별 특징
+    - **💻 CTO**: 기술적 타당성과 구현 방안
+    - **🎯 CSO(전략)**: 시장 분석과 성장 전략
+    - **📢 CMO**: 마케팅과 고객 경험
+    - **💰 CFO**: 재무적 타당성과 리스크
+    - **🤝 CSO(영업)**: 영업 전략과 고객 관계
+    - **🔐 CIO**: 정보시스템과 데이터 전략
+    - **👑 CEO**: 최종 종합 의사결정
+    
+    ### ⚡ 동시 처리의 장점
+    - **속도**: 순차 처리 대비 **6배 빠른** 분석 속도
+    - **효율성**: 모든 임원진이 **실제로 동시에** 작업
+    - **실시간**: 완료되는 순서대로 **즉시 결과 확인**
+    - **견고성**: 일부 분석이 실패해도 나머지는 정상 진행
+    
+    ### 💡 팁
+    - 커스텀 프롬프트가 없으면 메인 질문을 모든 임원진이 공통으로 분석합니다
+    - 각 임원진의 전문 분야에 맞는 구체적인 요청을 커스텀 프롬프트에 추가하면 더 정확한 분석을 받을 수 있습니다
+    - 동시 처리로 인해 **대폭 단축된 분석 시간**을 경험해보세요!
+    """)
+
+# 푸터
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center; color: #666; font-size: 0.9rem;">
+    🏢 가상회사 C-Level 멀티에이전트 시스템 | Powered by Claude & ChatGPT
+</div>
+""", unsafe_allow_html=True) 

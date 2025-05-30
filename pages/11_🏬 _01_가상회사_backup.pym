@@ -1,0 +1,1466 @@
+import streamlit as st
+import os
+from datetime import datetime
+import time
+import random
+from dotenv import load_dotenv
+from openai import OpenAI
+import anthropic
+from langchain_anthropic import ChatAnthropic
+import json
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# RAG 관련 import 추가
+import mysql.connector
+import pandas as pd
+from sqlalchemy import create_engine
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
+import nltk
+import logging
+from pathlib import Path
+import hashlib
+
+# 벡터 데이터베이스 관련 import
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.vectorstores.faiss import FAISS
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.document_loaders import UnstructuredFileLoader
+from langchain.schema import Document
+
+# 환경 변수 로드
+load_dotenv()
+
+# 표준화된 데이터베이스 연결 함수
+def connect_to_db():
+    """데이터베이스 연결"""
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv('SQL_HOST'),
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4',
+            collation='utf8mb4_unicode_ci'
+        )
+        return conn
+    except mysql.connector.Error as err:
+        st.error(f"데이터베이스 연결 오류: {err}")
+        return None
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# NLTK 설정
+try:
+    nltk.download('punkt', quiet=True)
+except:
+    pass
+
+# 페이지 설정
+st.set_page_config(
+    page_title="🏢 가상회사 C-Level 멀티에이전트 + RAG",
+    page_icon="🏢",
+    layout="wide"
+)
+
+# 스타일링
+st.markdown("""
+<style>
+.persona-card {
+    background: linear-gradient(145deg, #f0f2f6, #ffffff);
+    border-radius: 15px;
+    padding: 20px;
+    margin: 10px 0;
+    box-shadow: 5px 5px 15px #d1d9e6, -5px -5px 15px #ffffff;
+    border-left: 5px solid #0066cc;
+}
+
+.persona-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.persona-emoji {
+    font-size: 2.5rem;
+    margin-right: 15px;
+}
+
+.persona-title {
+    color: #0066cc;
+    font-size: 1.3rem;
+    font-weight: bold;
+    margin: 0;
+}
+
+.persona-subtitle {
+    color: #666;
+    font-size: 0.9rem;
+    margin: 0;
+}
+
+.result-container {
+    background: linear-gradient(145deg, #f8f9fa, #ffffff);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 15px 0;
+    border-left: 4px solid #28a745;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.result-container h4 {
+    color: #28a745;
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.ceo-final {
+    background: linear-gradient(145deg, #fff3cd, #ffeaa7);
+    border-left: 4px solid #f39c12;
+    border-radius: 15px;
+    padding: 20px;
+    margin: 20px 0;
+    box-shadow: 0 4px 15px rgba(243, 156, 18, 0.2);
+}
+
+.progress-indicator {
+    background: linear-gradient(145deg, #0066cc, #0052a3);
+    color: white;
+    text-align: center;
+    padding: 15px 20px;
+    border-radius: 12px;
+    margin: 15px 0;
+    box-shadow: 0 4px 12px rgba(0, 102, 204, 0.3);
+    border: none;
+}
+
+.progress-indicator strong {
+    font-size: 1.1rem;
+    font-weight: 600;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+}
+
+.progress-section {
+    background: #f8f9fa;
+    border-radius: 15px;
+    padding: 25px;
+    margin: 20px 0;
+    border: 2px solid #e9ecef;
+}
+
+.progress-section h2 {
+    color: #0066cc;
+    text-align: center;
+    margin-bottom: 20px;
+    font-size: 1.5rem;
+}
+
+.analysis-complete {
+    background: linear-gradient(145deg, #d4edda, #c3e6cb);
+    border: 2px solid #28a745;
+    border-radius: 12px;
+    padding: 15px;
+    margin: 10px 0;
+    text-align: center;
+}
+
+.analysis-complete h4 {
+    color: #155724;
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.ceo-synthesis {
+    background: linear-gradient(145deg, #ffeaa7, #fdcb6e);
+    border: 2px solid #f39c12;
+    border-radius: 12px;
+    padding: 20px;
+    margin: 15px 0;
+    text-align: center;
+}
+
+.ceo-synthesis strong {
+    color: #8e5b00;
+    font-size: 1.2rem;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+}
+
+.main-title {
+    text-align: center;
+    color: #0066cc;
+    margin-bottom: 10px;
+}
+
+.main-subtitle {
+    text-align: center;
+    color: #666;
+    font-size: 1.1rem;
+    margin-bottom: 30px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# C-Level 페르소나 정의
+PERSONAS = {
+    "CTO": {
+        "name": "Chief Technology Officer",
+        "emoji": "💻",
+        "role": "기술 전략 및 혁신 책임자",
+        "expertise": "기술 아키텍처, 개발 전략, 혁신, 디지털 전환",
+        "perspective": "기술적 타당성, 구현 가능성, 기술 트렌드, 보안, 확장성을 중심으로 분석",
+        "system_prompt": """당신은 경험이 풍부한 CTO(Chief Technology Officer)입니다. 
+기술 전략, 시스템 아키텍처, 개발 방법론, 보안, 확장성 관점에서 분석하고 조언합니다.
+항상 기술적 타당성과 구현 가능성을 우선적으로 고려하며, 최신 기술 트렌드를 반영합니다.
+실용적이고 구체적인 기술 솔루션을 제시합니다."""
+    },
+    "CSO_Strategy": {
+        "name": "Chief Strategy Officer",
+        "emoji": "🎯",
+        "role": "전략 기획 및 사업 개발 책임자",
+        "expertise": "사업 전략, 시장 분석, 경쟁 분석, 성장 전략",
+        "perspective": "시장 기회, 경쟁 우위, 성장 잠재력, 리스크 분석을 중심으로 전략적 관점 제시",
+        "system_prompt": """당신은 전략적 사고가 뛰어난 CSO(Chief Strategy Officer)입니다.
+시장 분석, 경쟁 분석, 사업 모델, 성장 전략을 전문으로 합니다.
+장기적 관점에서 전략적 기회와 위험을 평가하고, 지속 가능한 성장 방안을 제시합니다.
+데이터 기반의 논리적이고 체계적인 전략을 수립합니다."""
+    },
+    "CMO": {
+        "name": "Chief Marketing Officer",
+        "emoji": "📢",
+        "role": "마케팅 및 브랜드 전략 책임자",
+        "expertise": "브랜드 전략, 고객 경험, 디지털 마케팅, 시장 조사",
+        "perspective": "고객 니즈, 브랜드 포지셔닝, 마케팅 채널, 고객 경험을 중심으로 분석",
+        "system_prompt": """당신은 창의적이고 고객 중심적인 CMO(Chief Marketing Officer)입니다.
+브랜드 전략, 고객 경험, 마케팅 캠페인, 시장 포지셔닝을 전문으로 합니다.
+고객의 관점에서 가치를 창출하고, 효과적인 마케팅 전략을 수립합니다.
+데이터 기반 마케팅과 창의적 아이디어를 결합합니다."""
+    },
+    "CFO": {
+        "name": "Chief Financial Officer",
+        "emoji": "💰",
+        "role": "재무 전략 및 리스크 관리 책임자",
+        "expertise": "재무 분석, 투자 평가, 리스크 관리, 수익성 분석",
+        "perspective": "재무적 타당성, 투자 수익률, 비용 효율성, 리스크 관리를 중심으로 분석",
+        "system_prompt": """당신은 신중하고 분석적인 CFO(Chief Financial Officer)입니다.
+재무 분석, 투자 평가, 예산 계획, 리스크 관리를 전문으로 합니다.
+모든 결정을 재무적 관점에서 평가하고, 수익성과 지속가능성을 중시합니다.
+정확한 수치 분석과 신중한 재무 전략을 제시합니다."""
+    },
+    "CSO_Sales": {
+        "name": "Chief Sales Officer",
+        "emoji": "🤝",
+        "role": "영업 전략 및 고객 관계 책임자",
+        "expertise": "영업 전략, 고객 관계 관리, 시장 개발, 파트너십",
+        "perspective": "영업 효율성, 고객 만족도, 시장 확대, 수익 창출을 중심으로 분석",
+        "system_prompt": """당신은 성과 지향적이고 관계 중심적인 CSO(Chief Sales Officer)입니다.
+영업 전략, 고객 관계 관리, 시장 개발, 파트너십 구축을 전문으로 합니다.
+고객과의 관계를 중시하며, 실질적인 매출 성과를 추구합니다.
+시장 동향을 파악하고 효과적인 영업 전략을 수립합니다."""
+    },
+    "CIO": {
+        "name": "Chief Information Officer",
+        "emoji": "🔐",
+        "role": "정보시스템 및 데이터 전략 책임자",
+        "expertise": "정보시스템, 데이터 관리, IT 거버넌스, 디지털 인프라",
+        "perspective": "시스템 효율성, 데이터 활용, 보안, IT 거버넌스를 중심으로 분석",
+        "system_prompt": """당신은 체계적이고 보안 중심적인 CIO(Chief Information Officer)입니다.
+정보시스템, 데이터 관리, IT 거버넌스, 사이버 보안을 전문으로 합니다.
+정보 자산의 효율적 활용과 보안을 중시하며, 체계적인 IT 전략을 수립합니다.
+데이터 기반 의사결정을 지원하는 시스템을 구축합니다."""
+    }
+}
+
+# CEO 페르소나 (사용자)
+CEO_PERSONA = {
+    "name": "Chief Executive Officer",
+    "emoji": "👑",
+    "role": "최고경영자 (사용자 페르소나)",
+    "expertise": "종합적 경영 판단, 의사결정, 리더십, 비전 제시",
+    "perspective": "전체적 관점에서 종합 분석하고 최종 의사결정 지원",
+    "system_prompt": """당신은 경험이 풍부한 CEO(Chief Executive Officer)입니다.
+각 임원진들의 분석과 제안을 종합하여 최종적인 의사결정을 내립니다.
+전체적인 관점에서 균형 잡힌 판단을 하며, 회사의 비전과 목표에 맞는 방향을 제시합니다.
+리더십과 실행력을 겸비한 통합적 사고를 보여줍니다."""
+}
+
+# RAG 데이터 소스 설정
+RAG_SOURCES = {
+    "mysql": {
+        "name": "MySQL 데이터베이스",
+        "emoji": "🗄️",
+        "description": "회사 데이터베이스의 실시간 데이터를 분석에 활용"
+    },
+    "website": {
+        "name": "웹사이트 크롤링",
+        "emoji": "🌐", 
+        "description": "관련 웹사이트의 최신 정보를 수집하여 분석"
+    },
+    "files": {
+        "name": "문서 파일",
+        "emoji": "📄",
+        "description": "업로드된 문서들의 내용을 분석에 반영"
+    }
+}
+
+# 지원되는 파일 형식
+SUPPORTED_FILE_TYPES = {
+    "txt": {"max_size_mb": 10, "description": "텍스트 파일"},
+    "md": {"max_size_mb": 10, "description": "마크다운 파일"},
+    "pdf": {"max_size_mb": 50, "description": "PDF 문서"},
+    "docx": {"max_size_mb": 50, "description": "Word 문서"},
+    "csv": {"max_size_mb": 20, "description": "CSV 파일"},
+    "json": {"max_size_mb": 20, "description": "JSON 파일"}
+}
+
+# 세션 상태 초기화
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
+
+if 'current_analysis' not in st.session_state:
+    st.session_state.current_analysis = {}
+
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
+
+if 'selected_model' not in st.session_state:
+    st.session_state.selected_model = 'claude-3-5-sonnet-latest'
+
+# RAG 관련 세션 상태 초기화
+if 'rag_sources' not in st.session_state:
+    st.session_state.rag_sources = []
+
+if 'mysql_data' not in st.session_state:
+    st.session_state.mysql_data = {}
+
+if 'website_data' not in st.session_state:
+    st.session_state.website_data = {}
+
+if 'files_data' not in st.session_state:
+    st.session_state.files_data = {}
+
+# ==================== RAG 유틸리티 함수들 ====================
+
+def validate_file(file):
+    """파일 유효성 검사"""
+    errors = []
+    file_ext = file.name.split('.')[-1].lower()
+    if file_ext not in SUPPORTED_FILE_TYPES:
+        errors.append(f"지원되지 않는 파일 형식: {file_ext}")
+        return errors
+    
+    file_size_mb = file.size / (1024 * 1024)
+    max_size = SUPPORTED_FILE_TYPES[file_ext]["max_size_mb"]
+    if file_size_mb > max_size:
+        errors.append(f"파일 크기가 너무 큽니다: {file_size_mb:.1f}MB (최대: {max_size}MB)")
+    
+    return errors
+
+def test_mysql_connection():
+    """MySQL 연결 테스트"""
+    try:
+        # 환경변수 확인
+        required_vars = ['SQL_USER', 'SQL_PASSWORD', 'SQL_HOST', 'SQL_DATABASE_NEWBIZ']
+        if not all([os.getenv(var) for var in required_vars]):
+            return False, "환경변수가 설정되지 않았습니다."
+        
+        # 표준화된 연결 함수 사용
+        connection = connect_to_db()
+        if connection and connection.is_connected():
+            connection.close()
+            return True, "연결 성공"
+        else:
+            return False, "연결 실패"
+    except Exception as e:
+        return False, str(e)
+
+def get_mysql_tables():
+    """MySQL 테이블 목록 가져오기"""
+    try:
+        # 표준화된 연결 함수 사용
+        connection = connect_to_db()
+        if not connection:
+            return [], {}
+        
+        cursor = connection.cursor()
+        cursor.execute("SHOW TABLES")
+        tables = [table[0] for table in cursor.fetchall()]
+        
+        # 테이블 정보 수집
+        table_info = {}
+        for table in tables:
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            row_count = cursor.fetchone()[0]
+            cursor.execute(f"DESCRIBE {table}")
+            columns = cursor.fetchall()
+            table_info[table] = {
+                'rows': row_count,
+                'columns': len(columns),
+                'column_details': [(col[0], col[1]) for col in columns]
+            }
+        
+        connection.close()
+        return tables, table_info
+    except Exception as e:
+        logger.error(f"MySQL 테이블 조회 오류: {e}")
+        return [], {}
+
+def load_mysql_data(selected_tables):
+    """선택된 MySQL 테이블 데이터 로드"""
+    try:
+        # 표준화된 연결 함수 사용
+        connection = connect_to_db()
+        if not connection:
+            return {}
+        
+        data_frames = {}
+        for table in selected_tables:
+            query = f"SELECT * FROM {table} LIMIT 1000"  # 성능을 위해 제한
+            df = pd.read_sql(query, connection)
+            data_frames[table] = df
+        
+        connection.close()
+        return data_frames
+    except Exception as e:
+        logger.error(f"MySQL 데이터 로드 오류: {e}")
+        return {}
+
+def scrape_website_simple(url, max_pages=5):
+    """간단한 웹사이트 크롤링"""
+    try:
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        visited_urls = set()
+        texts = []
+        urls_to_visit = [url]
+        
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        
+        page_count = 0
+        while urls_to_visit and page_count < max_pages:
+            current_url = urls_to_visit.pop(0)
+            
+            if current_url in visited_urls:
+                continue
+                
+            try:
+                response = session.get(current_url, timeout=10)
+                response.raise_for_status()
+                
+                visited_urls.add(current_url)
+                page_count += 1
+                
+                soup = BeautifulSoup(response.content, "html.parser")
+                
+                # 불필요한 태그 제거
+                for tag in soup(["script", "style", "nav", "header", "footer"]):
+                    tag.decompose()
+                
+                page_text = soup.get_text(separator="\n", strip=True)
+                lines = [line.strip() for line in page_text.split('\n') if line.strip()]
+                cleaned_text = '\n'.join(lines)
+                
+                if len(cleaned_text) > 200:
+                    page_title = soup.title.string.strip() if soup.title and soup.title.string else 'No Title'
+                    texts.append({
+                        'content': cleaned_text,
+                        'url': current_url,
+                        'title': page_title
+                    })
+                
+                # 새로운 링크 찾기 (같은 도메인만)
+                base_domain = urlparse(url).netloc
+                if page_count < max_pages:
+                    for link in soup.find_all("a", href=True)[:10]:
+                        absolute_link = urljoin(current_url, link['href'])
+                        parsed_link = urlparse(absolute_link)
+                        
+                        if (parsed_link.netloc == base_domain and 
+                            absolute_link not in visited_urls and 
+                            absolute_link not in urls_to_visit):
+                            urls_to_visit.append(absolute_link)
+                
+                time.sleep(1)  # 지연시간
+                
+            except Exception as e:
+                logger.error(f"페이지 크롤링 오류 {current_url}: {e}")
+                continue
+        
+        return texts
+        
+    except Exception as e:
+        logger.error(f"웹사이트 크롤링 오류: {e}")
+        return []
+
+def process_files(files):
+    """업로드된 파일들 처리"""
+    processed_files = []
+    
+    for file in files:
+        try:
+            # 파일 저장
+            file_path = f"./temp_uploads/{file.name}"
+            os.makedirs("./temp_uploads", exist_ok=True)
+            
+            with open(file_path, "wb") as f:
+                f.write(file.read())
+            
+            # 파일 내용 읽기
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                with open(file_path, 'r', encoding='latin-1') as f:
+                    content = f.read()
+            
+            processed_files.append({
+                'name': file.name,
+                'content': content,
+                'size': len(content)
+            })
+            
+            # 임시 파일 삭제
+            os.remove(file_path)
+            
+        except Exception as e:
+            logger.error(f"파일 처리 오류 {file.name}: {e}")
+            continue
+    
+    return processed_files
+
+def create_rag_context():
+    """RAG 컨텍스트 생성"""
+    context_parts = []
+    
+    # MySQL 데이터 컨텍스트
+    if st.session_state.mysql_data:
+        mysql_context = "=== MySQL 데이터베이스 정보 ===\n"
+        for table_name, df in st.session_state.mysql_data.items():
+            mysql_context += f"\n[{table_name}] 테이블:\n"
+            mysql_context += f"- 행 수: {len(df):,}개\n"
+            mysql_context += f"- 컬럼: {', '.join(df.columns.tolist())}\n"
+            
+            # 샘플 데이터 (상위 3행)
+            if len(df) > 0:
+                mysql_context += "- 샘플 데이터:\n"
+                mysql_context += df.head(3).to_string(index=False)
+                mysql_context += "\n"
+        
+        context_parts.append(mysql_context)
+    
+    # 웹사이트 데이터 컨텍스트
+    if st.session_state.website_data:
+        website_context = "=== 웹사이트 크롤링 정보 ===\n"
+        for i, page_data in enumerate(st.session_state.website_data[:3]):  # 상위 3개 페이지만
+            website_context += f"\n[페이지 {i+1}] {page_data['title']}\n"
+            website_context += f"URL: {page_data['url']}\n"
+            website_context += f"내용 미리보기: {page_data['content'][:500]}...\n"
+        
+        context_parts.append(website_context)
+    
+    # 파일 데이터 컨텍스트
+    if st.session_state.files_data:
+        files_context = "=== 업로드된 문서 정보 ===\n"
+        for file_data in st.session_state.files_data:
+            files_context += f"\n[문서] {file_data['name']}\n"
+            files_context += f"크기: {file_data['size']:,}자\n"
+            files_context += f"내용 미리보기: {file_data['content'][:500]}...\n"
+        
+        context_parts.append(files_context)
+    
+    return "\n\n".join(context_parts)
+
+# AI 분석 함수
+def get_ai_response(prompt, model_name, system_prompt=""):
+    """AI 모델로부터 응답을 받는 함수"""
+    try:
+        if model_name.startswith('claude'):
+            client = ChatAnthropic(
+                model=model_name, 
+                api_key=os.getenv('ANTHROPIC_API_KEY'), 
+                temperature=0.7, 
+                max_tokens=4000
+            )
+            response = client.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ])
+            return response.content if hasattr(response, 'content') else str(response)
+        else:
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+                raise ValueError("OpenAI API 키가 올바르지 않습니다.")
+            
+            client = OpenAI(api_key=openai_key)
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=4000,
+                temperature=0.7
+            )
+            return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"AI 응답 중 오류: {str(e)}")
+        return None 
+
+# C-Level 페르소나별 분석 단계 정의
+PERSONA_ANALYSIS_STAGES = {
+    "CTO": [
+        {"progress": 15, "message": "기술 요구사항 분석 중..."},
+        {"progress": 30, "message": "시스템 아키텍처 검토 중..."},
+        {"progress": 45, "message": "기술 트렌드 조사 중..."},
+        {"progress": 60, "message": "구현 가능성 평가 중..."},
+        {"progress": 75, "message": "보안 및 확장성 검토 중..."},
+        {"progress": 90, "message": "기술 솔루션 수립 중..."},
+        {"progress": 100, "message": "기술 분석 완료!"}
+    ],
+    "CSO_Strategy": [
+        {"progress": 12, "message": "시장 환경 분석 중..."},
+        {"progress": 28, "message": "경쟁사 현황 조사 중..."},
+        {"progress": 42, "message": "성장 기회 탐색 중..."},
+        {"progress": 58, "message": "전략적 위험 평가 중..."},
+        {"progress": 72, "message": "사업 모델 검토 중..."},
+        {"progress": 88, "message": "전략 방향 수립 중..."},
+        {"progress": 100, "message": "전략 분석 완료!"}
+    ],
+    "CMO": [
+        {"progress": 18, "message": "고객 니즈 분석 중..."},
+        {"progress": 32, "message": "브랜드 포지셔닝 검토 중..."},
+        {"progress": 48, "message": "마케팅 채널 조사 중..."},
+        {"progress": 62, "message": "고객 경험 설계 중..."},
+        {"progress": 78, "message": "캠페인 전략 수립 중..."},
+        {"progress": 92, "message": "마케팅 플랜 완성 중..."},
+        {"progress": 100, "message": "마케팅 분석 완료!"}
+    ],
+    "CFO": [
+        {"progress": 10, "message": "재무 데이터 수집 중..."},
+        {"progress": 25, "message": "투자 수익률 계산 중..."},
+        {"progress": 40, "message": "리스크 요인 분석 중..."},
+        {"progress": 55, "message": "비용 구조 검토 중..."},
+        {"progress": 70, "message": "수익성 모델링 중..."},
+        {"progress": 85, "message": "재무 전략 수립 중..."},
+        {"progress": 100, "message": "재무 분석 완료!"}
+    ],
+    "CSO_Sales": [
+        {"progress": 16, "message": "시장 규모 조사 중..."},
+        {"progress": 34, "message": "고객 세그먼트 분석 중..."},
+        {"progress": 50, "message": "영업 채널 평가 중..."},
+        {"progress": 66, "message": "파트너십 기회 탐색 중..."},
+        {"progress": 80, "message": "영업 전략 설계 중..."},
+        {"progress": 94, "message": "실행 계획 수립 중..."},
+        {"progress": 100, "message": "영업 분석 완료!"}
+    ],
+    "CIO": [
+        {"progress": 14, "message": "시스템 현황 분석 중..."},
+        {"progress": 29, "message": "데이터 구조 검토 중..."},
+        {"progress": 44, "message": "보안 요구사항 평가 중..."},
+        {"progress": 59, "message": "IT 거버넌스 설계 중..."},
+        {"progress": 74, "message": "인프라 최적화 계획 중..."},
+        {"progress": 89, "message": "정보전략 수립 중..."},
+        {"progress": 100, "message": "정보시스템 분석 완료!"}
+    ]
+}
+
+# AI 분석 함수 수정 (RAG 컨텍스트 포함)
+def analyze_with_persona_rag(user_query, persona_key, persona_info, custom_prompt="", model_name="claude-3-5-sonnet-latest"):
+    """RAG 컨텍스트를 포함한 페르소나 분석"""
+    
+    # RAG 컨텍스트 생성
+    rag_context = create_rag_context()
+    
+    # 기본 프롬프트 구성
+    analysis_prompt = f"""
+다음 주제/질문에 대해 {persona_info['role']} 관점에서 전문적으로 분석해주세요:
+
+【주제/질문】
+{user_query}
+
+"""
+
+    # RAG 컨텍스트 추가
+    if rag_context:
+        analysis_prompt += f"""
+【추가 참고 데이터】
+{rag_context}
+
+위 데이터를 참고하여 더 구체적이고 데이터 기반의 분석을 제공해주세요.
+
+"""
+
+    analysis_prompt += f"""
+【분석 요구사항】
+- {persona_info['perspective']}
+- 구체적이고 실행 가능한 제안 포함
+- 본인의 전문 분야에 특화된 인사이트 제공
+- 다른 부서와의 협업 방안 고려
+- 제공된 데이터를 적극 활용한 분석
+
+"""
+    
+    # 커스텀 프롬프트가 있다면 추가
+    if custom_prompt and custom_prompt.strip():
+        analysis_prompt += f"""
+【추가 분석 요청사항】
+{custom_prompt.strip()}
+
+"""
+    
+    analysis_prompt += """
+【응답 형식】
+## 핵심 분석
+(2-3줄로 핵심 포인트 요약)
+
+## 상세 분석
+(전문 분야 관점에서 상세한 분석, 제공된 데이터 활용)
+
+## 데이터 기반 인사이트
+(제공된 데이터에서 발견한 주요 인사이트)
+
+## 실행 제안
+(구체적이고 실행 가능한 액션 아이템들)
+
+## 다른 부서 협업 방안
+(다른 C-level과의 협업이 필요한 부분)
+
+## 리스크 및 고려사항
+(주의해야 할 점들)
+"""
+    
+    return get_ai_response(analysis_prompt, model_name, persona_info['system_prompt'])
+
+def analyze_persona_concurrent_rag(args):
+    """RAG 기능이 포함된 ThreadPoolExecutor 래퍼 함수"""
+    user_query, persona_key, persona_info, custom_prompt, model_name = args
+    try:
+        result = analyze_with_persona_rag(user_query, persona_key, persona_info, custom_prompt, model_name)
+        if result is None:
+            return persona_key, f"AI 응답이 None입니다. API 키나 모델 설정을 확인해주세요.", False
+        return persona_key, result, True
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return persona_key, f"오류 발생: {str(e)}\n상세: {error_details}", False
+
+def synthesize_ceo_analysis_rag(user_query, persona_analyses, model_name="claude-3-5-sonnet-latest"):
+    """RAG 컨텍스트를 포함한 CEO 종합 분석"""
+    
+    # RAG 컨텍스트 생성
+    rag_context = create_rag_context()
+    
+    synthesis_prompt = f"""
+다음은 우리 회사 C-level 임원진들이 분석한 내용입니다. 
+CEO로서 이들의 분석을 종합하여 최종 의사결정을 위한 통합 보고서를 작성해주세요.
+
+【원래 주제/질문】
+{user_query}
+
+"""
+
+    # RAG 컨텍스트 추가
+    if rag_context:
+        synthesis_prompt += f"""
+【참고 데이터】
+{rag_context}
+
+"""
+
+    synthesis_prompt += """
+【각 임원진 분석 결과】
+"""
+    
+    for persona_key, analysis in persona_analyses.items():
+        if analysis and analysis.get('result'):
+            persona_info = PERSONAS[persona_key]
+            synthesis_prompt += f"""
+--- {persona_info['emoji']} {persona_info['name']} 분석 ---
+{analysis['result']}
+
+"""
+    
+    synthesis_prompt += """
+【CEO 종합 분석 요구사항】
+- 각 임원진의 관점을 균형있게 고려
+- 제공된 데이터를 적극 활용한 의사결정
+- 전사적 관점에서의 우선순위 설정
+- 실현 가능한 통합 실행 계획 수립
+- 리스크와 기회 요인의 종합적 평가
+- 명확한 의사결정 방향 제시
+
+【응답 형식】
+## 🎯 핵심 결론 및 의사결정
+(CEO로서의 최종 판단과 결정사항)
+
+## 📊 데이터 기반 핵심 인사이트  
+(제공된 데이터에서 도출한 주요 발견사항)
+
+## 🔍 임원진 분석 종합
+(각 임원진 의견의 핵심 포인트들)
+
+## 🚀 통합 실행 계획
+(단계별 실행 방안)
+
+## ⚖️ 리스크 vs 기회
+(종합적 리스크-기회 분석)
+
+## 📈 성공 지표 및 모니터링
+(성과 측정 방법)
+
+## 💡 CEO 최종 메시지
+(조직에 전달할 핵심 메시지)
+"""
+    
+    return get_ai_response(synthesis_prompt, model_name, CEO_PERSONA['system_prompt'])
+
+def run_concurrent_analysis_with_progress_rag(user_query, persona_prompts, persona_status, persona_progress, model_name="claude-3-5-sonnet-latest"):
+    """RAG 기능이 포함된 동시 분석 실행"""
+    
+    # 분석 작업 준비
+    tasks = []
+    for persona_key, persona_info in PERSONAS.items():
+        custom_prompt = persona_prompts.get(persona_key, "")
+        tasks.append((user_query, persona_key, persona_info, custom_prompt, model_name))
+    
+    # 각 페르소나별 진행 상태 추적
+    persona_stages = {}
+    for persona_key in PERSONAS.keys():
+        persona_stages[persona_key] = {
+            'current_stage': 0,
+            'last_update': time.time(),
+            'stage_duration': random.uniform(2.0, 4.0)
+        }
+    
+    # 진행률 애니메이션 함수
+    def animate_progress():
+        while True:
+            current_time = time.time()
+            
+            all_completed = True
+            for persona_key, persona_info in PERSONAS.items():
+                if persona_key not in st.session_state.get('completed_personas', set()):
+                    all_completed = False
+                    
+                    stages = PERSONA_ANALYSIS_STAGES[persona_key]
+                    stage_info = persona_stages[persona_key]
+                    
+                    if stage_info['current_stage'] < len(stages):
+                        current_stage = stages[stage_info['current_stage']]
+                        
+                        elapsed_since_update = current_time - stage_info['last_update']
+                        
+                        if elapsed_since_update >= stage_info['stage_duration']:
+                            stage_info['current_stage'] += 1
+                            stage_info['last_update'] = current_time
+                            stage_info['stage_duration'] = random.uniform(1.5, 3.5)
+                            
+                            if stage_info['current_stage'] < len(stages):
+                                new_stage = stages[stage_info['current_stage']]
+                                
+                                if persona_progress[persona_key] is not None:
+                                    persona_progress[persona_key].progress(new_stage['progress'])
+                                
+                                persona_status[persona_key].markdown(f"""
+                                <div class="progress-indicator">
+                                    <strong>🚀 {persona_info['emoji']} {persona_info['name']}</strong><br>
+                                    <span style="font-size: 0.9rem;">{new_stage['message']} ({new_stage['progress']}%)</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            if stage_info['current_stage'] > 0:
+                                prev_progress = stages[stage_info['current_stage'] - 1]['progress']
+                                curr_progress = current_stage['progress']
+                                
+                                stage_progress = min(elapsed_since_update / stage_info['stage_duration'], 1.0)
+                                interpolated_progress = prev_progress + (curr_progress - prev_progress) * stage_progress
+                                
+                                if persona_progress[persona_key] is not None:
+                                    persona_progress[persona_key].progress(int(interpolated_progress))
+                                
+                                persona_status[persona_key].markdown(f"""
+                                <div class="progress-indicator">
+                                    <strong>🚀 {persona_info['emoji']} {persona_info['name']}</strong><br>
+                                    <span style="font-size: 0.9rem;">{current_stage['message']} ({int(interpolated_progress)}%)</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+            
+            if all_completed:
+                break
+                
+            time.sleep(0.3)
+    
+    st.session_state['completed_personas'] = set()
+    
+    progress_thread = threading.Thread(target=animate_progress)
+    progress_thread.daemon = True
+    progress_thread.start()
+    
+    # ThreadPoolExecutor로 동시 실행 (RAG 버전 사용)
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(PERSONAS)) as executor:
+        future_to_persona = {
+            executor.submit(analyze_persona_concurrent_rag, task): task[1] 
+            for task in tasks
+        }
+        
+        for future in as_completed(future_to_persona):
+            persona_key = future_to_persona[future]
+            try:
+                persona_key, result, success = future.result()
+                results[persona_key] = {
+                    'result': result,
+                    'success': success,
+                    'completed': True,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                st.session_state['completed_personas'].add(persona_key)
+                
+                if persona_progress[persona_key] is not None:
+                    persona_progress[persona_key].progress(100)
+                
+                persona_info = PERSONAS[persona_key]
+                if success:
+                    completion_message = PERSONA_ANALYSIS_STAGES[persona_key][-1]['message']
+                    persona_status[persona_key].markdown(f"""
+                    <div class="analysis-complete">
+                        <h4>🎉 {persona_info['emoji']} {persona_info['name']}</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #155724;">
+                            {completion_message}<br>
+                            완료 시간: {datetime.fromisoformat(results[persona_key]['timestamp']).strftime('%H:%M:%S')}
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    persona_status[persona_key].markdown(f"""
+                    <div style="background: #f8d7da; border: 2px solid #dc3545; border-radius: 12px; padding: 15px; margin: 10px 0; text-align: center;">
+                        <h4 style="color: #721c24; margin: 0;">❌ {persona_info['emoji']} {persona_info['name']} 분석 오류</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #721c24;">
+                            오류 시간: {datetime.fromisoformat(results[persona_key]['timestamp']).strftime('%H:%M:%S')}
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+            except Exception as e:
+                import traceback
+                error_details = traceback.format_exc()
+                results[persona_key] = {
+                    'result': f"처리 중 오류: {str(e)}\n상세: {error_details}",
+                    'success': False,
+                    'completed': True,
+                    'timestamp': datetime.now().isoformat()
+                }
+                st.session_state['completed_personas'].add(persona_key)
+    
+    return results
+
+# ==================== 사이드바 설정 ====================
+
+# 사이드바 설정
+st.sidebar.title("🏢 C-Level 멀티에이전트 설정")
+
+# 모델 선택
+available_models = []
+has_anthropic_key = os.environ.get('ANTHROPIC_API_KEY') is not None
+if has_anthropic_key:
+    available_models.extend([
+        'claude-3-5-sonnet-latest',
+        'claude-3-5-haiku-latest',
+    ])
+has_openai_key = os.environ.get('OPENAI_API_KEY') is not None
+if has_openai_key:
+    available_models.extend(['gpt-4o', 'gpt-4o-mini'])
+
+if not available_models:
+    st.sidebar.error("API 키가 설정되지 않았습니다.")
+    available_models = ['claude-3-5-sonnet-latest']  # 기본값
+
+selected_model = st.sidebar.selectbox(
+    '🧠 AI 모델 선택',
+    options=available_models,
+    index=available_models.index(st.session_state.selected_model) if st.session_state.selected_model in available_models else 0,
+    help='Claude는 ANTHROPIC_API_KEY, OpenAI는 OPENAI_API_KEY 필요'
+)
+
+if selected_model != st.session_state.selected_model:
+    st.session_state.selected_model = selected_model
+
+st.sidebar.markdown("---")
+
+# RAG 데이터 소스 설정
+st.sidebar.markdown("### 🔍 RAG 데이터 소스 설정")
+st.sidebar.markdown("**📊 분석에 사용할 추가 데이터를 선택하세요**")
+st.sidebar.info("💡 RAG 데이터를 추가하면 더 정확하고 구체적인 분석이 가능합니다!")
+
+# 현재 활성 RAG 소스 표시
+if st.session_state.rag_sources:
+    # 안전한 방식으로 RAG 소스 상태 표시
+    rag_names = []
+    for source in st.session_state.rag_sources:
+        if source in RAG_SOURCES:
+            rag_names.append(f"{RAG_SOURCES[source]['emoji']} {RAG_SOURCES[source]['name']}")
+    if rag_names:
+        rag_status = "✅ " + ", ".join(rag_names)
+        st.sidebar.success(f"활성 RAG 소스: {rag_status}")
+else:
+    st.sidebar.warning("❌ 활성 RAG 소스가 없습니다. 아래에서 데이터를 추가하세요.")
+
+# MySQL 데이터베이스 설정
+with st.sidebar.expander("🗄️ MySQL 데이터베이스", expanded=True):
+    if st.sidebar.button("🔍 DB 연결 테스트", key="mysql_test"):
+        success, message = test_mysql_connection()
+        if success:
+            st.sidebar.success(f"✅ {message}")
+        else:
+            st.sidebar.error(f"❌ {message}")
+    
+    if st.sidebar.button("📋 테이블 목록 조회", key="mysql_tables"):
+        tables, table_info = get_mysql_tables()
+        if tables:
+            st.session_state.available_tables = tables
+            st.session_state.table_info = table_info
+            st.sidebar.success(f"✅ {len(tables)}개 테이블 발견")
+        else:
+            st.sidebar.error("❌ 테이블 조회 실패")
+    
+    # 테이블 선택
+    if 'available_tables' in st.session_state:
+        selected_tables = st.sidebar.multiselect(
+            "분석할 테이블 선택",
+            st.session_state.available_tables,
+            help="너무 많은 테이블을 선택하면 성능이 저하될 수 있습니다.",
+            key="mysql_table_select"
+        )
+        
+        if st.sidebar.button("📥 선택된 테이블 로드", key="mysql_load") and selected_tables:
+            with st.sidebar:
+                with st.spinner("MySQL 데이터 로딩 중..."):
+                    data_frames = load_mysql_data(selected_tables)
+                    if data_frames:
+                        st.session_state.mysql_data = data_frames
+                        if 'mysql' not in st.session_state.rag_sources:
+                            st.session_state.rag_sources.append('mysql')
+                        total_rows = sum(len(df) for df in data_frames.values())
+                        st.sidebar.success(f"✅ {len(selected_tables)}개 테이블 로드 완료! (총 {total_rows:,}행)")
+
+# 웹사이트 크롤링 설정
+with st.sidebar.expander("🌐 웹사이트 크롤링", expanded=True):
+    website_url = st.sidebar.text_input("웹사이트 URL", placeholder="https://example.com", key="website_url")
+    max_pages = st.sidebar.slider("최대 페이지 수", 1, 10, 5, key="website_pages")
+    
+    if st.sidebar.button("🕷️ 웹사이트 크롤링 시작", key="website_crawl") and website_url:
+        with st.sidebar:
+            with st.spinner("웹사이트 크롤링 중..."):
+                scraped_data = scrape_website_simple(website_url, max_pages)
+                if scraped_data:
+                    st.session_state.website_data = scraped_data
+                    if 'website' not in st.session_state.rag_sources:
+                        st.session_state.rag_sources.append('website')
+                    st.sidebar.success(f"✅ {len(scraped_data)}개 페이지 크롤링 완료!")
+                else:
+                    st.sidebar.error("❌ 크롤링 실패")
+
+# 파일 업로드 설정
+with st.sidebar.expander("📄 문서 파일", expanded=True):
+    files = st.sidebar.file_uploader(
+        "파일 업로드",
+        type=list(SUPPORTED_FILE_TYPES.keys()),
+        accept_multiple_files=True,
+        help="여러 파일을 동시에 업로드할 수 있습니다.",
+        key="file_upload"
+    )
+    
+    if files:
+        valid_files = []
+        for file in files:
+            errors = validate_file(file)
+            if not errors:
+                valid_files.append(file)
+            else:
+                for error in errors:
+                    st.sidebar.error(f"❌ {file.name}: {error}")
+        
+        if valid_files and st.sidebar.button("📁 파일 처리", key="file_process"):
+            with st.sidebar:
+                with st.spinner("파일 처리 중..."):
+                    processed_files = process_files(valid_files)
+                    if processed_files:
+                        st.session_state.files_data = processed_files
+                        if 'files' not in st.session_state.rag_sources:
+                            st.session_state.rag_sources.append('files')
+                        total_size = sum(f['size'] for f in processed_files)
+                        st.sidebar.success(f"✅ {len(processed_files)}개 파일 처리 완료! (총 {total_size:,}자)")
+
+# RAG 소스 현황 표시
+if st.session_state.rag_sources:
+    st.sidebar.markdown("### 📊 활성 RAG 소스")
+    for source in st.session_state.rag_sources:
+        if source in RAG_SOURCES:
+            source_info = RAG_SOURCES[source]
+            st.sidebar.markdown(f"✅ {source_info['emoji']} {source_info['name']}")
+
+st.sidebar.markdown("---")
+
+# 분석 현황 표시
+st.sidebar.subheader("📊 분석 현황")
+if st.session_state.current_analysis:
+    completed = len([k for k, v in st.session_state.current_analysis.items() if v.get('completed', False)])
+    total = len(PERSONAS)
+    st.sidebar.progress(completed / total)
+    st.sidebar.write(f"진행률: {completed}/{total}")
+
+# RAG 데이터 요약 표시
+if st.session_state.rag_sources:
+    st.sidebar.markdown("### 📋 로드된 데이터 요약")
+    
+    if 'mysql' in st.session_state.rag_sources and st.session_state.mysql_data:
+        total_mysql_rows = sum(len(df) for df in st.session_state.mysql_data.values())
+        st.sidebar.write(f"🗄️ MySQL: {len(st.session_state.mysql_data)}개 테이블 ({total_mysql_rows:,}행)")
+    
+    if 'website' in st.session_state.rag_sources and st.session_state.website_data:
+        total_pages = len(st.session_state.website_data)
+        st.sidebar.write(f"🌐 웹사이트: {total_pages}개 페이지")
+    
+    if 'files' in st.session_state.rag_sources and st.session_state.files_data:
+        total_files = len(st.session_state.files_data)
+        total_chars = sum(f['size'] for f in st.session_state.files_data)
+        st.sidebar.write(f"📄 파일: {total_files}개 문서 ({total_chars:,}자)")
+
+# RAG 소스 관리 버튼들
+if st.session_state.rag_sources:
+    st.sidebar.markdown("### 🔧 데이터 관리")
+    
+    if st.sidebar.button("🗑️ 모든 RAG 데이터 초기화", key="rag_reset"):
+        st.session_state.rag_sources = []
+        st.session_state.mysql_data = {}
+        st.session_state.website_data = {}
+        st.session_state.files_data = {}
+        if 'available_tables' in st.session_state:
+            del st.session_state.available_tables
+        if 'table_info' in st.session_state:
+            del st.session_state.table_info
+        st.rerun()
+
+st.sidebar.markdown("---")
+
+# 페르소나별 커스텀 프롬프트 설정
+st.sidebar.subheader("🎭 페르소나별 커스텀 프롬프트")
+st.sidebar.markdown("*각 임원진에게 특별한 지시사항이 있다면 입력하세요*")
+
+persona_prompts = {}
+for persona_key, persona_info in PERSONAS.items():
+    with st.sidebar.expander(f"{persona_info['emoji']} {persona_info['name']}"):
+        st.markdown(f"**역할**: {persona_info['role']}")
+        st.markdown(f"**전문분야**: {persona_info['expertise']}")
+        
+        prompt_key = f"custom_prompt_{persona_key}"
+        if prompt_key not in st.session_state:
+            st.session_state[prompt_key] = ""
+        
+        persona_prompts[persona_key] = st.text_area(
+            f"커스텀 프롬프트",
+            value=st.session_state[prompt_key],
+            key=prompt_key,
+            height=100,
+            placeholder=f"{persona_info['name']}에게 특별히 분석해달라고 요청할 내용을 입력하세요...",
+            help=f"{persona_info['perspective']}"
+        )
+
+# ==================== 메인 인터페이스 ====================
+
+st.markdown('<h1 class="main-title">🏢 가상회사 C-Level 멀티에이전트 + RAG</h1>', unsafe_allow_html=True)
+st.markdown('<p class="main-subtitle"><strong>당신은 CEO입니다. C-level 임원진들이 다양한 데이터를 활용하여 협력 분석하고, 최종 종합 보고서를 제공합니다.</strong></p>', unsafe_allow_html=True)
+
+# 현재 설정 정보 표시
+st.markdown("### ⚙️ 현재 시스템 설정")
+col1, col2, col3 = st.columns([2, 2, 1])
+with col1:
+    st.markdown(f"**🧠 AI 모델**: `{selected_model}`")
+    
+    # API 키 상태 확인
+    if selected_model.startswith('claude'):
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        if api_key and len(api_key) > 10:
+            st.markdown(f"**🔑 Anthropic API**: ✅ 설정됨 (`{api_key[:8]}...`)")
+        else:
+            st.markdown("**🔑 Anthropic API**: ❌ 설정되지 않음")
+    else:
+        api_key = os.getenv('OPENAI_API_KEY')
+        if api_key and len(api_key) > 10:
+            st.markdown(f"**🔑 OpenAI API**: ✅ 설정됨 (`{api_key[:8]}...`)")
+        else:
+            st.markdown("**🔑 OpenAI API**: ❌ 설정되지 않음")
+            
+with col2:
+    if st.session_state.rag_sources:
+        # 안전한 방식으로 RAG 소스 이모지 생성
+        rag_emojis = []
+        for source in st.session_state.rag_sources:
+            if source in RAG_SOURCES:
+                rag_emojis.append(RAG_SOURCES[source]['emoji'])
+        rag_emoji = "".join(rag_emojis)
+        st.markdown(f"**🔍 RAG 소스**: {rag_emoji} `{len(st.session_state.rag_sources)}개 활성`")
+    else:
+        st.markdown("**🔍 RAG 소스**: ⚠️ `없음 (사이드바에서 설정)`")
+with col3:
+    if st.button("🔄 초기화", help="모든 분석 결과를 초기화합니다"):
+        st.session_state.current_analysis = {}
+        st.session_state.analysis_complete = False
+        st.rerun()
+
+# API 키 테스트 버튼 추가
+if st.button("🧪 AI 모델 연결 테스트", help="선택된 AI 모델과의 연결을 테스트합니다"):
+    try:
+        test_response = get_ai_response("안녕하세요. 간단한 인사말로 답변해주세요.", selected_model, "당신은 도움이 되는 AI 어시스턴트입니다.")
+        if test_response:
+            st.success(f"✅ AI 모델 연결 성공!\n응답: {test_response[:100]}...")
+        else:
+            st.error("❌ AI 모델 응답이 None입니다. API 키를 확인해주세요.")
+    except Exception as e:
+        st.error(f"❌ AI 모델 연결 실패: {str(e)}")
+
+st.markdown("---")
+
+# RAG 설정 가이드
+if not st.session_state.rag_sources:
+    st.info("💡 **더 정확한 분석을 위해 사이드바에서 RAG 데이터 소스를 설정해보세요!**\n"
+           "- 🗄️ **MySQL**: 회사 데이터베이스 연결\n"
+           "- 🌐 **웹사이트**: 시장 동향 및 경쟁사 정보 수집\n"
+           "- 📄 **문서**: 보고서, 계획서 등 관련 문서 업로드")
+
+# 임원진 소개
+st.markdown("## 👥 C-Level 임원진")
+cols = st.columns(3)
+for i, (persona_key, persona_info) in enumerate(PERSONAS.items()):
+    with cols[i % 3]:
+        st.markdown(f"""
+        <div class="persona-card">
+            <div class="persona-header">
+                <div class="persona-emoji">{persona_info['emoji']}</div>
+                <div>
+                    <div class="persona-title">{persona_info['name']}</div>
+                    <div class="persona-subtitle">{persona_info['role']}</div>
+                </div>
+            </div>
+            <div style="font-size: 0.85rem; color: #666;">
+                {persona_info['expertise']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# 메인 입력
+user_query = st.text_area(
+    "📝 CEO님, 어떤 주제에 대해 C-level 임원진들의 분석이 필요하신가요?",
+    height=120,
+    placeholder="예: 새로운 AI 서비스 론칭 전략에 대해 분석해주세요...\n예: 디지털 전환을 위한 투자 계획을 검토해주세요...\n예: 해외 시장 진출 방안을 분석해주세요..."
+)
+
+# 분석 버튼 (테스트용 최소한 버전)
+if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_container_width=True):
+    if not user_query.strip():
+        st.warning("분석할 주제를 입력해주세요.")
+    else:
+        st.session_state.current_analysis = {}
+        st.session_state.analysis_complete = False
+        
+        # 진행 상황 표시
+        progress_container = st.container()
+        
+        with progress_container:
+            st.markdown("""
+            <div class="progress-section">
+                <h2>🚀 C-Level 임원진 동시 분석 시작!</h2>
+                <p style="text-align: center; color: #666; margin-top: 10px;">
+                    모든 임원진이 동시에 분석을 시작합니다...
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # 모든 페르소나에 대해 "분석 시작" 상태 표시
+            persona_status = {}
+            persona_progress = {}
+            for persona_key, persona_info in PERSONAS.items():
+                persona_status[persona_key] = st.empty()
+                
+                # 첫 번째 단계로 초기 상태 표시
+                first_stage = PERSONA_ANALYSIS_STAGES[persona_key][0]
+                persona_status[persona_key].markdown(f"""
+                <div class="progress-indicator">
+                    <strong>🚀 {persona_info['emoji']} {persona_info['name']}</strong><br>
+                    <span style="font-size: 0.9rem;">{first_stage['message']} (0%)</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # 진행률 바 추가
+                persona_progress[persona_key] = st.progress(0)
+                st.markdown(f"<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
+            
+            # 동시 분석 실행
+            with st.spinner("🔥 모든 C-Level 임원진이 동시에 분석 중입니다..."):
+                # 실제 동시 분석 수행
+                analysis_results = run_concurrent_analysis_with_progress_rag(user_query, persona_prompts, persona_status, persona_progress, selected_model)
+                
+                # 결과를 세션에 저장
+                for persona_key, result_data in analysis_results.items():
+                    st.session_state.current_analysis[persona_key] = result_data
+                
+                # 분석 결과 표시 (expander로)
+                st.markdown("### 📋 상세 분석 결과")
+                for persona_key, result_data in analysis_results.items():
+                    persona_info = PERSONAS[persona_key]
+                    
+                    if result_data['success']:
+                        with st.expander(f"📋 {persona_info['emoji']} {persona_info['name']} 상세 분석 결과", expanded=False):
+                            st.markdown(result_data['result'])
+                    else:
+                        with st.expander(f"❌ {persona_info['emoji']} {persona_info['name']} 오류 상세", expanded=False):
+                            st.error(f"분석 중 오류 발생: {result_data['result']}")
+            
+            # 성공한 분석만 CEO 종합 분석에 사용
+            successful_analyses = {
+                k: v for k, v in st.session_state.current_analysis.items() 
+                if v.get('success', False)
+            }
+            
+            if successful_analyses:
+                # CEO 종합 분석
+                st.markdown("---")
+                st.markdown("""
+                <div class="ceo-synthesis">
+                    <strong>👑 CEO 최종 종합 분석 중...</strong>
+                    <p style="margin: 10px 0; font-size: 0.9rem;">
+                        모든 임원진의 동시 분석 결과를 종합합니다
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                with st.spinner("CEO 최종 종합 분석 중..."):
+                    ceo_synthesis = synthesize_ceo_analysis_rag(user_query, successful_analyses, selected_model)
+                    
+                    if ceo_synthesis:
+                        st.session_state.current_analysis['CEO'] = {
+                            'result': ceo_synthesis,
+                            'completed': True,
+                            'timestamp': datetime.now().isoformat()
+                        }
+                        st.session_state.analysis_complete = True
+            else:
+                st.error("❌ 모든 임원진 분석이 실패했습니다. 다시 시도해주세요.")
+        
+        # 진행 상황 표시 제거
+        progress_container.empty()
+        
+        if st.session_state.analysis_complete:
+            st.balloons()
+            st.success("🎉 동시 분석이 모두 완료되었습니다!")
+
+# 분석 결과 표시
+if st.session_state.analysis_complete and 'CEO' in st.session_state.current_analysis:
+    st.markdown("---")
+    st.markdown("## 👑 CEO 최종 종합 보고서")
+    
+    st.markdown(f"""
+    <div class="ceo-final">
+        <h3>👑 CEO 최종 의사결정 보고서</h3>
+        <p><strong>분석 완료 시간:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown(st.session_state.current_analysis['CEO']['result'])
+    
+    # 개별 임원진 분석 결과 (접을 수 있는 형태)
+    st.markdown("## 📋 개별 임원진 분석 결과")
+    
+    for persona_key, persona_info in PERSONAS.items():
+        if persona_key in st.session_state.current_analysis:
+            analysis_data = st.session_state.current_analysis[persona_key]
+            with st.expander(f"{persona_info['emoji']} {persona_info['name']} 상세 분석"):
+                st.markdown(f"**분석 시간:** {analysis_data['timestamp']}")
+                st.markdown("---")
+                st.markdown(analysis_data['result'])
+
+# 푸터
+st.markdown("---")
+
+# 사용법 안내
+with st.expander("💡 사용법 안내"):
+    st.markdown("""
+    ### 🏢 C-Level 멀티에이전트 + RAG 시스템 사용법
+    
+    #### 🚀 기본 사용 단계
+    1. **모델 선택**: 사이드바에서 사용할 AI 모델을 선택하세요 (Claude/ChatGPT)
+    2. **RAG 데이터 준비**: 분석에 활용할 추가 데이터를 설정하세요
+       - 🗄️ **MySQL 데이터베이스**: 회사 데이터베이스 연결 및 테이블 선택
+       - 🌐 **웹사이트 크롤링**: 관련 웹사이트의 최신 정보 수집
+       - 📄 **문서 파일**: 보고서, 계획서 등 관련 문서 업로드
+    3. **커스텀 프롬프트**: 각 임원진에게 특별한 분석을 요청하고 싶다면 설정하세요
+    4. **주제 입력**: 메인 창에서 분석하고 싶은 주제나 질문을 입력하세요
+    5. **동시 분석**: 모든 C-Level 임원진이 **실제로 동시에** RAG 데이터를 활용하여 분석합니다 🚀
+    6. **CEO 종합**: 모든 분석이 끝나면 CEO(당신)가 최종 종합 의사결정을 제시합니다
+    
+    #### 🎭 페르소나별 특징
+    - **💻 CTO**: 기술적 타당성과 구현 방안, 시스템 아키텍처
+    - **🎯 CSO(전략)**: 시장 분석과 성장 전략, 경쟁 분석
+    - **📢 CMO**: 마케팅과 고객 경험, 브랜드 전략
+    - **💰 CFO**: 재무적 타당성과 리스크, 투자 분석
+    - **🤝 CSO(영업)**: 영업 전략과 고객 관계, 시장 개발
+    - **🔐 CIO**: 정보시스템과 데이터 전략, IT 거버넌스
+    - **👑 CEO**: 최종 종합 의사결정 및 통합 실행 계획
+    
+    #### 🔍 RAG 데이터 소스별 활용법
+    
+    **🗄️ MySQL 데이터베이스**
+    - 회사의 실시간 운영 데이터를 분석에 활용
+    - 고객 데이터, 매출 데이터, 재고 현황 등
+    - 예시: "지난 분기 매출 데이터를 바탕으로 마케팅 전략을 수립해주세요"
+    
+    **🌐 웹사이트 크롤링**
+    - 경쟁사 웹사이트, 업계 뉴스, 시장 동향 파악
+    - 최신 트렌드와 시장 정보를 실시간으로 반영
+    - 예시: "경쟁사 웹사이트 정보를 바탕으로 우리의 차별화 전략을 제안해주세요"
+    
+    **📄 문서 파일**
+    - 기존 보고서, 계획서, 시장 조사 자료 등
+    - 과거 데이터와 분석 결과를 현재 분석에 활용
+    - 예시: "작년 사업 계획서를 참고하여 올해 전략을 수정해주세요"
+    
+    #### ⚡ 동시 처리의 장점
+    - **속도**: 순차 처리 대비 **6배 빠른** 분석 속도
+    - **효율성**: 모든 임원진이 **실제로 동시에** 작업
+    - **데이터 활용**: RAG를 통해 **실제 데이터 기반** 분석
+    - **실시간**: 완료되는 순서대로 **즉시 결과 확인**
+    - **견고성**: 일부 분석이 실패해도 나머지는 정상 진행
+    
+    #### 💡 효과적인 활용 팁
+    
+    **주제 설정**
+    - 구체적이고 명확한 질문을 입력하세요
+    - 예: "신제품 출시를 위한 종합 전략" → "AI 기반 챗봇 서비스 출시를 위한 마케팅, 기술, 재무 전략"
+    
+    **RAG 데이터 조합**
+    - 여러 데이터 소스를 조합하면 더 풍부한 분석이 가능합니다
+    - MySQL(내부 데이터) + 웹사이트(외부 정보) + 문서(과거 자료) 조합 추천
+    
+    **커스텀 프롬프트 활용**
+    - 각 임원진의 전문 분야에 맞는 구체적인 요청을 추가하세요
+    - 예: CFO에게 "ROI 계산과 함께 3년 재무 전망 포함", CTO에게 "기술 구현 일정과 리소스 요구사항 포함"
+    """)
+
+st.markdown("""
+<div style="text-align: center; color: #666; font-size: 0.9rem;">
+    🏢 가상회사 C-Level 멀티에이전트 + RAG 시스템 | Powered by Claude & ChatGPT<br>
+    🔍 RAG: MySQL Database + Website Crawling + Document Analysis
+</div>
+""", unsafe_allow_html=True) 

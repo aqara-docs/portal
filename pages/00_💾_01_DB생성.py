@@ -1483,6 +1483,132 @@ def add_value_metrics_to_project_reviews():
         st.error(f"Error: {err}")
         return False
 
+def create_virtual_company_tables():
+    """Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return False
+        
+        cursor = connection.cursor()
+        
+        # 1. 메인 분석 세션 테이블
+        virtual_company_analyses_table = """
+        CREATE TABLE IF NOT EXISTS virtual_company_analyses (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            session_title VARCHAR(255) NOT NULL COMMENT '분석 세션 제목',
+            user_query TEXT NOT NULL COMMENT '사용자 입력 질문/주제',
+            model_name VARCHAR(100) NOT NULL COMMENT '사용된 AI 모델',
+            analysis_date DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '분석 수행 날짜',
+            completion_status ENUM('진행중', '완료', '오류') DEFAULT '진행중' COMMENT '분석 완료 상태',
+            ceo_synthesis LONGTEXT COMMENT 'CEO 최종 종합 분석 결과',
+            total_personas INT DEFAULT 0 COMMENT '참여한 페르소나 수',
+            successful_personas INT DEFAULT 0 COMMENT '성공한 페르소나 분석 수',
+            rag_sources_used INT DEFAULT 0 COMMENT '사용된 RAG 소스 수',
+            execution_time_seconds INT COMMENT '전체 실행 시간(초)',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            tags VARCHAR(500) COMMENT '검색용 태그',
+            notes TEXT COMMENT '추가 메모',
+            INDEX idx_analysis_date (analysis_date),
+            INDEX idx_model_name (model_name),
+            INDEX idx_completion_status (completion_status),
+            FULLTEXT idx_search (session_title, user_query, tags, notes)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Virtual Company AI 멀티에이전트 분석 세션';
+        """
+        
+        # 2. 페르소나별 분석 결과 테이블
+        persona_analyses_table = """
+        CREATE TABLE IF NOT EXISTS virtual_company_persona_analyses (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            analysis_id INT NOT NULL COMMENT '메인 분석 세션 ID',
+            persona_key VARCHAR(50) NOT NULL COMMENT '페르소나 키 (CTO, CMO, CFO 등)',
+            persona_name VARCHAR(100) NOT NULL COMMENT '페르소나 이름',
+            persona_role VARCHAR(200) NOT NULL COMMENT '페르소나 역할',
+            analysis_result LONGTEXT COMMENT '페르소나 분석 결과',
+            custom_prompt TEXT COMMENT '커스텀 프롬프트',
+            analysis_success BOOLEAN DEFAULT FALSE COMMENT '분석 성공 여부',
+            error_message TEXT COMMENT '오류 메시지 (실패 시)',
+            analysis_start_time DATETIME COMMENT '분석 시작 시간',
+            analysis_end_time DATETIME COMMENT '분석 완료 시간',
+            analysis_duration_seconds INT COMMENT '분석 소요 시간(초)',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (analysis_id) REFERENCES virtual_company_analyses(id) ON DELETE CASCADE,
+            INDEX idx_analysis_id (analysis_id),
+            INDEX idx_persona_key (persona_key),
+            INDEX idx_success (analysis_success),
+            FULLTEXT idx_content_search (analysis_result)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='페르소나별 분석 결과';
+        """
+        
+        # 3. RAG 데이터 소스 정보 테이블
+        rag_sources_table = """
+        CREATE TABLE IF NOT EXISTS virtual_company_rag_sources (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            analysis_id INT NOT NULL COMMENT '메인 분석 세션 ID',
+            source_type ENUM('mysql', 'website', 'files') NOT NULL COMMENT 'RAG 소스 타입',
+            source_name VARCHAR(255) NOT NULL COMMENT '소스 이름',
+            source_description TEXT COMMENT '소스 설명',
+            source_details JSON COMMENT '소스 상세 정보 (테이블명, URL, 파일명 등)',
+            data_size INT COMMENT '데이터 크기 (행수, 페이지수, 파일크기 등)',
+            content_preview TEXT COMMENT '데이터 미리보기',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (analysis_id) REFERENCES virtual_company_analyses(id) ON DELETE CASCADE,
+            INDEX idx_analysis_id (analysis_id),
+            INDEX idx_source_type (source_type),
+            INDEX idx_source_name (source_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='RAG 데이터 소스 정보';
+        """
+        
+        # 4. 분석 통계 및 메트릭 테이블
+        analysis_metrics_table = """
+        CREATE TABLE IF NOT EXISTS virtual_company_analysis_metrics (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            analysis_id INT NOT NULL COMMENT '메인 분석 세션 ID',
+            metric_name VARCHAR(100) NOT NULL COMMENT '메트릭 이름',
+            metric_value DECIMAL(15,4) COMMENT '메트릭 값',
+            metric_unit VARCHAR(50) COMMENT '메트릭 단위',
+            metric_category VARCHAR(100) COMMENT '메트릭 카테고리',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (analysis_id) REFERENCES virtual_company_analyses(id) ON DELETE CASCADE,
+            INDEX idx_analysis_id (analysis_id),
+            INDEX idx_metric_name (metric_name),
+            INDEX idx_metric_category (metric_category)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='분석 메트릭 및 통계';
+        """
+        
+        # 테이블 생성 실행
+        tables = [
+            ("virtual_company_analyses", virtual_company_analyses_table),
+            ("virtual_company_persona_analyses", persona_analyses_table), 
+            ("virtual_company_rag_sources", rag_sources_table),
+            ("virtual_company_analysis_metrics", analysis_metrics_table)
+        ]
+        
+        created_tables = []
+        for table_name, table_sql in tables:
+            try:
+                cursor.execute(table_sql)
+                created_tables.append(table_name)
+                print(f"✅ 테이블 생성 성공: {table_name}")
+            except Exception as e:
+                print(f"❌ 테이블 생성 실패: {table_name} - {str(e)}")
+        
+        connection.commit()
+        cursor.close()
+        connection.close()
+        
+        if created_tables:
+            print(f"\n🎉 Virtual Company 테이블 생성 완료: {len(created_tables)}개")
+            return True
+        else:
+            print("❌ Virtual Company 테이블 생성 실패")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Virtual Company 테이블 생성 중 오류: {str(e)}")
+        return False
+
 def main():
     
     
@@ -1499,7 +1625,8 @@ def main():
          "AI 사용비용 테이블 생성",
          "프로젝트 리뷰 시스템 테이블 생성",
          "프로젝트 리뷰 테이블에 매출액 컬럼 추가",
-         "프로젝트 리뷰 테이블에 가치 지표 컬럼 추가"]
+         "프로젝트 리뷰 테이블에 가치 지표 컬럼 추가",
+         "Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성"]
     )
     
     if menu == "테이블 목록":
@@ -2114,6 +2241,14 @@ def main():
                 """)
             else:
                 st.error("가치 지표 컬럼 추가에 실패했습니다.")
+
+    elif menu == "Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성":
+        st.header("Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성")
+        if st.button("Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성"):
+            if create_virtual_company_tables():
+                st.success("Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블이 성공적으로 생성되었습니다.")
+            else:
+                st.error("테이블 생성 중 오류가 발생했습니다.")
 
 if __name__ == "__main__":
     main() 

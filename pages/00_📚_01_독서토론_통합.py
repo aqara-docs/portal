@@ -18,6 +18,12 @@ st.set_page_config(page_title="📚 독서토론 통합", layout="wide")
 
 # 환경 변수 로드
 load_dotenv()
+
+# 디버깅: OpenAI API 키 상태 확인
+openai_key = os.getenv('OPENAI_API_KEY')
+print(f"[DEBUG] OpenAI API Key 상태: {openai_key[:10] if openai_key else 'None'}...")
+print(f"[DEBUG] OpenAI API Key 길이: {len(openai_key) if openai_key else 0}")
+
 st.title("📚 독서토론 통합 관리")
 # 모델 선택 및 API 키 확인
 if 'selected_model' not in st.session_state:
@@ -99,7 +105,7 @@ def ai_summarize(text, model_name, extra_prompt=None):
         "불필요한 설명은 생략하고, 꼭 필요한 핵심만 요약해 주세요."
     )
     if model_name.startswith('claude'):
-        client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.3, max_tokens=1200)
+        client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.3, max_tokens=4000)
         prompt = f"""
 {summary_instruction}
 ---
@@ -113,24 +119,34 @@ def ai_summarize(text, model_name, extra_prompt=None):
         ])
         return response.content if hasattr(response, 'content') else str(response)
     else:
-        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        prompt = f"""
+        # OpenAI API 키 검증
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+            raise ValueError(f"OpenAI API 키가 올바르지 않습니다. 현재 값: {openai_key}")
+        
+        try:
+            client = OpenAI(api_key=openai_key)
+            prompt = f"""
 {summary_instruction}
 ---
 {text}
 """
-        if extra_prompt and extra_prompt.strip():
-            prompt += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "당신은 요약 전문가입니다. 항상 600~900자 내외, 10~15개 bullet point로, 주제별 제목과 함께 '~함' 형태의 간결체로 작성합니다. 존댓말은 사용하지 않습니다. 불필요한 설명 없이 꼭 필요한 핵심만 요약합니다."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=1200,
-            temperature=0.3
-        )
-        return response.choices[0].message.content
+            if extra_prompt and extra_prompt.strip():
+                prompt += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "당신은 요약 전문가입니다. 항상 600~900자 내외, 10~15개 bullet point로, 주제별 제목과 함께 '~함' 형태의 간결체로 작성합니다. 존댓말은 사용하지 않습니다. 불필요한 설명 없이 꼭 필요한 핵심만 요약합니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=4000,
+                temperature=0.3
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            st.error(f"OpenAI API 호출 중 오류: {str(e)}")
+            st.error(f"API 키 상태: {openai_key[:10] if openai_key else 'None'}... (길이: {len(openai_key) if openai_key else 0})")
+            raise e
 
 # 적용 파일 생성 함수 (Claude/OpenAI 모두 지원)
 def ai_generate_application(summary_text, application_text, model_name, extra_prompt=None):
@@ -146,21 +162,31 @@ def ai_generate_application(summary_text, application_text, model_name, extra_pr
         ])
         return response.content if hasattr(response, 'content') else str(response)
     else:
-        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        prompt = f"""
+        # OpenAI API 키 검증
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+            raise ValueError(f"OpenAI API 키가 올바르지 않습니다. 현재 값: {openai_key}")
+        
+        try:
+            client = OpenAI(api_key=openai_key)
+            prompt = f"""
 아래의 '요약 내용'과 '기존 적용 파일'을 참고하여, 기존 적용 파일을 개선/보완한 새로운 적용 파일을 작성해 주세요.\n\n[절대적 요구사항]\n- 기존 적용 파일의 대부분의 핵심 내용이 빠짐없이 포함되어야 합니다. 중요한 내용이 누락되지 않도록 하세요.\n- 기존 적용 파일의 모든 섹션, 소제목, 구조를 그대로 유지하세요.\n- 요약 내용의 핵심 인사이트와 지침을 반드시 반영해 주세요.\n- 기존 적용 파일의 구조와 맥락을 최대한 유지하되, 중복은 피하고 자연스럽게 통합해 주세요.\n- 반드시 존댓말을 사용해 주세요.\n\n[요약 내용]\n{summary_text}\n\n[기존 적용 파일]\n{application_text}\n"""
-        if extra_prompt and extra_prompt.strip():
-            prompt += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "당신은 적용 파일 통합 전문가입니다. 반드시 기존 적용 파일의 대부분의 핵심 내용이 빠짐없이 포함되고, 구조와 맥락을 유지하며, 존댓말로 작성합니다. 중요한 내용 누락 금지."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=8192,
-            temperature=0.3
-        )
-        return response.choices[0].message.content
+            if extra_prompt and extra_prompt.strip():
+                prompt += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "당신은 적용 파일 통합 전문가입니다. 반드시 기존 적용 파일의 대부분의 핵심 내용이 빠짐없이 포함되고, 구조와 맥락을 유지하며, 존댓말로 작성합니다. 중요한 내용 누락 금지."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=8192,
+                temperature=0.3
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            st.error(f"OpenAI API 호출 중 오류: {str(e)}")
+            st.error(f"API 키 상태: {openai_key[:10] if openai_key else 'None'}... (길이: {len(openai_key) if openai_key else 0})")
+            raise e
 
 def summarize_for_tts(text, max_length=3500):
     if len(text) <= max_length:
@@ -181,7 +207,13 @@ def summarize_for_tts(text, max_length=3500):
 
 def text_to_speech(text):
     try:
-        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        # OpenAI API 키 검증
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+            st.error(f"OpenAI API 키가 올바르지 않습니다. 현재 값: {openai_key}")
+            return None
+            
+        client = OpenAI(api_key=openai_key)
         response = client.audio.speech.create(
             model="tts-1",
             voice="alloy",
@@ -198,6 +230,8 @@ def text_to_speech(text):
         return audio_html
     except Exception as e:
         st.error(f"음성 변환 중 오류 발생: {str(e)}")
+        if 'openai_key' in locals():
+            st.error(f"API 키 상태: {openai_key[:10] if openai_key else 'None'}... (길이: {len(openai_key) if openai_key else 0})")
         return None
 
 # --- JS 동적 효과 함수 추가 (스코프 적용) ---
@@ -665,24 +699,34 @@ def ai_summarize_keypoints(text, model_name, extra_prompt=None):
         ])
         return response.content if hasattr(response, 'content') else str(response)
     else:
-        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        prompt = f"""
+        # OpenAI API 키 검증
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+            raise ValueError(f"OpenAI API 키가 올바르지 않습니다. 현재 값: {openai_key}")
+        
+        try:
+            client = OpenAI(api_key=openai_key)
+            prompt = f"""
 {summary_instruction}
 ---
 {text}
 """
-        if extra_prompt and extra_prompt.strip():
-            prompt += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "당신은 비즈니스 실전 적용 요약 전문가입니다. 항상 실제 업무에 바로 적용할 수 있는 실천/적용 방안만 1~2개, 각 항목당 100자 이내로 bullet point로 '~함' 형태의 간결체로 작성합니다. 존댓말은 사용하지 않습니다. 불필요한 설명은 제외합니다."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=400,
-            temperature=0.3
-        )
-        return response.choices[0].message.content
+            if extra_prompt and extra_prompt.strip():
+                prompt += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "당신은 비즈니스 실전 적용 요약 전문가입니다. 항상 실제 업무에 바로 적용할 수 있는 실천/적용 방안만 1~2개, 각 항목당 100자 이내로 bullet point로 '~함' 형태의 간결체로 작성합니다. 존댓말은 사용하지 않습니다. 불필요한 설명은 제외합니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=400,
+                temperature=0.3
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            st.error(f"OpenAI API 호출 중 오류: {str(e)}")
+            st.error(f"API 키 상태: {openai_key[:10] if openai_key else 'None'}... (길이: {len(openai_key) if openai_key else 0})")
+            raise e
 
 def ai_summarize_application_summary(text, model_name, extra_prompt=None):
     prompt = (
@@ -699,20 +743,30 @@ def ai_summarize_application_summary(text, model_name, extra_prompt=None):
         ])
         return response.content if hasattr(response, 'content') else str(response)
     else:
-        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        prompt_full = f"{prompt}\n---\n{text}"
-        if extra_prompt and extra_prompt.strip():
-            prompt_full += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "당신은 비즈니스 요약 및 평가 전문가입니다. 적용 파일의 핵심을 더 상세하게 요약하고, 총평의 제목은 반드시 '투명하고 진실한 조직 문화'로 하며, 그 아래에는 협업하는 조직 문화 만들기 관점에서 5줄 이내로 간결한 총평을 작성해 주세요."},
-                {"role": "user", "content": prompt_full}
-            ],
-            max_tokens=4096,
-            temperature=0.3
-        )
-        return response.choices[0].message.content
+        # OpenAI API 키 검증
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+            raise ValueError(f"OpenAI API 키가 올바르지 않습니다. 현재 값: {openai_key}")
+        
+        try:
+            client = OpenAI(api_key=openai_key)
+            prompt_full = f"{prompt}\n---\n{text}"
+            if extra_prompt and extra_prompt.strip():
+                prompt_full += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "당신은 비즈니스 요약 및 평가 전문가입니다. 적용 파일의 핵심을 더 상세하게 요약하고, 총평의 제목은 반드시 '투명하고 진실한 조직 문화'로 하며, 그 아래에는 협업하는 조직 문화 만들기 관점에서 5줄 이내로 간결한 총평을 작성해 주세요."},
+                    {"role": "user", "content": prompt_full}
+                ],
+                max_tokens=4096,
+                temperature=0.3
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            st.error(f"OpenAI API 호출 중 오류: {str(e)}")
+            st.error(f"API 키 상태: {openai_key[:10] if openai_key else 'None'}... (길이: {len(openai_key) if openai_key else 0})")
+            raise e
 
 def is_pi_number_exists(pi_number):
     conn = connect_to_db()
@@ -729,17 +783,25 @@ if __name__ == "__main__":
         try:
             from openai import OpenAI
             import base64, os
-            tts_text = "토론 시간이 종료되었습니다. 토론을 마무리해 주세요. 토론을 마무리해 주세요. 토론을 마무리해 주세요."
-            client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-            response = client.audio.speech.create(
-                model="tts-1",
-                voice="nova",
-                input=tts_text,
-                speed=0.9
-            )
-            audio_data = response.content
-            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-            st.session_state['order_end_audio'] = audio_base64
+            
+            # OpenAI API 키 검증
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if openai_key and openai_key.strip() != '' and openai_key != 'NA':
+                tts_text = "토론 시간이 종료되었습니다. 토론을 마무리해 주세요. 토론을 마무리해 주세요. 토론을 마무리해 주세요."
+                client = OpenAI(api_key=openai_key)
+                response = client.audio.speech.create(
+                    model="tts-1",
+                    voice="nova",
+                    input=tts_text,
+                    speed=0.9
+                )
+                audio_data = response.content
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                st.session_state['order_end_audio'] = audio_base64
+            else:
+                print(f"[WARNING] OpenAI API 키가 올바르지 않아 타이머 종료 음성을 생성할 수 없습니다. 키 상태: {openai_key}")
+                st.session_state['order_end_audio'] = ''
         except Exception as e:
+            print(f"[ERROR] 타이머 종료 음성 생성 중 오류: {str(e)}")
             st.session_state['order_end_audio'] = ''
     main() 

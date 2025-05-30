@@ -6,3 +6,4 @@ content.csv
 cs.sql
 private_files/
 private_embeddings/
+temp_openai_key.txt
