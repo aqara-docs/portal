@@ -373,7 +373,7 @@ def summarize_text(text, model_choice=None, reference_notes=None):
 
                 summary_response = anthropic_client.messages.create(
                     model=model,
-                    max_tokens=3000,
+                    max_tokens=1000,
                     messages=[
                         {"role": "user", "content": summary_prompt}
                     ]
@@ -401,7 +401,7 @@ Action Items 추출 시 위의 참고 사항을 반드시 고려해주세요.
 
                 action_items_response = anthropic_client.messages.create(
                     model=model,
-                    max_tokens=1000,
+                    max_tokens=500,
                     messages=[
                         {"role": "user", "content": action_items_prompt}
                     ]
@@ -452,7 +452,7 @@ Action Items 추출 시 위의 참고 사항을 반드시 고려해주세요.
                             {"role": "system", "content": action_items_system_prompt},
                             {"role": "user", "content": text}
                         ],
-                        max_tokens=3000
+                        max_tokens=500
                     )
                     action_items = action_items_response.choices[0].message.content.split('\n')
                     action_items = [item.strip('- ') for item in action_items if item.strip()]
@@ -548,7 +548,7 @@ Action Items 추출 시 위의 참고 사항을 반드시 고려해주세요."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text}
                 ],
-                max_tokens=3000
+                max_tokens=1000  # 비용 절감을 위한 토큰 제한
             )
             summary = summary_response.choices[0].message.content
             
@@ -564,7 +564,7 @@ Action Items 추출 시 위의 참고 사항을 반드시 고려해주세요."""
                     {"role": "system", "content": action_items_system_prompt},
                     {"role": "user", "content": text}
                 ],
-                max_tokens=1000
+                max_tokens=500  # 비용 절감을 위한 토큰 제한
             )
             action_items = action_items_response.choices[0].message.content.split('\n')
             action_items = [item.strip('- ') for item in action_items if item.strip()]

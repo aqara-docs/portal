@@ -52,194 +52,6 @@ def connect_to_db():
         st.error(f"데이터베이스 연결 오류: {err}")
         return None
 
-def create_virtual_company_tables_if_not_exists():
-    """Virtual Company 테이블이 존재하지 않으면 자동 생성"""
-    try:
-        connection = connect_to_db()
-        if not connection:
-            return False
-        
-        cursor = connection.cursor()
-        
-        # 테이블 존재 여부 확인
-        cursor.execute("SHOW TABLES LIKE 'virtual_company_%'")
-        existing_tables = cursor.fetchall()
-        existing_table_names = [table[0] for table in existing_tables]
-        
-        # 필요한 테이블 목록
-        required_tables = [
-            'virtual_company_analyses',
-            'virtual_company_persona_analyses', 
-            'virtual_company_rag_sources',
-            'virtual_company_analysis_metrics'
-        ]
-        
-        # 누락된 테이블이 있는지 확인
-        missing_tables = [table for table in required_tables if table not in existing_table_names]
-        
-        if not missing_tables:
-            # 모든 테이블이 존재함 - 하지만 completion_status 컬럼 타입 확인 필요
-            try:
-                cursor.execute("DESCRIBE virtual_company_analyses completion_status")
-                column_info = cursor.fetchone()
-                if column_info and 'enum' in column_info[1].lower():
-                    # ENUM을 VARCHAR로 강제 변경
-                    st.info("🔧 기존 테이블의 completion_status 컬럼을 VARCHAR로 변경 중...")
-                    cursor.execute("ALTER TABLE virtual_company_analyses MODIFY COLUMN completion_status VARCHAR(50) DEFAULT '진행중' COMMENT '분석 완료 상태'")
-                    connection.commit()
-                    st.success("✅ completion_status 컬럼 타입 변경 완료")
-            except Exception as alter_error:
-                st.warning(f"⚠️ completion_status 컬럼 수정 시도 중 오류: {str(alter_error)}")
-            
-            cursor.close()
-            connection.close()
-            return True
-        
-        # 누락된 테이블 생성
-        st.info(f"🔧 Virtual Company 분석 저장을 위한 DB 테이블을 생성 중입니다... (누락: {len(missing_tables)}개)")
-        
-        # 1. 메인 분석 세션 테이블
-        if 'virtual_company_analyses' in missing_tables:
-            virtual_company_analyses_table = """
-            CREATE TABLE IF NOT EXISTS virtual_company_analyses (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                session_title VARCHAR(255) NOT NULL COMMENT '분석 세션 제목',
-                user_query TEXT NOT NULL COMMENT '사용자 입력 질문/주제',
-                model_name VARCHAR(100) NOT NULL COMMENT '사용된 AI 모델',
-                analysis_date DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '분석 수행 날짜',
-                completion_status VARCHAR(50) DEFAULT '진행중' COMMENT '분석 완료 상태',
-                ceo_synthesis LONGTEXT COMMENT 'CEO 최종 종합 분석 결과',
-                total_personas INT DEFAULT 0 COMMENT '참여한 페르소나 수',
-                successful_personas INT DEFAULT 0 COMMENT '성공한 페르소나 분석 수',
-                rag_sources_used INT DEFAULT 0 COMMENT '사용된 RAG 소스 수',
-                execution_time_seconds INT COMMENT '전체 실행 시간(초)',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                tags VARCHAR(500) COMMENT '검색용 태그',
-                notes TEXT COMMENT '추가 메모',
-                INDEX idx_analysis_date (analysis_date),
-                INDEX idx_model_name (model_name),
-                INDEX idx_completion_status (completion_status),
-                FULLTEXT idx_search (session_title, user_query, tags, notes)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Virtual Company AI 멀티에이전트 분석 세션';
-            """
-            cursor.execute(virtual_company_analyses_table)
-        else:
-            # 기존 테이블이 있는 경우 completion_status 컬럼 타입 확인 및 수정
-            try:
-                cursor.execute("DESCRIBE virtual_company_analyses completion_status")
-                column_info = cursor.fetchone()
-                if column_info and ('enum' in column_info[1].lower() or 'varchar' not in column_info[1].lower()):
-                    # ENUM을 VARCHAR로 변경
-                    st.info("🔧 completion_status 컬럼 타입을 VARCHAR로 변경 중...")
-                    cursor.execute("ALTER TABLE virtual_company_analyses MODIFY COLUMN completion_status VARCHAR(50) DEFAULT '진행중' COMMENT '분석 완료 상태'")
-                    st.success("✅ completion_status 컬럼 타입 변경 완료")
-            except Exception as alter_error:
-                st.warning(f"⚠️ completion_status 컬럼 수정 중 오류 (무시하고 계속): {str(alter_error)}")
-        
-        # 2. 페르소나별 분석 결과 테이블
-        if 'virtual_company_persona_analyses' in missing_tables:
-            persona_analyses_table = """
-            CREATE TABLE IF NOT EXISTS virtual_company_persona_analyses (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                analysis_id INT NOT NULL COMMENT '메인 분석 세션 ID',
-                persona_key VARCHAR(50) NOT NULL COMMENT '페르소나 키 (CTO, CMO, CFO 등)',
-                persona_name VARCHAR(100) NOT NULL COMMENT '페르소나 이름',
-                persona_role VARCHAR(200) NOT NULL COMMENT '페르소나 역할',
-                analysis_result LONGTEXT COMMENT '페르소나 분석 결과',
-                custom_prompt TEXT COMMENT '커스텀 프롬프트',
-                analysis_success BOOLEAN DEFAULT FALSE COMMENT '분석 성공 여부',
-                error_message TEXT COMMENT '오류 메시지 (실패 시)',
-                analysis_start_time DATETIME COMMENT '분석 시작 시간',
-                analysis_end_time DATETIME COMMENT '분석 완료 시간',
-                analysis_duration_seconds INT COMMENT '분석 소요 시간(초)',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (analysis_id) REFERENCES virtual_company_analyses(id) ON DELETE CASCADE,
-                INDEX idx_analysis_id (analysis_id),
-                INDEX idx_persona_key (persona_key),
-                INDEX idx_success (analysis_success),
-                FULLTEXT idx_content_search (analysis_result)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='페르소나별 분석 결과';
-            """
-            cursor.execute(persona_analyses_table)
-        
-        # 3. RAG 데이터 소스 정보 테이블
-        if 'virtual_company_rag_sources' in missing_tables:
-            rag_sources_table = """
-            CREATE TABLE IF NOT EXISTS virtual_company_rag_sources (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                analysis_id INT NOT NULL COMMENT '메인 분석 세션 ID',
-                source_type ENUM('mysql', 'website', 'files') NOT NULL COMMENT 'RAG 소스 타입',
-                source_name VARCHAR(255) NOT NULL COMMENT '소스 이름',
-                source_description TEXT COMMENT '소스 설명',
-                source_details JSON COMMENT '소스 상세 정보 (테이블명, URL, 파일명 등)',
-                data_size INT COMMENT '데이터 크기 (행수, 페이지수, 파일크기 등)',
-                content_preview TEXT COMMENT '데이터 미리보기',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (analysis_id) REFERENCES virtual_company_analyses(id) ON DELETE CASCADE,
-                INDEX idx_analysis_id (analysis_id),
-                INDEX idx_source_type (source_type),
-                INDEX idx_source_name (source_name)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='RAG 데이터 소스 정보';
-            """
-            cursor.execute(rag_sources_table)
-        
-        # 4. 분석 통계 및 메트릭 테이블
-        if 'virtual_company_analysis_metrics' in missing_tables:
-            analysis_metrics_table = """
-            CREATE TABLE IF NOT EXISTS virtual_company_analysis_metrics (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                analysis_id INT NOT NULL COMMENT '메인 분석 세션 ID',
-                metric_name VARCHAR(100) NOT NULL COMMENT '메트릭 이름',
-                metric_value DECIMAL(15,4) COMMENT '메트릭 값',
-                metric_unit VARCHAR(50) COMMENT '메트릭 단위',
-                metric_category VARCHAR(100) COMMENT '메트릭 카테고리',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (analysis_id) REFERENCES virtual_company_analyses(id) ON DELETE CASCADE,
-                INDEX idx_analysis_id (analysis_id),
-                INDEX idx_metric_name (metric_name),
-                INDEX idx_metric_category (metric_category)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='분석 메트릭 및 통계';
-            """
-            cursor.execute(analysis_metrics_table)
-        
-        connection.commit()
-        cursor.close()
-        connection.close()
-        
-        st.success(f"✅ Virtual Company DB 테이블 생성 완료! ({len(missing_tables)}개 테이블 생성)")
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Virtual Company 테이블 생성 중 오류: {str(e)}")
-        return False
-
-def check_database_connection():
-    """데이터베이스 연결 및 테이블 상태 확인"""
-    try:
-        connection = connect_to_db()
-        if not connection:
-            return False, "데이터베이스 연결 실패"
-        
-        cursor = connection.cursor()
-        
-        # 데이터베이스 정보 확인
-        cursor.execute("SELECT DATABASE()")
-        db_name = cursor.fetchone()[0]
-        
-        # 가상회사 테이블 확인
-        cursor.execute("SHOW TABLES LIKE 'virtual_company_%'")
-        tables = cursor.fetchall()
-        table_count = len(tables)
-        
-        cursor.close()
-        connection.close()
-        
-        return True, f"연결 성공 (DB: {db_name}, Virtual Company 테이블: {table_count}개)"
-        
-    except Exception as e:
-        return False, f"연결 오류: {str(e)}"
-
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -901,295 +713,40 @@ def scrape_website_simple(url, max_pages=5):
         return []
 
 def process_files(files):
-    """업로드된 파일들 처리 - 프로젝트 리뷰와 동일한 방식"""
+    """업로드된 파일들 처리"""
     processed_files = []
     
     for file in files:
         try:
-            # 파일 파싱 - 프로젝트 리뷰와 동일한 로직
-            file_extension = file.name.split('.')[-1].lower()
-            content = ""
+            # 파일 저장
+            file_path = f"./temp_uploads/{file.name}"
+            os.makedirs("./temp_uploads", exist_ok=True)
             
-            # 파일을 처음부터 읽기 위해 포인터를 처음으로 이동
-            file.seek(0)
+            with open(file_path, "wb") as f:
+                f.write(file.read())
             
-            if file_extension == 'pdf':
-                # PDF 파일 파싱
-                try:
-                    import PyPDF2
-                    pdf_reader = PyPDF2.PdfReader(file)
-                    for page in pdf_reader.pages:
-                        content += page.extract_text() + "\n"
-                except ImportError:
-                    st.warning("PDF 파일 처리를 위해 PyPDF2 패키지가 필요합니다.")
-                    content = f"[PDF 파일 - {file.name}] (PyPDF2 미설치로 텍스트 추출 불가)"
-                except Exception as e:
-                    content = f"[PDF 파일 - {file.name}] (텍스트 추출 오류: {str(e)})"
-                    
-            elif file_extension == 'docx':
-                # DOCX 파일 파싱
-                try:
-                    import docx
-                    doc = docx.Document(file)
-                    for paragraph in doc.paragraphs:
-                        content += paragraph.text + "\n"
-                except ImportError:
-                    st.warning("DOCX 파일 처리를 위해 python-docx 패키지가 필요합니다.")
-                    content = f"[DOCX 파일 - {file.name}] (python-docx 미설치로 텍스트 추출 불가)"
-                except Exception as e:
-                    content = f"[DOCX 파일 - {file.name}] (텍스트 추출 오류: {str(e)})"
-                    
-            elif file_extension in ['txt', 'md']:
-                # 텍스트 파일 파싱
-                file.seek(0)
-                try:
-                    content = file.read().decode('utf-8')
-                except UnicodeDecodeError:
-                    try:
-                        file.seek(0)
-                        content = file.read().decode('latin-1')
-                    except Exception as e:
-                        content = f"[텍스트 파일 - {file.name}] (인코딩 오류: {str(e)})"
-                
-            elif file_extension in ['xlsx', 'xls']:
-                # Excel 파일 파싱
-                file.seek(0)
-                try:
-                    df = pd.read_excel(file)
-                    content = df.to_string()
-                except Exception as e:
-                    content = f"[Excel 파일 - {file.name}] (파싱 오류: {str(e)})"
-                
-            elif file_extension == 'csv':
-                # CSV 파일 파싱
-                file.seek(0)
-                try:
-                    df = pd.read_csv(file)
-                    content = df.to_string()
-                except Exception as e:
-                    content = f"[CSV 파일 - {file.name}] (파싱 오류: {str(e)})"
-                
-            elif file_extension in ['json']:
-                # JSON 파일 파싱
-                file.seek(0)
-                try:
-                    json_data = json.load(file)
-                    content = json.dumps(json_data, indent=2, ensure_ascii=False)
-                except Exception as e:
-                    try:
-                        file.seek(0)
-                        content = file.read().decode('utf-8', errors='ignore')
-                    except:
-                        content = f"[JSON 파일 - {file.name}] (파싱 오류: {str(e)})"
-                        
-            elif file_extension in ['xml', 'html']:
-                # XML/HTML 파일 파싱
-                file.seek(0)
-                try:
-                    content = file.read().decode('utf-8', errors='ignore')
-                except Exception as e:
-                    content = f"[XML/HTML 파일 - {file.name}] (파싱 오류: {str(e)})"
-                    
-            elif file_extension in ['jpg', 'jpeg', 'png', 'gif']:
-                # 이미지 파일
-                content = f"[{file_extension.upper()} 이미지 파일 - {file.name}]"
-                
-            elif file_extension in ['zip', 'rar']:
-                # 압축 파일
-                content = f"[{file_extension.upper()} 압축 파일 - {file.name}]"
-                
-            else:
-                # 기타 파일 형식
-                try:
-                    file.seek(0)
-                    content = file.read().decode('utf-8', errors='ignore')
-                    if not content.strip():
-                        content = f"[{file_extension.upper()} 파일 - 텍스트 추출 불가]"
-                except:
-                    content = f"[{file_extension.upper()} 파일 - 텍스트 추출 불가]"
+            # 파일 내용 읽기
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                with open(file_path, 'r', encoding='latin-1') as f:
+                    content = f.read()
             
             processed_files.append({
                 'name': file.name,
                 'content': content,
-                'size': len(content),
-                'type': file_extension
+                'size': len(content)
             })
+            
+            # 임시 파일 삭제
+            os.remove(file_path)
             
         except Exception as e:
             logger.error(f"파일 처리 오류 {file.name}: {e}")
-            processed_files.append({
-                'name': file.name,
-                'content': f"[파일 처리 오류: {str(e)}]",
-                'size': 0,
-                'type': 'error'
-            })
             continue
     
     return processed_files
-
-def save_virtual_company_analysis_new(user_query, model_name, persona_analyses, ceo_synthesis, rag_sources_used, execution_time, session_title=None, tags=None, notes=None):
-    """Virtual Company 분석 결과를 데이터베이스에 저장 (새 버전)"""
-    try:
-        st.info("🔄 저장 프로세스 시작...")
-        
-        # 1. 데이터베이스 연결
-        connection = connect_to_db()
-        if not connection:
-            st.error("❌ 1단계 실패: 데이터베이스 연결")
-            return None
-        
-        st.info("✅ 1단계 성공: 데이터베이스 연결")
-        cursor = connection.cursor()
-        
-        # 2. 테이블 존재 여부 확인
-        try:
-            cursor.execute("SHOW TABLES LIKE 'virtual_company_analyses'")
-            main_table = cursor.fetchone()
-            if not main_table:
-                st.error("❌ 2단계 실패: virtual_company_analyses 테이블이 존재하지 않습니다")
-                cursor.close()
-                connection.close()
-                return None
-        except Exception as table_check_error:
-            st.error(f"❌ 2단계 실패: 테이블 확인 중 오류: {str(table_check_error)}")
-            cursor.close()
-            connection.close()
-            return None
-        
-        st.info("✅ 2단계 성공: 테이블 존재 확인")
-        
-        # 3. 데이터 준비
-        if not session_title:
-            session_title = f"AI 멀티에이전트 분석 - {datetime.now().strftime('%Y%m%d_%H%M')}"
-        
-        successful_personas = len([p for p in persona_analyses.values() if p.get('success', False)])
-        total_personas = len(persona_analyses)
-        
-        if successful_personas == 0:
-            completion_status = '오류'
-        elif successful_personas < total_personas:
-            completion_status = '부분완료'
-        else:
-            completion_status = '완료'
-        
-        st.info(f"✅ 3단계 성공: 데이터 준비 완료 (성공 페르소나: {successful_personas}/{total_personas})")
-        
-        # 4. 메인 분석 세션 저장
-        try:
-            analysis_sql = """
-            INSERT INTO virtual_company_analyses 
-            (session_title, user_query, model_name, completion_status, ceo_synthesis, 
-             total_personas, successful_personas, rag_sources_used, execution_time_seconds, tags, notes)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            
-            analysis_values = (
-                session_title, user_query, model_name, completion_status, ceo_synthesis,
-                total_personas, successful_personas, len(rag_sources_used), execution_time, tags, notes
-            )
-            
-            st.info(f"📝 메인 INSERT 쿼리 실행: session_title='{session_title}', model='{model_name}', status='{completion_status}'")
-            
-            cursor.execute(analysis_sql, analysis_values)
-            analysis_id = cursor.lastrowid
-            
-            if not analysis_id:
-                st.error("❌ 4단계 실패: 메인 분석 세션 ID를 가져올 수 없습니다")
-                cursor.close()
-                connection.close()
-                return None
-            
-            st.info(f"✅ 4단계 성공: 메인 분석 세션 저장 완료 (ID: {analysis_id})")
-                
-        except Exception as main_save_error:
-            st.error(f"❌ 4단계 실패: 메인 분석 세션 저장 오류: {str(main_save_error)}")
-            st.error(f"🔍 SQL: {analysis_sql}")
-            st.error(f"🔍 Values: {analysis_values}")
-            cursor.close()
-            connection.close()
-            return None
-        
-        # 5. 페르소나별 분석 결과 저장
-        try:
-            st.info("🔄 5단계: 페르소나별 분석 결과 저장 중...")
-            
-            for persona_key, persona_result in persona_analyses.items():
-                if persona_key == 'CEO':  # CEO는 종합 분석이므로 제외
-                    continue
-                    
-                persona_info = PERSONAS.get(persona_key, {})
-                persona_sql = """
-                INSERT INTO virtual_company_persona_analyses 
-                (analysis_id, persona_key, persona_name, persona_role, analysis_result, 
-                 analysis_success, error_message, analysis_start_time, analysis_end_time)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """
-                
-                persona_values = (
-                    analysis_id,
-                    persona_key,
-                    persona_info.get('name', persona_key),
-                    persona_info.get('role', ''),
-                    persona_result.get('result', ''),
-                    persona_result.get('success', False),
-                    persona_result.get('error_message', ''),
-                    persona_result.get('start_time'),
-                    persona_result.get('end_time')
-                )
-                
-                cursor.execute(persona_sql, persona_values)
-            
-            st.info(f"✅ 5단계 성공: {len(persona_analyses)-1}개 페르소나 분석 저장 완료")
-            
-        except Exception as persona_save_error:
-            st.warning(f"⚠️ 5단계 부분 실패: 페르소나 분석 저장 오류: {str(persona_save_error)}")
-        
-        # 6. RAG 소스 정보 저장
-        try:
-            st.info("🔄 6단계: RAG 소스 정보 저장 중...")
-            
-            for rag_source in rag_sources_used:
-                rag_sql = """
-                INSERT INTO virtual_company_rag_sources 
-                (analysis_id, source_type, source_name, source_description, source_details, data_size)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """
-                
-                rag_values = (
-                    analysis_id,
-                    rag_source.get('type', 'unknown'),
-                    rag_source.get('name', ''),
-                    rag_source.get('description', ''),
-                    json.dumps(rag_source.get('details', {}), ensure_ascii=False),
-                    rag_source.get('data_size', 0)
-                )
-                
-                cursor.execute(rag_sql, rag_values)
-            
-            st.info(f"✅ 6단계 성공: {len(rag_sources_used)}개 RAG 소스 저장 완료")
-            
-        except Exception as rag_save_error:
-            st.warning(f"⚠️ 6단계 부분 실패: RAG 소스 저장 오류: {str(rag_save_error)}")
-        
-        # 7. 최종 커밋
-        try:
-            connection.commit()
-            st.info("✅ 7단계 성공: 모든 데이터 저장 완료!")
-        except Exception as commit_error:
-            st.error(f"❌ 7단계 실패: 커밋 오류: {str(commit_error)}")
-            connection.rollback()
-            cursor.close()
-            connection.close()
-            return None
-        
-        # 성공 - ID 반환
-        cursor.close()
-        connection.close()
-        return analysis_id
-        
-    except Exception as e:
-        st.error(f"❌ 예상치 못한 저장 오류: {str(e)}")
-        return None
 
 def create_rag_context():
     """RAG 컨텍스트 생성"""
@@ -1805,34 +1362,66 @@ def run_concurrent_analysis_with_progress_rag(user_query, persona_prompts, perso
     
     # 진행률 애니메이션 함수
     def animate_progress():
-        placeholder = st.empty()
-        
-        for i in range(100):
-            if not hasattr(st.session_state, 'analysis_complete') or not st.session_state.analysis_complete:
+        while True:
+            current_time = time.time()
+            
+            all_completed = True
+            for persona_key, persona_info in PERSONAS.items():
+                if persona_key not in st.session_state.get('completed_personas', set()):
+                    all_completed = False
+                    
+                    stages = PERSONA_ANALYSIS_STAGES[persona_key]
+                    stage_info = persona_stages[persona_key]
+                    
+                    if stage_info['current_stage'] < len(stages):
+                        current_stage = stages[stage_info['current_stage']]
+                        
+                        elapsed_since_update = current_time - stage_info['last_update']
+                        
+                        if elapsed_since_update >= stage_info['stage_duration']:
+                            stage_info['current_stage'] += 1
+                            stage_info['last_update'] = current_time
+                            stage_info['stage_duration'] = random.uniform(1.5, 3.5)
+                            
+                            if stage_info['current_stage'] < len(stages):
+                                new_stage = stages[stage_info['current_stage']]
+                                
+                                if persona_progress[persona_key] is not None:
+                                    # Progress 값을 0.0-1.0 범위로 변환 (percentage에서 ratio로)
+                                    progress_ratio = min(max(new_stage['progress'] / 100.0, 0.0), 1.0)
+                                    persona_progress[persona_key].progress(progress_ratio)
+                                
+                                persona_status[persona_key].markdown(f"""
+                                <div class="progress-indicator">
+                                    <strong>🚀 {persona_info['emoji']} {persona_info['name']}</strong><br>
+                                    <span style="font-size: 0.9rem;">{new_stage['message']} ({new_stage['progress']}%)</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            if stage_info['current_stage'] > 0:
+                                prev_progress = stages[stage_info['current_stage'] - 1]['progress']
+                                curr_progress = current_stage['progress']
+                                
+                                stage_progress = min(elapsed_since_update / stage_info['stage_duration'], 1.0)
+                                interpolated_progress = prev_progress + (curr_progress - prev_progress) * stage_progress
+                                
+                                if persona_progress[persona_key] is not None:
+                                    # Progress 값을 0.0-1.0 범위로 변환 (percentage에서 ratio로)
+                                    progress_ratio = min(max(interpolated_progress / 100.0, 0.0), 1.0)
+                                    persona_progress[persona_key].progress(progress_ratio)
+                                
+                                persona_status[persona_key].markdown(f"""
+                                <div class="progress-indicator">
+                                    <strong>🚀 {persona_info['emoji']} {persona_info['name']}</strong><br>
+                                    <span style="font-size: 0.9rem;">{current_stage['message']} ({int(interpolated_progress)}%)</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+            
+            if all_completed:
                 break
-            
-            placeholder.markdown(f"""
-            <div style="
-                background: linear-gradient(90deg, #ff6b6b, #feca57, #48dbfb, #ff9ff3, #54a0ff);
-                background-size: 500% 500%;
-                animation: rainbow 2s ease infinite;
-                border-radius: 15px;
-                padding: 20px;
-                margin: 15px 0;
-                color: white;
-                text-align: center;
-                font-weight: bold;
-                font-size: 1.1rem;
-                box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-            ">
-                🌈 모든 C-Level 임원진이 업무에 몰두하고 있습니다... {i+1}%
-            </div>
-            """, unsafe_allow_html=True)
-            
-            time.sleep(0.05)
+                
+            time.sleep(0.3)
     
-    animate_progress()
-
     st.session_state['completed_personas'] = set()
     
     progress_thread = threading.Thread(target=animate_progress)
@@ -2128,26 +1717,6 @@ st.markdown('<p class="main-subtitle"><strong>당신은 CEO입니다. C-level �
 
 # 현재 설정 정보 표시
 st.markdown("### ⚙️ 현재 시스템 설정")
-
-# DB 상태 확인 및 테이블 생성
-db_success, db_message = check_database_connection()
-if not db_success:
-    st.error(f"💾 **데이터베이스**: ❌ {db_message}")
-    st.warning("⚠️ 분석 결과 저장 기능을 사용할 수 없습니다. DB 설정을 확인하세요.")
-else:
-    st.success(f"💾 **데이터베이스**: ✅ {db_message}")
-    
-    # 테이블 자동 생성 확인
-    if "Virtual Company 테이블: 0개" in db_message:
-        st.info("🔧 Virtual Company 저장용 테이블이 없습니다. 자동으로 생성합니다...")
-        if create_virtual_company_tables_if_not_exists():
-            st.rerun()
-    elif "Virtual Company 테이블: 4개" not in db_message:
-        # 일부 테이블만 있는 경우
-        st.warning("⚠️ Virtual Company 테이블이 불완전합니다. 누락된 테이블을 생성합니다...")
-        if create_virtual_company_tables_if_not_exists():
-            st.rerun()
-
 col1, col2, col3 = st.columns([2, 2, 1])
 with col1:
     st.markdown(f"**🧠 AI 모델**: `{selected_model}`")
@@ -2194,112 +1763,7 @@ if st.button("🧪 AI 모델 연결 테스트", help="선택된 AI 모델과의 
     except Exception as e:
         st.error(f"❌ AI 모델 연결 실패: {str(e)}")
 
-# DB 및 테이블 상태 확인 버튼 추가
-if st.button("🗄️ DB 및 Virtual Company 테이블 상태 확인", help="데이터베이스 연결과 필요한 테이블들의 상태를 확인합니다"):
-    db_success, db_message = check_database_connection()
-    if db_success:
-        st.success(f"✅ {db_message}")
-        
-        # 각 테이블별 상세 정보 확인
-        try:
-            connection = connect_to_db()
-            if connection:
-                cursor = connection.cursor()
-                
-                st.info("📋 **Virtual Company 테이블 상세 정보:**")
-                required_tables = ['virtual_company_analyses', 'virtual_company_persona_analyses', 'virtual_company_rag_sources', 'virtual_company_analysis_metrics']
-                
-                for table_name in required_tables:
-                    try:
-                        cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
-                        table_exists = cursor.fetchone()
-                        
-                        if table_exists:
-                            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-                            row_count = cursor.fetchone()[0]
-                            st.write(f"✅ `{table_name}`: 존재함 ({row_count:,}개 레코드)")
-                        else:
-                            st.write(f"❌ `{table_name}`: 존재하지 않음")
-                    except Exception as table_error:
-                        st.write(f"⚠️ `{table_name}`: 확인 중 오류 - {str(table_error)}")
-                
-                cursor.close()
-                connection.close()
-        except Exception as detail_error:
-            st.warning(f"상세 정보 조회 중 오류: {str(detail_error)}")
-    else:
-        st.error(f"❌ {db_message}")
-
 st.markdown("---")
-
-# DB 저장 테스트 버튼 추가
-# if st.button("🧪 DB 저장 테스트 (더미 데이터)", help="간단한 더미 데이터로 저장 기능을 테스트합니다"):
-#     st.info("🔄 DB 저장 테스트를 시작합니다...")
-    
-#     # 더미 데이터 생성
-#     test_user_query = "테스트 질문: 회사의 디지털 전환 전략은?"
-#     test_model_name = selected_model
-    
-#     # 더미 페르소나 분석 결과
-#     test_persona_analyses = {
-#         'ceo': {
-#             'success': True,
-#             'result': '테스트 CEO 분석 결과: 디지털 전환은 회사의 핵심 전략입니다.',
-#             'start_time': datetime.now().isoformat(),
-#             'end_time': datetime.now().isoformat(),
-#             'error_message': ''
-#         },
-#         'cto': {
-#             'success': True,
-#             'result': '테스트 CTO 분석 결과: 기술 인프라 투자가 필요합니다.',
-#             'start_time': datetime.now().isoformat(),
-#             'end_time': datetime.now().isoformat(),
-#             'error_message': ''
-#         }
-#     }
-    
-#     test_ceo_synthesis = "테스트 CEO 종합 분석: 모든 임원진의 의견을 종합하면 디지털 전환이 시급합니다."
-#     test_rag_sources = [
-#         {
-#             'type': 'test',
-#             'name': '테스트 RAG 소스',
-#             'description': '테스트용 데이터 소스',
-#             'details': {'test': True},
-#             'data_size': 100,
-#             'content_preview': '테스트 내용 미리보기...'
-#         }
-#     ]
-#     test_execution_time = 30
-    
-#     # 테스트 저장 실행
-#     analysis_id = save_virtual_company_analysis_new(
-#         user_query=test_user_query,
-#         model_name=test_model_name,
-#         persona_analyses=test_persona_analyses,
-#         ceo_synthesis=test_ceo_synthesis,
-#         rag_sources_used=test_rag_sources,
-#         execution_time=test_execution_time,
-#         session_title="🧪 DB 저장 테스트",
-#         tags="테스트, 더미데이터",
-#         notes="이것은 저장 기능 테스트용 더미 데이터입니다."
-#     )
-    
-#     if analysis_id:
-#         st.success(f"🎉 DB 저장 테스트 성공! 저장된 분석 ID: {analysis_id}")
-#         st.info("💡 이제 실제 분석 결과도 정상적으로 저장될 것입니다.")
-        
-#         # 저장된 데이터 확인
-#         if st.button("📋 저장된 테스트 데이터 확인", key="check_test_data"):
-#             detail_data = get_virtual_company_analysis_detail(analysis_id)
-#             if detail_data:
-#                 st.success("✅ 저장된 데이터 조회 성공!")
-#                 st.json(detail_data['main'])
-#             else:
-#                 st.error("❌ 저장된 데이터 조회 실패")
-#     else:
-#         st.error("❌ DB 저장 테스트 실패! 위의 상세 오류 메시지를 확인하세요.")
-
-# st.markdown("---")
 
 # RAG 설정 가이드
 if not st.session_state.rag_sources:
@@ -2345,11 +1809,8 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
         # 실행 시간 측정 시작
         analysis_start_time = time.time()
         
-        # 세션 상태 초기화 및 user_query 저장
         st.session_state.current_analysis = {}
         st.session_state.analysis_complete = False
-        st.session_state.last_user_query = user_query  # user_query 저장
-        st.session_state.selected_model = selected_model  # 모델명 저장
         
         # 진행 상황 표시
         progress_container = st.container()
@@ -2461,10 +1922,6 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                 with st.spinner("CEO 최종 종합 분석 중..."):
                     ceo_synthesis = synthesize_ceo_analysis_rag(user_query, successful_analyses, selected_model)
                     
-                    # 실행 시간 계산
-                    analysis_end_time = time.time()
-                    execution_time = int(analysis_end_time - analysis_start_time)
-                    
                     if ceo_synthesis:
                         st.session_state.current_analysis['CEO'] = {
                             'result': ceo_synthesis,
@@ -2473,79 +1930,34 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                         }
                         st.session_state.analysis_complete = True
                         
-                        # 🎯 자동 저장 시스템 (저장 버튼 없이 바로 저장)
+                        # 실행 시간 계산
+                        analysis_end_time = time.time()
+                        execution_time = int(analysis_end_time - analysis_start_time)
+                        
+                        # 데이터베이스에 저장 옵션 표시
                         st.markdown("---")
-                        st.markdown("### 💾 분석 결과 자동 저장 중...")
-                        
-                        # RAG 소스 정보 준비
-                        rag_sources_info = []
-                        if hasattr(st.session_state, 'current_rag_sources'):
-                            rag_sources_info = st.session_state.current_rag_sources
-                        
-                        # 자동 세션 제목 생성
-                        auto_session_title = f"AI 멀티에이전트 분석 - {datetime.now().strftime('%Y%m%d_%H%M')}"
-                        auto_tags = "자동저장, AI분석, C-Level"
-                        auto_notes = f"분석 주제: {user_query[:100]}{'...' if len(user_query) > 100 else ''}"
-                        
-                        # 자동 저장 실행
-                        with st.spinner("📊 분석 결과를 자동으로 저장하고 있습니다..."):
-                            analysis_id = save_virtual_company_analysis_new(
-                                user_query=user_query,
-                                model_name=selected_model,
-                                persona_analyses=st.session_state.current_analysis,
-                                ceo_synthesis=ceo_synthesis,
-                                rag_sources_used=rag_sources_info,
-                                execution_time=execution_time,
-                                session_title=auto_session_title,
-                                tags=auto_tags,
-                                notes=auto_notes
-                            )
-                        
-                        # 자동 저장 결과 처리
-                        if analysis_id:
-                            st.success(f"🎉 분석 완료! 자동으로 저장되었습니다 (ID: {analysis_id})")
-                            st.info("💡 저장된 분석은 아래 '분석 히스토리 관리'에서 확인하거나 제목/태그를 수정할 수 있습니다.")
-                            
-                            # 세션 상태에 저장 정보 기록
-                            st.session_state.saved_analysis_id = analysis_id
-                            st.session_state.analysis_saved = True
-                            st.session_state.save_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                            st.session_state.auto_saved = True
-                        else:
-                            st.warning("⚠️ 분석은 완료되었지만 DB 저장에 실패했습니다. 결과는 현재 세션에서 확인하실 수 있습니다.")
-                            st.info("💡 아래 히스토리 관리에서 수동으로 저장을 재시도할 수 있습니다.")
-                    else:
-                        # CEO 종합 분석이 실패한 경우에도 저장 옵션 제공
-                        st.error("❌ CEO 종합 분석에 실패했지만, 개별 임원진 분석 결과는 저장할 수 있습니다.")
-                        
-                        # 데이터베이스에 저장 옵션 표시 (부분 저장)
-                        st.markdown("---")
-                        st.markdown("### 💾 분석 결과 저장 (부분 완료)")
-                        st.warning("⚠️ CEO 종합 분석은 실패했지만, 성공한 개별 임원진 분석 결과를 저장할 수 있습니다.")
+                        st.markdown("### 💾 분석 결과 저장")
                         
                         save_col1, save_col2 = st.columns([3, 1])
                         
                         with save_col1:
                             session_title = st.text_input(
                                 "🏷️ 분석 세션 제목", 
-                                value=f"AI 멀티에이전트 분석 (부분완료) - {datetime.now().strftime('%Y%m%d_%H%M')}",
-                                help="이 분석 세션을 구분할 수 있는 제목을 입력하세요",
-                                key="session_title_input_partial"
+                                value=f"AI 멀티에이전트 분석 - {datetime.now().strftime('%Y%m%d_%H%M')}",
+                                help="이 분석 세션을 구분할 수 있는 제목을 입력하세요"
                             )
                             
                             tags = st.text_input(
                                 "🏷️ 태그", 
-                                placeholder="예: 전략분석, AI, 신사업, 마케팅전략, 부분완료 (쉼표로 구분)",
-                                help="나중에 검색할 때 사용할 태그들을 입력하세요",
-                                key="tags_input_partial"
+                                placeholder="예: 전략분석, AI, 신사업, 마케팅전략 (쉼표로 구분)",
+                                help="나중에 검색할 때 사용할 태그들을 입력하세요"
                             )
                             
                             notes = st.text_area(
                                 "📝 메모", 
-                                placeholder="CEO 종합 분석 실패로 부분 저장. 추가 메모를 입력하세요...",
+                                placeholder="이 분석에 대한 추가 메모나 설명을 입력하세요...",
                                 height=80,
-                                help="이 분석의 배경이나 특별한 사항을 기록해두세요",
-                                key="notes_input_partial"
+                                help="이 분석의 배경이나 특별한 사항을 기록해두세요"
                             )
                         
                         with save_col2:
@@ -2554,16 +1966,14 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                             st.markdown(f"**성공한 페르소나**: {len(successful_analyses)}/{len(PERSONAS)}")
                             st.markdown(f"**RAG 소스**: {len(st.session_state.rag_sources)}개")
                             st.markdown(f"**AI 모델**: {selected_model}")
-                            st.markdown("**상태**: ⚠️ 부분 완료")
                         
-                        # 부분 저장 버튼
-                        if st.button("💾 개별 분석 결과만 저장 (부분 저장)", type="secondary", use_container_width=True, key="save_partial_analysis_button"):
+                        if st.button("💾 분석 결과를 데이터베이스에 저장", type="primary", use_container_width=True):
                             # 저장 전 상태를 session_state에 백업
                             st.session_state.save_backup = {
                                 'user_query': user_query,
                                 'model_name': selected_model,
                                 'analysis_results': st.session_state.current_analysis.copy(),
-                                'ceo_synthesis': None,  # CEO 종합 분석 실패
+                                'ceo_synthesis': ceo_synthesis,
                                 'execution_time': execution_time,
                                 'session_title': session_title.strip() if session_title.strip() else None,
                                 'tags': tags.strip() if tags.strip() else None,
@@ -2577,13 +1987,13 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                             
                             st.session_state.save_backup['rag_sources'] = rag_sources_info
                             
-                            # 분석 결과 저장 (부분 저장)
-                            with st.spinner("부분 분석 결과를 데이터베이스에 저장 중..."):
+                            # 분석 결과 저장
+                            with st.spinner("분석 결과를 데이터베이스에 저장 중..."):
                                 analysis_id = save_virtual_company_analysis(
                                     user_query=user_query,
                                     model_name=selected_model,
                                     persona_analyses=st.session_state.current_analysis,
-                                    ceo_synthesis=None,  # CEO 종합 분석 실패
+                                    ceo_synthesis=ceo_synthesis,
                                     rag_sources_used=rag_sources_info,
                                     execution_time=execution_time,
                                     session_title=session_title.strip() if session_title.strip() else None,
@@ -2591,74 +2001,98 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                                     notes=notes.strip() if notes.strip() else None
                                 )
                             
-                            # 저장 결과를 session_state에 저장 (프로젝트 리뷰 방식)
+                            # 저장 결과를 session_state에 저장 (rerun 후에도 유지)
                             if analysis_id:
-                                st.success(f"✅ 부분 분석 결과가 성공적으로 저장되었습니다! (ID: {analysis_id})")
-                                st.warning("⚠️ CEO 종합 분석이 실패하여 개별 임원진 분석만 저장되었습니다.")
+                                st.session_state.save_result = {
+                                    'status': 'success',
+                                    'analysis_id': analysis_id,
+                                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                }
+                                # 저장 성공 후 분석 완료 상태 유지
+                                st.session_state.analysis_saved = True
+                            else:
+                                st.session_state.save_result = {
+                                    'status': 'error',
+                                    'message': '데이터베이스 연결을 확인해주세요.',
+                                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                }
+                            
+                            # 페이지 리프레시하여 저장 결과 표시
+                            st.rerun()
+                        
+                        # 저장 결과 표시 (rerun 후에도 유지됨)
+                        if 'save_result' in st.session_state:
+                            save_result = st.session_state.save_result
+                            
+                            if save_result['status'] == 'success':
+                                st.success(f"✅ 분석 결과가 성공적으로 저장되었습니다!")
+                                st.info(f"📊 **저장 ID**: {save_result['analysis_id']}")
+                                st.info(f"⏰ **저장 시간**: {save_result['timestamp']}")
                                 st.info("💡 저장된 분석 결과는 아래 '분석 히스토리 관리' 섹션에서 확인할 수 있습니다.")
                                 
-                                # 세션 상태에 저장된 분석 정보 저장 (리셋 방지)
-                                st.session_state.saved_analysis_id = analysis_id
-                                st.session_state.analysis_saved = True
-                                st.session_state.save_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                st.session_state.partial_save = True
+                                # 저장된 분석으로 자동 이동하는 버튼
+                                if st.button("📋 저장된 분석 결과 바로 보기", key="view_saved_analysis"):
+                                    st.session_state.selected_analysis_id = save_result['analysis_id']
+                                    st.session_state.show_history_tab = True
+                                    # 저장 결과 메시지 제거
+                                    del st.session_state.save_result
+                                    st.rerun()
+                                
+                                # 새 분석 시작 버튼
+                                if st.button("🆕 새로운 분석 시작", key="new_analysis"):
+                                    # 분석 관련 session_state 초기화
+                                    keys_to_remove = ['current_analysis', 'analysis_complete', 'save_result', 'save_backup', 'analysis_saved']
+                                    for key in keys_to_remove:
+                                        if key in st.session_state:
+                                            del st.session_state[key]
+                                    st.rerun()
+                                    
                             else:
-                                st.error("❌ 부분 분석 결과 저장에 실패했습니다. 데이터베이스 연결을 확인해주세요.")
-                        
-                        # 디버깅 정보 표시
-                        with st.expander("🔍 디버깅 정보", expanded=False):
-                            st.write("**분석 상태 정보:**")
-                            st.write(f"- successful_analyses 개수: {len(successful_analyses)}")
-                            st.write(f"- ceo_synthesis 상태: {'성공' if ceo_synthesis else '실패'}")
-                            st.write(f"- session_state.analysis_complete: {st.session_state.get('analysis_complete', False)}")
-                            st.write(f"- session_state.current_analysis 키들: {list(st.session_state.current_analysis.keys())}")
+                                st.error(f"❌ 분석 결과 저장에 실패했습니다.")
+                                st.error(f"🔍 **오류 내용**: {save_result.get('message', '알 수 없는 오류')}")
+                                st.error(f"⏰ **오류 시간**: {save_result['timestamp']}")
+                                
+                                # 재시도 버튼
+                                if st.button("🔄 저장 재시도", key="retry_save"):
+                                    if 'save_backup' in st.session_state:
+                                        backup = st.session_state.save_backup
+                                        
+                                        # 백업된 데이터로 재시도
+                                        with st.spinner("분석 결과 저장을 재시도 중..."):
+                                            analysis_id = save_virtual_company_analysis(
+                                                user_query=backup['user_query'],
+                                                model_name=backup['model_name'],
+                                                persona_analyses=backup['analysis_results'],
+                                                ceo_synthesis=backup['ceo_synthesis'],
+                                                rag_sources_used=backup['rag_sources'],
+                                                execution_time=backup['execution_time'],
+                                                session_title=backup['session_title'],
+                                                tags=backup['tags'],
+                                                notes=backup['notes']
+                                            )
+                                        
+                                        if analysis_id:
+                                            st.session_state.save_result = {
+                                                'status': 'success',
+                                                'analysis_id': analysis_id,
+                                                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                            }
+                                        else:
+                                            st.session_state.save_result = {
+                                                'status': 'error',
+                                                'message': '재시도에도 실패했습니다. 시스템 관리자에게 문의하세요.',
+                                                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                            }
+                                        
+                                        st.rerun()
+                                    else:
+                                        st.error("백업 데이터가 없어 재시도할 수 없습니다.")
                             
-                            if ceo_synthesis:
-                                st.write(f"- CEO 분석 길이: {len(ceo_synthesis)}자")
-                            else:
-                                st.write("- CEO 분석: None 또는 빈 문자열")
-                
-                # 저장 완료 상태 표시 (세션 상태 기반)
-                if st.session_state.get('analysis_saved', False) and 'saved_analysis_id' in st.session_state:
-                    st.markdown("---")
-                    st.markdown("### ✅ 저장 완료")
-                    
-                    if st.session_state.get('partial_save', False):
-                        st.info(f"📊 **부분 저장 ID**: {st.session_state.saved_analysis_id}")
-                        st.warning("⚠️ CEO 종합 분석이 실패하여 개별 임원진 분석만 저장되었습니다.")
-                    else:
-                        st.info(f"📊 **저장 ID**: {st.session_state.saved_analysis_id}")
-                    
-                    st.info(f"⏰ **저장 시간**: {st.session_state.get('save_timestamp', 'Unknown')}")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        # 저장된 분석으로 자동 이동하는 버튼
-                        if st.button("📋 저장된 분석 결과 바로 보기", key="view_saved_analysis_final"):
-                            st.session_state.selected_analysis_id = st.session_state.saved_analysis_id
-                            st.session_state.show_history_tab = True
-                    
-                    with col2:
-                        # 새 분석 시작 버튼
-                        if st.button("🆕 새로운 분석 시작", key="new_analysis_final"):
-                            # 분석 관련 session_state 초기화
-                            keys_to_remove = [
-                                'current_analysis', 'analysis_complete', 'analysis_saved', 
-                                'saved_analysis_id', 'save_timestamp', 'partial_save', 'save_backup'
-                            ]
-                            for key in keys_to_remove:
-                                if key in st.session_state:
-                                    del st.session_state[key]
-                    
-                    with col3:
-                        # 저장 상태 메시지 제거 버튼
-                        if st.button("❌ 저장 완료 메시지 닫기", key="close_save_complete_message"):
-                            # 저장 완료 관련 상태만 제거 (분석 결과는 유지)
-                            keys_to_remove = ['analysis_saved', 'saved_analysis_id', 'save_timestamp', 'partial_save']
-                            for key in keys_to_remove:
-                                if key in st.session_state:
-                                    del st.session_state[key]
+                            # 결과 메시지 수동 제거 버튼
+                            if st.button("❌ 이 메시지 닫기", key="close_save_message"):
+                                if 'save_result' in st.session_state:
+                                    del st.session_state.save_result
+                                st.rerun()
             
             else:
                 st.error("❌ 모든 임원진 분석이 실패했습니다. 다시 시도해주세요.")
@@ -2906,7 +2340,7 @@ st.markdown("""
     🏬 Virtual AqaraLife C-Level 멀티에이전트 + RAG 시스템 | Powered by Claude & ChatGPT<br>
     🔍 RAG: MySQL Database + Website Crawling + Document Analysis
 </div>
-""", unsafe_allow_html=True)
+""", unsafe_allow_html=True) 
 
 # 환경 변수 로드
 load_dotenv()
@@ -2916,41 +2350,21 @@ load_dotenv()
 def save_virtual_company_analysis(user_query, model_name, persona_analyses, ceo_synthesis, rag_sources_used, execution_time, session_title=None, tags=None, notes=None):
     """Virtual Company 분석 결과를 데이터베이스에 저장"""
     try:
-        st.info("🔄 저장 프로세스 시작...")
-        
-        # 1. 데이터베이스 연결
         connection = connect_to_db()
         if not connection:
-            st.error("❌ 1단계 실패: 데이터베이스 연결")
             return None
         
-        st.info("✅ 1단계 성공: 데이터베이스 연결")
         cursor = connection.cursor()
         
-        # 2. 테이블 존재 여부 확인
-        try:
-            cursor.execute("SHOW TABLES LIKE 'virtual_company_analyses'")
-            main_table = cursor.fetchone()
-            if not main_table:
-                st.error("❌ 2단계 실패: virtual_company_analyses 테이블이 존재하지 않습니다")
-                cursor.close()
-                connection.close()
-                return None
-        except Exception as table_check_error:
-            st.error(f"❌ 2단계 실패: 테이블 확인 중 오류: {str(table_check_error)}")
-            cursor.close()
-            connection.close()
-            return None
-        
-        st.info("✅ 2단계 성공: 테이블 존재 확인")
-        
-        # 3. 데이터 준비
+        # 세션 제목 자동 생성 (입력되지 않은 경우)
         if not session_title:
             session_title = f"AI 멀티에이전트 분석 - {datetime.now().strftime('%Y%m%d_%H%M')}"
         
+        # 성공한 페르소나 수 계산
         successful_personas = len([p for p in persona_analyses.values() if p.get('success', False)])
         total_personas = len(persona_analyses)
         
+        # 완료 상태 결정
         if successful_personas == 0:
             completion_status = '오류'
         elif successful_personas < total_personas:
@@ -2958,137 +2372,73 @@ def save_virtual_company_analysis(user_query, model_name, persona_analyses, ceo_
         else:
             completion_status = '완료'
         
-        st.info(f"✅ 3단계 성공: 데이터 준비 완료 (성공 페르소나: {successful_personas}/{total_personas})")
+        # 메인 분석 세션 저장
+        analysis_sql = """
+        INSERT INTO virtual_company_analyses 
+        (session_title, user_query, model_name, completion_status, ceo_synthesis, 
+         total_personas, successful_personas, rag_sources_used, execution_time_seconds, tags, notes)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
         
-        # 4. 메인 분석 세션 저장
-        try:
-            analysis_sql = """
-            INSERT INTO virtual_company_analyses 
-            (session_title, user_query, model_name, completion_status, ceo_synthesis, 
-             total_personas, successful_personas, rag_sources_used, execution_time_seconds, tags, notes)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            
-            analysis_values = (
-                session_title, user_query, model_name, completion_status, ceo_synthesis,
-                total_personas, successful_personas, len(rag_sources_used), execution_time, tags, notes
-            )
-            
-            st.info(f"📝 메인 INSERT 쿼리 실행: session_title='{session_title}', model='{model_name}', status='{completion_status}'")
-            
-            cursor.execute(analysis_sql, analysis_values)
-            analysis_id = cursor.lastrowid
-            
-            if not analysis_id:
-                st.error("❌ 4단계 실패: 메인 분석 세션 ID를 가져올 수 없습니다")
-                cursor.close()
-                connection.close()
-                return None
-            
-            st.info(f"✅ 4단계 성공: 메인 분석 세션 저장 완료 (ID: {analysis_id})")
+        analysis_values = (
+            session_title, user_query, model_name, completion_status, ceo_synthesis,
+            total_personas, successful_personas, len(rag_sources_used), execution_time, tags, notes
+        )
+        
+        cursor.execute(analysis_sql, analysis_values)
+        analysis_id = cursor.lastrowid
+        
+        # 페르소나별 분석 결과 저장
+        for persona_key, analysis_data in persona_analyses.items():
+            if persona_key in PERSONAS:
+                persona_info = PERSONAS[persona_key]
                 
-        except Exception as main_save_error:
-            st.error(f"❌ 4단계 실패: 메인 분석 세션 저장 오류: {str(main_save_error)}")
-            st.error(f"🔍 SQL: {analysis_sql}")
-            st.error(f"🔍 Values: {analysis_values}")
-            cursor.close()
-            connection.close()
-            return None
-        
-        # 5. 페르소나별 분석 결과 저장
-        try:
-            saved_personas = 0
-            for persona_key, analysis_data in persona_analyses.items():
-                if persona_key in PERSONAS:
-                    persona_info = PERSONAS[persona_key]
-                    
-                    persona_sql = """
-                    INSERT INTO virtual_company_persona_analyses
-                    (analysis_id, persona_key, persona_name, persona_role, analysis_result, 
-                     analysis_success, error_message, analysis_start_time, analysis_end_time)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """
-                    
-                    # 시간 데이터 처리
-                    start_time = analysis_data.get('start_time')
-                    end_time = analysis_data.get('end_time')
-                    if isinstance(start_time, str):
-                        try:
-                            start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                        except:
-                            start_time = None
-                    if isinstance(end_time, str):
-                        try:
-                            end_time = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-                        except:
-                            end_time = None
-                    
-                    persona_values = (
-                        analysis_id, persona_key, persona_info['name'], persona_info['role'],
-                        analysis_data.get('result', ''), analysis_data.get('success', False),
-                        analysis_data.get('error_message', ''), start_time, end_time
-                    )
-                    
-                    cursor.execute(persona_sql, persona_values)
-                    saved_personas += 1
-            
-            st.info(f"✅ 5단계 성공: {saved_personas}개 페르소나 분석 결과 저장 완료")
-                    
-        except Exception as persona_save_error:
-            st.error(f"❌ 5단계 실패: 페르소나 분석 결과 저장 오류: {str(persona_save_error)}")
-            connection.rollback()
-            cursor.close()
-            connection.close()
-            return None
-        
-        # 6. RAG 소스 정보 저장
-        try:
-            saved_sources = 0
-            for source_info in rag_sources_used:
-                rag_sql = """
-                INSERT INTO virtual_company_rag_sources
-                (analysis_id, source_type, source_name, source_description, source_details, data_size, content_preview)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                persona_sql = """
+                INSERT INTO virtual_company_persona_analyses
+                (analysis_id, persona_key, persona_name, persona_role, analysis_result, 
+                 analysis_success, error_message, analysis_start_time, analysis_end_time)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 
-                rag_values = (
-                    analysis_id, source_info.get('type', ''), source_info.get('name', ''),
-                    source_info.get('description', ''), json.dumps(source_info.get('details', {})),
-                    source_info.get('data_size', 0), source_info.get('content_preview', '')
+                start_time = analysis_data.get('start_time')
+                end_time = analysis_data.get('end_time')
+                if isinstance(start_time, str):
+                    start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                if isinstance(end_time, str):
+                    end_time = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                
+                persona_values = (
+                    analysis_id, persona_key, persona_info['name'], persona_info['role'],
+                    analysis_data.get('result', ''), analysis_data.get('success', False),
+                    analysis_data.get('error_message', ''), start_time, end_time
                 )
                 
-                cursor.execute(rag_sql, rag_values)
-                saved_sources += 1
-            
-            st.info(f"✅ 6단계 성공: {saved_sources}개 RAG 소스 정보 저장 완료")
-            
-        except Exception as rag_save_error:
-            st.warning(f"⚠️ 6단계 부분 실패: RAG 소스 정보 저장 오류 (분석 결과는 저장됨): {str(rag_save_error)}")
-            # RAG 정보 저장 실패는 전체 실패로 처리하지 않음
+                cursor.execute(persona_sql, persona_values)
         
-        # 7. 트랜잭션 커밋
-        try:
-            connection.commit()
-            st.info("✅ 7단계 성공: 모든 변경사항 커밋 완료")
-        except Exception as commit_error:
-            st.error(f"❌ 7단계 실패: 커밋 오류: {str(commit_error)}")
-            connection.rollback()
-            cursor.close()
-            connection.close()
-            return None
+        # RAG 소스 정보 저장
+        for source_info in rag_sources_used:
+            rag_sql = """
+            INSERT INTO virtual_company_rag_sources
+            (analysis_id, source_type, source_name, source_description, source_details, data_size, content_preview)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            
+            rag_values = (
+                analysis_id, source_info.get('type', ''), source_info.get('name', ''),
+                source_info.get('description', ''), json.dumps(source_info.get('details', {})),
+                source_info.get('data_size', 0), source_info.get('content_preview', '')
+            )
+            
+            cursor.execute(rag_sql, rag_values)
         
+        connection.commit()
         cursor.close()
         connection.close()
         
-        # 성공 메시지는 호출하는 쪽에서 처리하도록 제거
         return analysis_id
         
     except Exception as e:
-        st.error(f"❌ 예상치 못한 저장 오류: {str(e)}")
-        st.error("🔧 문제 해결 방법:")
-        st.error("1. 페이지를 새로고침하여 테이블 자동 생성을 시도하세요")
-        st.error("2. DB 생성 페이지에서 'Virtual Company 테이블 생성' 메뉴를 실행하세요")
-        st.error("3. 데이터베이스 연결 설정(.env 파일)을 확인하세요")
+        st.error(f"분석 결과 저장 중 오류: {str(e)}")
         return None
 
 def get_virtual_company_analyses(search_term=None, model_name=None, completion_status=None, limit=50):
@@ -3420,339 +2770,3 @@ with history_tab1:
                 st.markdown(f"**🧠 AI 모델**: {main_data['model_name']}")
                 st.markdown(f"**📊 완료 상태**: {main_data['completion_status']}")
             
-            with detail_col2:
-                st.markdown(f"**👥 성공한 페르소나**: {main_data['successful_personas']}/{main_data['total_personas']}")
-                st.markdown(f"**🔍 RAG 소스**: {main_data['rag_sources_used']}개")
-                if main_data.get('execution_time_seconds'):
-                    st.markdown(f"**⏱️ 실행 시간**: {main_data['execution_time_seconds']}초")
-                if main_data.get('tags'):
-                    st.markdown(f"**🏷️ 태그**: {main_data['tags']}")
-            
-            # 분석 수정 기능
-            st.markdown("#### ✏️ 분석 정보 수정")
-            edit_col1, edit_col2 = st.columns(2)
-            
-            with edit_col1:
-                new_title = st.text_input("새 제목", value=main_data['session_title'], key="edit_title")
-                new_tags = st.text_input("새 태그", value=main_data.get('tags', ''), key="edit_tags")
-            
-            with edit_col2:
-                new_notes = st.text_area("새 메모", value=main_data.get('notes', ''), height=100, key="edit_notes")
-                
-                if st.button("💾 수정 저장", key="save_edit"):
-                    if update_virtual_company_analysis(
-                        st.session_state.selected_analysis_id,
-                        session_title=new_title,
-                        tags=new_tags,
-                        notes=new_notes
-                    ):
-                        st.success("✅ 분석 정보가 수정되었습니다.")
-                        st.rerun()
-                    else:
-                        st.error("❌ 수정 실패")
-            
-            # 분석 결과 표시
-            if main_data.get('ceo_synthesis'):
-                st.markdown("#### 👑 CEO 최종 종합 분석")
-                st.markdown(main_data['ceo_synthesis'])
-            
-            if persona_data:
-                st.markdown("#### 👥 개별 임원진 분석")
-                for persona in persona_data:
-                    if persona.get('analysis_result'):
-                        with st.expander(f"{persona['persona_name']} 분석"):
-                            st.markdown(persona['analysis_result'])
-            
-            # 분석 삭제 버튼
-            st.markdown("---")
-            st.markdown("#### 🗑️ 분석 삭제")
-            st.warning("⚠️ 삭제된 분석은 복구할 수 없습니다.")
-            
-            if st.button("🗑️ 이 분석 영구 삭제", type="secondary", help="이 분석을 영구적으로 삭제합니다"):
-                if st.confirm(f"정말로 '{main_data['session_title']}' 분석을 삭제하시겠습니까?"):
-                    if delete_virtual_company_analysis(st.session_state.selected_analysis_id):
-                        st.success("✅ 분석이 삭제되었습니다.")
-                        del st.session_state.selected_analysis_id
-                        st.rerun()
-                    else:
-                        st.error("❌ 삭제 실패")
-        else:
-            st.error("❌ 분석 상세 정보를 불러올 수 없습니다.")
-
-with history_tab2:
-    st.markdown("### 📊 통계 대시보드")
-    
-    # 통계 조회
-    stats = get_virtual_company_analysis_statistics()
-    
-    if stats and stats.get('basic'):
-        basic_stats = stats['basic']
-        
-        # 기본 통계 표시
-        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
-        
-        with stat_col1:
-            st.metric("총 분석 수", f"{basic_stats['total_analyses']:,}")
-        
-        with stat_col2:
-            st.metric("완료된 분석", f"{basic_stats['completed_analyses']:,}")
-        
-        with stat_col3:
-            completion_rate = (basic_stats['completed_analyses'] / basic_stats['total_analyses'] * 100) if basic_stats['total_analyses'] > 0 else 0
-            st.metric("완료율", f"{completion_rate:.1f}%")
-        
-        with stat_col4:
-            avg_time = basic_stats.get('avg_execution_time', 0) or 0
-            st.metric("평균 실행 시간", f"{avg_time:.1f}초")
-        
-        # 모델별 통계
-        if stats.get('by_model'):
-            st.markdown("#### 🧠 AI 모델별 사용 통계")
-            model_data = stats['by_model']
-            
-            for model in model_data:
-                col1, col2, col3 = st.columns([2, 1, 1])
-                
-                with col1:
-                    st.markdown(f"**{model['model_name']}**")
-                
-                with col2:
-                    st.markdown(f"분석 수: {model['count']}회")
-                
-                with col3:
-                    avg_time = model.get('avg_time', 0) or 0
-                    st.markdown(f"평균 시간: {avg_time:.1f}초")
-        
-        # 월별 통계
-        if stats.get('by_month'):
-            st.markdown("#### 📅 월별 분석 추이")
-            monthly_data = stats['by_month']
-            
-            months = [item['month'] for item in monthly_data]
-            counts = [item['count'] for item in monthly_data]
-            
-            # 간단한 차트 표시 (streamlit의 기본 차트 사용)
-            if months and counts:
-                chart_data = pd.DataFrame({
-                    '월': months,
-                    '분석 수': counts
-                })
-                st.line_chart(chart_data.set_index('월'))
-    else:
-        st.info("📊 분석 통계를 불러올 수 없습니다. 분석 결과가 없거나 데이터베이스 연결을 확인해주세요.")
-
-with history_tab3:
-    st.markdown("### ⚙️ 관리 도구")
-    
-    # 자동 저장 실패 시 수동 저장 기능
-    if st.session_state.get('analysis_complete', False) and not st.session_state.get('auto_saved', False):
-        st.warning("⚠️ 자동 저장에 실패한 분석 결과가 있습니다. 수동으로 저장하시겠습니까?")
-        
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            manual_save_title = st.text_input(
-                "🏷️ 세션 제목", 
-                value=f"수동 저장 - {datetime.now().strftime('%Y%m%d_%H%M')}",
-                key="manual_save_title"
-            )
-            manual_save_tags = st.text_input(
-                "🏷️ 태그", 
-                value="수동저장, 재시도",
-                key="manual_save_tags"
-            )
-            manual_save_notes = st.text_area(
-                "📝 메모", 
-                value="자동 저장 실패로 인한 수동 저장",
-                height=70,
-                key="manual_save_notes"
-            )
-        
-        with col2:
-            if st.button("💾 수동 저장 실행", type="primary"):
-                if hasattr(st.session_state, 'current_analysis') and st.session_state.current_analysis:
-                    # RAG 소스 정보 준비
-                    rag_sources_info = []
-                    if hasattr(st.session_state, 'current_rag_sources'):
-                        rag_sources_info = st.session_state.current_rag_sources
-                    
-                    # 기본값 설정
-                    execution_time = st.session_state.get('execution_time', 0)
-                    user_query = st.session_state.get('last_user_query', '수동 저장된 분석')
-                    selected_model = st.session_state.get('selected_model', 'claude-3-7-sonnet-latest')
-                    ceo_synthesis = st.session_state.current_analysis.get('CEO', {}).get('result', None)
-                    
-                    with st.spinner("수동 저장 중..."):
-                        analysis_id = save_virtual_company_analysis_new(
-                            user_query=user_query,
-                            model_name=selected_model,
-                            persona_analyses=st.session_state.current_analysis,
-                            ceo_synthesis=ceo_synthesis,
-                            rag_sources_used=rag_sources_info,
-                            execution_time=execution_time,
-                            session_title=manual_save_title,
-                            tags=manual_save_tags,
-                            notes=manual_save_notes
-                        )
-                    
-                    if analysis_id:
-                        st.success(f"✅ 수동 저장 성공! (ID: {analysis_id})")
-                        st.session_state.auto_saved = True
-                        st.session_state.saved_analysis_id = analysis_id
-                    else:
-                        st.error("❌ 수동 저장 실패")
-                else:
-                    st.error("❌ 저장할 분석 결과가 없습니다.")
-    
-    # 데이터베이스 유지보수
-    st.markdown("---")
-    st.markdown("#### 🔧 데이터베이스 유지보수")
-    
-    maintenance_col1, maintenance_col2 = st.columns(2)
-    
-    with maintenance_col1:
-        if st.button("📊 DB 상태 체크", help="데이터베이스 상태를 확인합니다"):
-            with st.spinner("DB 상태 확인 중..."):
-                db_is_connected, db_message = check_database_connection()
-                if db_is_connected:
-                    st.success(f"✅ {db_message}")
-                    
-                    # 테이블별 레코드 수 확인
-                    try:
-                        connection = connect_to_db()
-                        if connection:
-                            cursor = connection.cursor()
-                            
-                            tables = ['virtual_company_analyses', 'virtual_company_persona_analyses', 
-                                    'virtual_company_rag_sources', 'virtual_company_analysis_metrics']
-                            
-                            st.markdown("**테이블별 데이터 현황:**")
-                            for table in tables:
-                                try:
-                                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                                    count = cursor.fetchone()[0]
-                                    st.markdown(f"- {table}: {count:,}개 레코드")
-                                except Exception as e:
-                                    st.markdown(f"- {table}: 조회 실패 ({str(e)})")
-                            
-                            cursor.close()
-                            connection.close()
-                    except Exception as e:
-                        st.warning(f"테이블 상태 확인 중 오류: {str(e)}")
-                else:
-                    st.error(f"❌ {db_message}")
-    
-    with maintenance_col2:
-        if st.button("🔄 테이블 재생성", help="모든 테이블을 재생성합니다 (기존 데이터 유지)"):
-            with st.spinner("테이블 재생성 중..."):
-                try:
-                    create_virtual_company_tables_if_not_exists()
-                    st.success("✅ 테이블 재생성 완료")
-                except Exception as e:
-                    st.error(f"❌ 테이블 재생성 실패: {str(e)}")
-    
-    # completion_status 컬럼 문제 해결
-    st.markdown("---")
-    st.markdown("#### 🔧 completion_status 컬럼 문제 해결")
-    
-    fix_col1, fix_col2 = st.columns(2)
-    
-    with fix_col1:
-        if st.button("🔍 completion_status 컬럼 정보 확인", help="현재 completion_status 컬럼 타입을 확인합니다"):
-            try:
-                connection = connect_to_db()
-                if connection:
-                    cursor = connection.cursor()
-                    cursor.execute("DESCRIBE virtual_company_analyses completion_status")
-                    column_info = cursor.fetchone()
-                    
-                    if column_info:
-                        st.success("✅ 컬럼 정보 조회 성공")
-                        st.code(f"""
-컬럼명: {column_info[0]}
-데이터 타입: {column_info[1]}
-NULL 허용: {column_info[2]}
-키: {column_info[3]}
-기본값: {column_info[4]}
-Extra: {column_info[5]}
-                        """)
-                        
-                        if 'enum' in column_info[1].lower():
-                            st.warning("⚠️ ENUM 타입으로 되어 있어 데이터 잘림 오류가 발생할 수 있습니다.")
-                            st.info("💡 오른쪽 '컬럼 타입 수정' 버튼을 클릭하여 VARCHAR로 변경하세요.")
-                    else:
-                        st.error("❌ completion_status 컬럼을 찾을 수 없습니다")
-                    
-                    cursor.close()
-                    connection.close()
-                else:
-                    st.error("❌ 데이터베이스 연결 실패")
-            except Exception as e:
-                st.error(f"❌ 컬럼 정보 확인 실패: {str(e)}")
-    
-    with fix_col2:
-        if st.button("🔧 completion_status 컬럼 타입 수정", help="ENUM을 VARCHAR로 변경하여 데이터 잘림 오류를 해결합니다"):
-            try:
-                connection = connect_to_db()
-                if connection:
-                    cursor = connection.cursor()
-                    
-                    # 먼저 현재 타입 확인
-                    cursor.execute("DESCRIBE virtual_company_analyses completion_status")
-                    column_info = cursor.fetchone()
-                    
-                    if column_info and 'enum' in column_info[1].lower():
-                        # ENUM을 VARCHAR로 변경
-                        cursor.execute("ALTER TABLE virtual_company_analyses MODIFY COLUMN completion_status VARCHAR(50) DEFAULT '진행중' COMMENT '분석 완료 상태'")
-                        st.success("✅ completion_status 컬럼을 VARCHAR(50)으로 변경했습니다!")
-                        st.info("💡 이제 데이터 잘림 오류가 해결됩니다.")
-                    elif column_info and 'varchar' in column_info[1].lower():
-                        st.info("ℹ️ 이미 VARCHAR 타입으로 설정되어 있습니다.")
-                    else:
-                        st.warning("⚠️ completion_status 컬럼을 찾을 수 없거나 예상하지 못한 타입입니다.")
-                    
-                    cursor.close()
-                    connection.close()
-                else:
-                    st.error("❌ 데이터베이스 연결 실패")
-            except Exception as e:
-                st.error(f"❌ 컬럼 타입 수정 실패: {str(e)}")
-    
-    # 임시 데이터 정리
-    st.markdown("---")
-    st.markdown("#### 🧹 데이터 정리")
-    
-    clean_col1, clean_col2 = st.columns(2)
-    
-    with clean_col1:
-        st.markdown("**세션 상태 정리**")
-        if st.button("🗑️ 분석 세션 초기화", help="현재 분석 세션 데이터를 초기화합니다"):
-            # 분석 관련 session_state 초기화
-            keys_to_remove = [
-                'current_analysis', 'analysis_complete', 'analysis_saved', 
-                'saved_analysis_id', 'save_timestamp', 'auto_saved', 'search_results',
-                'selected_analysis_id', 'last_user_query'
-            ]
-            removed_count = 0
-            for key in keys_to_remove:
-                if key in st.session_state:
-                    del st.session_state[key]
-                    removed_count += 1
-            
-            st.success(f"✅ {removed_count}개 세션 데이터 초기화 완료")
-    
-    with clean_col2:
-        st.markdown("**캐시 정리**")
-        if st.button("🔄 Streamlit 캐시 초기화", help="Streamlit 캐시를 초기화합니다"):
-            st.cache_data.clear()
-            st.success("✅ 캐시 초기화 완료")
-
-# 푸터
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: #666; font-size: 0.8rem; margin-top: 30px;'>
-    💼 Virtual Company AI Multi-Agent Analysis System<br>
-    🚀 자동 저장 시스템으로 모든 분석 결과가 안전하게 보관됩니다<br>
-    🗑️ 필요 없는 분석은 언제든 삭제할 수 있습니다
-</div>
-""", unsafe_allow_html=True)
