@@ -1,0 +1,1862 @@
+import streamlit as st
+import os
+from datetime import datetime
+import time
+import random
+from dotenv import load_dotenv
+from openai import OpenAI
+import anthropic
+from langchain_anthropic import ChatAnthropic
+import json
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# RAG 관련 import 추가
+import mysql.connector
+import pandas as pd
+from sqlalchemy import create_engine
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
+import nltk
+import logging
+from pathlib import Path
+import hashlib
+
+# 벡터 데이터베이스 관련 import
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.vectorstores.faiss import FAISS
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.document_loaders import UnstructuredFileLoader
+from langchain.schema import Document
+
+# 환경 변수 로드
+load_dotenv()
+
+# 페이지 설정
+st.set_page_config(
+    page_title="🤖 다중 RAG 기반 챗봇 🗄️",
+    page_icon="🤖",
+    layout="wide"
+)
+
+st.title("🤖 다중 RAG 기반 챗봇 🗄️")
+# 인증 기능 (간단한 비밀번호 보호)
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('환경변수(ADMIN_PASSWORD)가 설정되어 있지 않습니다. .env 파일을 확인하세요.')
+    st.stop()
+if not st.session_state.authenticated:
+    password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    if password == admin_pw:
+        st.session_state.authenticated = True
+        st.rerun()
+    else:
+        if password:
+            st.error("관리자 권한이 필요합니다")
+        st.stop()
+
+st.markdown("RAG 기반 AI 어시스턴트 - MySQL DB, 웹사이트, 문서 분석 지원")
+
+# 표준화된 데이터베이스 연결 함수
+def connect_to_db():
+    """데이터베이스 연결"""
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv('SQL_HOST'),
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4',
+            collation='utf8mb4_unicode_ci'
+        )
+        return conn
+    except mysql.connector.Error as err:
+        st.error(f"데이터베이스 연결 오류: {err}")
+        return None
+
+def create_rag_agent_tables():
+    """RAG 에이전트용 테이블 생성"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return False
+        
+        cursor = connection.cursor()
+        
+        # 1. 메인 대화 세션 테이블
+        rag_conversations_table = """
+        CREATE TABLE IF NOT EXISTS rag_conversations (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            session_title VARCHAR(255) NOT NULL COMMENT '대화 세션 제목',
+            user_query TEXT NOT NULL COMMENT '사용자 질문',
+            assistant_response LONGTEXT COMMENT 'AI 응답',
+            model_name VARCHAR(100) NOT NULL COMMENT '사용된 AI 모델',
+            has_reasoning BOOLEAN DEFAULT FALSE COMMENT 'reasoning 포함 여부',
+            reasoning_content LONGTEXT COMMENT 'reasoning 과정',
+            rag_sources_used INT DEFAULT 0 COMMENT '사용된 RAG 소스 수',
+            execution_time_seconds INT COMMENT '응답 생성 시간(초)',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            tags VARCHAR(500) COMMENT '검색용 태그',
+            notes TEXT COMMENT '추가 메모',
+            INDEX idx_created_at (created_at),
+            INDEX idx_model_name (model_name),
+            INDEX idx_has_reasoning (has_reasoning),
+            FULLTEXT idx_search (session_title, user_query, tags, notes)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='RAG 에이전트 대화 세션';
+        """
+        cursor.execute(rag_conversations_table)
+        
+        # 2. RAG 소스 정보 테이블
+        rag_sources_table = """
+        CREATE TABLE IF NOT EXISTS rag_conversation_sources (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            conversation_id INT NOT NULL COMMENT '대화 세션 ID',
+            source_type ENUM('mysql', 'website', 'files') NOT NULL COMMENT 'RAG 소스 타입',
+            source_name VARCHAR(255) NOT NULL COMMENT '소스 이름',
+            source_description TEXT COMMENT '소스 설명',
+            source_details JSON COMMENT '소스 상세 정보',
+            data_size INT COMMENT '데이터 크기',
+            content_preview TEXT COMMENT '데이터 미리보기',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (conversation_id) REFERENCES rag_conversations(id) ON DELETE CASCADE,
+            INDEX idx_conversation_id (conversation_id),
+            INDEX idx_source_type (source_type),
+            INDEX idx_source_name (source_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='RAG 소스 정보';
+        """
+        cursor.execute(rag_sources_table)
+        
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return True
+        
+    except Exception as e:
+        st.error(f"테이블 생성 오류: {str(e)}")
+        return False
+
+def get_mysql_tables():
+    """MySQL 테이블 목록 조회"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return []
+        
+        cursor = connection.cursor()
+        cursor.execute("SHOW TABLES")
+        tables = [table[0] for table in cursor.fetchall()]
+        
+        cursor.close()
+        connection.close()
+        return tables
+    except Exception as e:
+        st.error(f"테이블 조회 오류: {str(e)}")
+        return []
+
+def load_mysql_data(selected_tables):
+    """선택된 MySQL 테이블 데이터 로드"""
+    mysql_data = {}
+    
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return mysql_data
+        
+        for table in selected_tables:
+            try:
+                query = f"SELECT * FROM {table} LIMIT 1000"
+                df = pd.read_sql(query, connection)
+                mysql_data[table] = df
+                st.success(f"✅ {table} 테이블 로드 완료 ({len(df)}행)")
+            except Exception as e:
+                st.error(f"❌ {table} 테이블 로드 실패: {str(e)}")
+        
+        connection.close()
+        return mysql_data
+        
+    except Exception as e:
+        st.error(f"MySQL 데이터 로드 오류: {str(e)}")
+        return mysql_data
+
+def scrape_website_simple(url, max_pages=5):
+    """간단한 웹사이트 스크래핑 - 개선된 버전"""
+    try:
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        visited_urls = set()
+        scraped_data = []
+        urls_to_visit = [url]
+        
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        
+        successfully_scraped = 0  # 실제로 스크래핑된 페이지 수
+        
+        while urls_to_visit and successfully_scraped < max_pages:
+            current_url = urls_to_visit.pop(0)
+            
+            if current_url in visited_urls:
+                continue
+                
+            try:
+                response = session.get(current_url, timeout=10)
+                response.raise_for_status()
+                
+                visited_urls.add(current_url)
+                
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                # 페이지 제목 추출
+                title = soup.find('title')
+                title_text = title.get_text().strip() if title else f"페이지 {successfully_scraped + 1}"
+                
+                # 불필요한 태그 제거
+                for script in soup(["script", "style", "nav", "header", "footer"]):
+                    script.decompose()
+                
+                # 본문 텍스트 추출
+                text = soup.get_text()
+                lines = (line.strip() for line in text.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                content = ' '.join(chunk for chunk in chunks if chunk)
+                
+                # 콘텐츠가 있으면 추가 (길이 제한 완화)
+                if len(content) > 50:  # 50자로 기준 낮춤
+                    scraped_data.append({
+                        'url': current_url,
+                        'title': title_text,
+                        'content': content[:2000]  # 처음 2000자만
+                    })
+                    
+                    successfully_scraped += 1
+                    st.success(f"✅ 페이지 {successfully_scraped}/{max_pages} 스크래핑 완료: {title_text}")
+                
+                # 더 많은 링크 찾기 (제한 완화)
+                base_domain = urlparse(url).netloc
+                
+                # 링크 탐색을 더 적극적으로
+                for link in soup.find_all("a", href=True)[:20]:  # 20개로 증가
+                    absolute_link = urljoin(current_url, link['href'])
+                    parsed_link = urlparse(absolute_link)
+                    
+                    # 조건 완화: 같은 도메인 + 기본적인 필터링
+                    if (parsed_link.netloc == base_domain and 
+                        absolute_link not in visited_urls and 
+                        absolute_link not in urls_to_visit and
+                        not any(x in absolute_link.lower() for x in ['#', 'javascript:', 'mailto:', 'tel:']) and
+                        len(urls_to_visit) < 50):  # 대기 큐 크기 제한
+                        urls_to_visit.append(absolute_link)
+                
+                time.sleep(0.5)  # 지연시간 단축 (1초 → 0.5초)
+                
+            except Exception as e:
+                st.warning(f"⚠️ 페이지 크롤링 실패 ({current_url}): {str(e)}")
+                continue
+        
+        # 결과 메시지 개선
+        if scraped_data:
+            if successfully_scraped == max_pages:
+                st.success(f"🎉 목표 달성! {successfully_scraped}개 페이지 크롤링 완료!")
+            else:
+                st.info(f"📄 {successfully_scraped}개 페이지 크롤링 완료 (목표: {max_pages}개)")
+                if successfully_scraped < max_pages:
+                    st.warning(f"💡 {max_pages - successfully_scraped}개 페이지 부족 - 사이트에 추가 링크가 부족할 수 있습니다.")
+        else:
+            st.error("❌ 크롤링된 페이지가 없습니다.")
+        
+        return scraped_data
+        
+    except Exception as e:
+        st.error(f"❌ 웹사이트 스크래핑 실패: {str(e)}")
+        return []
+
+def process_files(files):
+    """업로드된 파일 처리"""
+    files_data = []
+    
+    for file in files:
+        try:
+            if file.type == "text/plain":
+                content = str(file.read(), "utf-8")
+            elif file.type == "application/pdf":
+                # PDF 처리 (간단한 예시)
+                content = "PDF 파일 - 전문 처리 필요"
+            else:
+                content = str(file.read(), "utf-8", errors='ignore')
+            
+            files_data.append({
+                'name': file.name,
+                'size': len(content),
+                'content': content
+            })
+            
+            st.success(f"✅ 파일 처리 완료: {file.name}")
+            
+        except Exception as e:
+            st.error(f"❌ 파일 처리 실패 ({file.name}): {str(e)}")
+    
+    return files_data
+
+def create_rag_context(mysql_data=None, website_data=None, files_data=None):
+    """RAG 컨텍스트 생성"""
+    context_parts = []
+    rag_sources_used = []
+    
+    # MySQL 데이터 컨텍스트
+    if mysql_data:
+        mysql_context = "=== MySQL 데이터베이스 정보 ===\n"
+        mysql_tables = []
+        total_mysql_rows = 0
+        
+        for table_name, df in mysql_data.items():
+            mysql_context += f"\n[{table_name}] 테이블:\n"
+            mysql_context += f"- 행 수: {len(df):,}개\n"
+            mysql_context += f"- 컬럼: {', '.join(df.columns.tolist())}\n"
+            
+            mysql_tables.append(table_name)
+            total_mysql_rows += len(df)
+            
+            # 샘플 데이터 (상위 3행)
+            if len(df) > 0:
+                mysql_context += "- 샘플 데이터:\n"
+                mysql_context += df.head(3).to_string(index=False)
+                mysql_context += "\n"
+        
+        context_parts.append(mysql_context)
+        rag_sources_used.append({
+            'type': 'mysql',
+            'name': 'MySQL 데이터베이스',
+            'details': f"{len(mysql_tables)}개 테이블 ({total_mysql_rows:,}행)",
+            'tables': mysql_tables
+        })
+    
+    # 웹사이트 데이터 컨텍스트
+    if website_data:
+        website_context = "=== 웹사이트 크롤링 정보 ===\n"
+        website_urls = []
+        
+        for i, page_data in enumerate(website_data[:3]):  # 상위 3개 페이지만
+            website_context += f"\n[페이지 {i+1}] {page_data['title']}\n"
+            website_context += f"URL: {page_data['url']}\n"
+            website_context += f"내용 미리보기: {page_data['content'][:500]}...\n"
+            website_urls.append({
+                'title': page_data['title'],
+                'url': page_data['url']
+            })
+        
+        context_parts.append(website_context)
+        rag_sources_used.append({
+            'type': 'website',
+            'name': '웹사이트 크롤링',
+            'details': f"{len(website_data)}개 페이지",
+            'urls': website_urls
+        })
+    
+    # 파일 데이터 컨텍스트
+    if files_data:
+        files_context = "=== 업로드된 문서 정보 ===\n"
+        file_list = []
+        total_file_size = 0
+        
+        for file_data in files_data:
+            files_context += f"\n[문서] {file_data['name']}\n"
+            files_context += f"크기: {file_data['size']:,}자\n"
+            files_context += f"내용 미리보기: {file_data['content'][:500]}...\n"
+            
+            file_list.append(file_data['name'])
+            total_file_size += file_data['size']
+        
+        context_parts.append(files_context)
+        rag_sources_used.append({
+            'type': 'files',
+            'name': '업로드 문서',
+            'details': f"{len(file_list)}개 파일 ({total_file_size:,}자)",
+            'files': file_list
+        })
+    
+    context_text = "\n\n".join(context_parts)
+    return context_text, rag_sources_used
+
+def get_ai_response(prompt, model_name, system_prompt="", enable_thinking=False, thinking_budget=4000):
+    """AI 모델로부터 응답을 받는 함수 (reasoning 과정 표시 지원)"""
+    try:
+        if model_name.startswith('claude'):
+            # Reasoning 모델인지 확인
+            is_reasoning_model = (
+                model_name.startswith('claude-opus-4') or 
+                model_name.startswith('claude-sonnet-4') or 
+                model_name.startswith('claude-3-7') or
+                model_name == 'claude-3-5-sonnet-latest'
+            )
+            
+            if is_reasoning_model and enable_thinking:
+                # Extended Thinking 사용 (직접 Anthropic 클라이언트 사용)
+                import anthropic
+                direct_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+                
+                # 메시지 구성 (system은 별도 파라미터로)
+                messages = [{"role": "user", "content": prompt}]
+                
+                response = direct_client.messages.create(
+                    model=model_name,
+                    max_tokens=8192,
+                    system=system_prompt if system_prompt else None,
+                    thinking={
+                        "type": "enabled",
+                        "budget_tokens": thinking_budget
+                    },
+                    messages=messages
+                )
+                
+                # thinking과 text 블록 분리
+                thinking_content = ""
+                final_content = ""
+                
+                for block in response.content:
+                    if hasattr(block, 'type'):
+                        if block.type == "thinking":
+                            thinking_content = block.thinking
+                        elif block.type == "text":
+                            final_content = block.text
+                        elif block.type == "redacted_thinking":
+                            thinking_content += "\n[일부 사고 과정이 보안상 암호화되었습니다]"
+                
+                return {
+                    "content": final_content,
+                    "thinking": thinking_content,
+                    "has_thinking": True
+                }
+            else:
+                # 일반 모드 (LangChain 사용)
+                from langchain_anthropic import ChatAnthropic
+                client = ChatAnthropic(
+                    model=model_name, 
+                    api_key=os.getenv('ANTHROPIC_API_KEY'), 
+                    temperature=0.7, 
+                    max_tokens=8192
+                )
+                
+                # LangChain에서는 시스템 메시지를 따로 설정
+                if system_prompt:
+                    # 시스템 프롬프트가 있으면 프롬프트에 포함
+                    full_prompt = f"System: {system_prompt}\n\nUser: {prompt}"
+                    response = client.invoke(full_prompt)
+                else:
+                    response = client.invoke(prompt)
+                
+                content = response.content if hasattr(response, 'content') else str(response)
+                return {
+                    "content": content,
+                    "thinking": "",
+                    "has_thinking": False
+                }
+                
+        else:
+            # OpenAI 모델들
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if not openai_key:
+                st.error("❌ OpenAI API 키가 설정되지 않았습니다!")
+                return {
+                    "content": "OpenAI API 키가 필요합니다.",
+                    "thinking": "",
+                    "has_thinking": False
+                }
+            
+            from openai import OpenAI
+            openai_client = OpenAI(api_key=openai_key)
+            
+            # o1 reasoning 모델인지 확인
+            is_o1_model = model_name.startswith('o1')
+            
+            if is_o1_model:
+                # o1 모델은 system message 지원하지 않음
+                response = openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "user", "content": f"{system_prompt}\n\n{prompt}" if system_prompt else prompt}
+                    ],
+                    max_completion_tokens=8192
+                )
+                
+                content = response.choices[0].message.content
+                
+                return {
+                    "content": content,
+                    "thinking": "🧠 이 모델은 내부적으로 복잡한 reasoning 과정을 거쳐 답변을 생성했습니다.",
+                    "has_thinking": True
+                }
+            else:
+                # 일반 OpenAI 모델
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+                
+                response = openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=8192
+                )
+                
+                content = response.choices[0].message.content
+                return {
+                    "content": content,
+                    "thinking": "",
+                    "has_thinking": False
+                }
+            
+    except Exception as e:
+        st.error(f"❌ AI 응답 생성 중 오류가 발생했습니다: {str(e)}")
+        return {
+            "content": f"오류가 발생했습니다: {str(e)}",
+            "thinking": "",
+            "has_thinking": False
+        }
+
+def display_reasoning_process(thinking_content, model_name):
+    """Reasoning 과정을 UI에 표시하는 함수"""
+    if not thinking_content:
+        return
+    
+    with st.expander("🧠 AI가 어떻게 생각했는지 살펴보세요", expanded=False):
+        st.markdown("### 💭 AI가 어떻게 생각했는지 살펴보세요")
+        
+        # 모델별 설명
+        if model_name.startswith('claude-opus-4'):
+            st.info("🔥 **Claude 4 Opus**: 최고 수준의 reasoning 과정을 보여줍니다.")
+        elif model_name.startswith('claude-sonnet-4'):
+            st.info("🧠 **Claude 4 Sonnet**: 고급 reasoning 과정을 단계별로 보여줍니다.")
+        elif model_name.startswith('claude-3-7'):
+            st.info("✨ **Claude 3.7 Sonnet**: Extended Thinking으로 심층 분석 과정을 보여줍니다.")
+        elif model_name.startswith('o1'):
+            st.info("🤖 **OpenAI o1**: 내부 reasoning 과정을 거쳐 답변을 생성했습니다.")
+        
+        # 사고 과정 표시
+        st.markdown("**🔍 사고 과정:**")
+        
+        # 긴 thinking 내용을 단계별로 나누어 표시
+        if len(thinking_content) > 1000:
+            # 긴 내용의 경우 접을 수 있게 만들기
+            with st.expander("전체 사고 과정 보기", expanded=False):
+                st.text_area(
+                    "상세한 사고 과정",
+                    value=thinking_content,
+                    height=300,
+                    disabled=True
+                )
+            
+            # 요약된 첫 부분만 미리보기로 표시
+            preview = thinking_content[:500] + "..." if len(thinking_content) > 500 else thinking_content
+            st.markdown(f"```\n{preview}\n```")
+        else:
+            st.markdown(f"```\n{thinking_content}\n```")
+
+def save_conversation(user_query, assistant_response, model_name, rag_sources_used, reasoning_content="", session_title=None, tags=None, notes=None):
+    """대화 내용을 데이터베이스에 저장"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return None
+        
+        cursor = connection.cursor()
+        
+        # 기본 제목 생성
+        if not session_title:
+            session_title = user_query[:50] + "..." if len(user_query) > 50 else user_query
+        
+        # 메인 대화 레코드 삽입
+        cursor.execute("""
+            INSERT INTO rag_conversations 
+            (session_title, user_query, assistant_response, model_name, has_reasoning, reasoning_content, rag_sources_used, tags, notes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            session_title,
+            user_query,
+            assistant_response,
+            model_name,
+            bool(reasoning_content),
+            reasoning_content,
+            len(rag_sources_used),
+            tags,
+            notes
+        ))
+        
+        conversation_id = cursor.lastrowid
+        
+        # RAG 소스 정보 저장
+        for source in rag_sources_used:
+            cursor.execute("""
+                INSERT INTO rag_conversation_sources 
+                (conversation_id, source_type, source_name, source_description, source_details)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                conversation_id,
+                source['type'],
+                source['name'],
+                source['details'],
+                json.dumps(source)
+            ))
+        
+        connection.commit()
+        cursor.close()
+        connection.close()
+        
+        return conversation_id
+        
+    except Exception as e:
+        st.error(f"대화 저장 오류: {str(e)}")
+        return None
+
+def get_conversations(search_term=None, model_name=None, limit=50):
+    """저장된 대화 목록 조회"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return []
+        
+        cursor = connection.cursor()
+        
+        query = """
+            SELECT id, session_title, user_query, model_name, has_reasoning, 
+                   rag_sources_used, created_at, tags, notes
+            FROM rag_conversations
+            WHERE 1=1
+        """
+        params = []
+        
+        if search_term:
+            query += " AND (session_title LIKE %s OR user_query LIKE %s OR tags LIKE %s)"
+            search_pattern = f"%{search_term}%"
+            params.extend([search_pattern, search_pattern, search_pattern])
+        
+        if model_name:
+            query += " AND model_name = %s"
+            params.append(model_name)
+        
+        query += " ORDER BY created_at DESC LIMIT %s"
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        conversations = cursor.fetchall()
+        
+        cursor.close()
+        connection.close()
+        
+        return conversations
+        
+    except Exception as e:
+        st.error(f"대화 조회 오류: {str(e)}")
+        return []
+
+def get_conversation_detail(conversation_id):
+    """특정 대화의 상세 정보 조회"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return None
+        
+        cursor = connection.cursor()
+        
+        # 메인 대화 정보 조회
+        cursor.execute("""
+            SELECT * FROM rag_conversations WHERE id = %s
+        """, (conversation_id,))
+        
+        conversation = cursor.fetchone()
+        if not conversation:
+            return None
+        
+        # RAG 소스 정보 조회
+        cursor.execute("""
+            SELECT * FROM rag_conversation_sources WHERE conversation_id = %s
+        """, (conversation_id,))
+        
+        sources = cursor.fetchall()
+        
+        cursor.close()
+        connection.close()
+        
+        return {
+            'conversation': conversation,
+            'sources': sources
+        }
+        
+    except Exception as e:
+        st.error(f"대화 상세 조회 오류: {str(e)}")
+        return None
+
+def delete_rag_conversation(conversation_id):
+    """RAG 대화 기록 삭제 (CASCADE로 관련 데이터 모두 삭제)"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return False
+        
+        cursor = connection.cursor()
+        
+        # 메인 대화 삭제 (CASCADE로 관련 테이블도 자동 삭제)
+        sql = "DELETE FROM rag_conversations WHERE id = %s"
+        cursor.execute(sql, (conversation_id,))
+        
+        deleted_rows = cursor.rowcount
+        connection.commit()
+        cursor.close()
+        connection.close()
+        
+        return deleted_rows > 0
+        
+    except Exception as e:
+        st.error(f"대화 삭제 중 오류: {str(e)}")
+        return False
+
+def update_rag_conversation(conversation_id, session_title=None, tags=None, notes=None):
+    """RAG 대화 기록 업데이트 (제목, 태그, 메모)"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return False
+        
+        cursor = connection.cursor()
+        
+        update_fields = []
+        params = []
+        
+        if session_title is not None:
+            update_fields.append("session_title = %s")
+            params.append(session_title)
+        
+        if tags is not None:
+            update_fields.append("tags = %s")
+            params.append(tags)
+        
+        if notes is not None:
+            update_fields.append("notes = %s")
+            params.append(notes)
+        
+        if not update_fields:
+            return False
+        
+        # updated_at 필드도 함께 업데이트
+        update_fields.append("updated_at = NOW()")
+        
+        sql = f"UPDATE rag_conversations SET {', '.join(update_fields)} WHERE id = %s"
+        params.append(conversation_id)
+        
+        cursor.execute(sql, params)
+        updated_rows = cursor.rowcount
+        
+        connection.commit()
+        cursor.close()
+        connection.close()
+        
+        return updated_rows > 0
+        
+    except Exception as e:
+        st.error(f"대화 업데이트 중 오류: {str(e)}")
+        return False
+
+# 테이블 자동 생성
+create_rag_agent_tables()
+
+# AI 모델 설정 및 변수 정의 (사이드바보다 먼저 정의)
+available_models = []
+reasoning_models = []  # reasoning 가능한 모델 추적
+
+has_anthropic_key = os.environ.get('ANTHROPIC_API_KEY') is not None
+if has_anthropic_key:
+    claude_models = [
+        'claude-3-7-sonnet-latest',
+        'claude-3-5-sonnet-latest',
+        'claude-3-opus-latest',
+    ]
+    available_models.extend(claude_models)
+    # Claude 3.7과 3.5-sonnet-latest는 reasoning 지원
+    reasoning_models.extend(['claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest'])
+
+has_openai_key = os.environ.get('OPENAI_API_KEY') is not None
+if has_openai_key:
+    openai_models = ['gpt-4o', 'gpt-4o-mini', 'o1-preview', 'o1-mini']
+    available_models.extend(openai_models)
+    # o1 모델들은 reasoning 지원
+    reasoning_models.extend(['o1-preview', 'o1-mini'])
+
+if not available_models:
+    available_models = ['claude-3-7-sonnet-latest']  # 기본값
+    reasoning_models = ['claude-3-7-sonnet-latest']
+
+# 세션 상태 초기화
+if 'mysql_data' not in st.session_state:
+    st.session_state.mysql_data = None
+if 'website_data' not in st.session_state:
+    st.session_state.website_data = None
+if 'files_data' not in st.session_state:
+    st.session_state.files_data = None
+if 'sidebar_selected_model' not in st.session_state:
+    st.session_state.sidebar_selected_model = available_models[0]
+if 'enable_sidebar_reasoning' not in st.session_state:
+    st.session_state.enable_sidebar_reasoning = True if available_models[0] in reasoning_models else False
+
+# 메인 인터페이스
+tab1, tab2, tab3 = st.tabs(["🤖 RAG 채팅", "📊 RAG 소스 상태 및 관리", "📝 대화 기록"])
+
+with tab1:
+    st.header("🤖 RAG 기반 AI 채팅")
+    
+    # 현재 설정 상태 표시 (개선된 버전)
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        if st.session_state.enable_sidebar_reasoning:
+            st.success(f"🧠 **{st.session_state.sidebar_selected_model}** | ✨ **Reasoning 활성화됨**")
+        else:
+            st.info(f"🤖 **{st.session_state.sidebar_selected_model}** | ⚪ **Reasoning 비활성화됨**")
+    
+    with col2:
+        if st.session_state.enable_sidebar_reasoning:
+            st.markdown("**🔍 사고 과정 표시 예정**")
+        else:
+            st.markdown("**⚡ 빠른 응답 모드**")
+    
+    # RAG 컨텍스트 요약 표시
+    if st.session_state.mysql_data or st.session_state.website_data or st.session_state.files_data:
+        st.success("📚 RAG 컨텍스트 활성화됨")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.session_state.mysql_data:
+                st.metric("MySQL 테이블", len(st.session_state.mysql_data))
+        with col2:
+            if st.session_state.website_data:
+                st.metric("웹페이지", len(st.session_state.website_data))
+        with col3:
+            if st.session_state.files_data:
+                st.metric("문서 파일", len(st.session_state.files_data))
+    else:
+        st.warning("⚠️ RAG 소스가 없습니다. 사이드바에서 데이터를 추가해주세요.")
+        
+        # 디버그 정보 추가
+        with st.expander("🔍 디버그 정보", expanded=False):
+            st.write("**세션 상태 확인:**")
+            st.write(f"- MySQL 데이터: {st.session_state.mysql_data is not None} ({type(st.session_state.mysql_data)})")
+            st.write(f"- 웹사이트 데이터: {st.session_state.website_data is not None} ({type(st.session_state.website_data)})")
+            st.write(f"- 파일 데이터: {st.session_state.files_data is not None} ({type(st.session_state.files_data)})")
+            
+            if st.session_state.website_data:
+                st.write(f"- 웹사이트 데이터 길이: {len(st.session_state.website_data)}")
+                st.write(f"- 웹사이트 데이터 내용: {st.session_state.website_data}")
+            
+            if st.button("🔄 페이지 새로고침", key="debug_refresh"):
+                st.rerun()
+    
+    # 질문 입력
+    user_query = st.text_area("질문을 입력하세요:", height=100, placeholder="RAG 데이터를 활용한 질문을 입력해주세요...")
+    
+    # 질문하기 버튼만 컬럼에 배치
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        submit_button = st.button("💬 질문하기", type="primary")
+    with col2:
+        st.empty()  # 오른쪽 공간은 비워둠
+    
+    # AI 응답 처리는 전체 화면 폭 사용
+    if submit_button:
+        if user_query.strip():
+            # Reasoning 모델일 때 특별한 스피너 메시지
+            if st.session_state.enable_sidebar_reasoning:
+                spinner_message = f"🧠 {st.session_state.sidebar_selected_model}가 단계별로 사고하고 있습니다..."
+            else:
+                spinner_message = "AI가 생각 중입니다..."
+            
+            with st.spinner(spinner_message):
+                start_time = time.time()
+                
+                # RAG 컨텍스트 생성
+                rag_context, rag_sources_used = create_rag_context(
+                    mysql_data=st.session_state.mysql_data,
+                    website_data=st.session_state.website_data,
+                    files_data=st.session_state.files_data
+                )
+                
+                # 시스템 프롬프트 구성
+                system_prompt = """
+당신은 RAG(Retrieval-Augmented Generation) 기반 AI 어시스턴트입니다.
+제공된 컨텍스트 정보를 바탕으로 정확하고 유용한 답변을 제공해주세요.
+
+답변 시 다음을 고려해주세요:
+1. 제공된 데이터를 구체적으로 참조하여 답변
+2. 데이터에서 찾을 수 없는 정보는 명확히 구분
+3. 실행 가능한 제안과 인사이트 포함
+4. 필요시 데이터의 한계점도 언급
+"""
+                
+                # 프롬프트 구성
+                if rag_context.strip():
+                    full_prompt = f"""
+다음 컨텍스트 정보를 바탕으로 질문에 답변해주세요:
+
+{rag_context}
+
+질문: {user_query}
+"""
+                else:
+                    full_prompt = f"""
+질문: {user_query}
+
+주의: 현재 RAG 컨텍스트가 제공되지 않았습니다. 일반적인 지식을 바탕으로 답변해주세요.
+"""
+                
+                # Reasoning 진행 상태 표시
+                if st.session_state.enable_sidebar_reasoning:
+                    progress_placeholder = st.empty()
+                    progress_placeholder.info("🧠 AI가 단계별 사고를 진행하고 있습니다... 잠시만 기다려주세요.")
+                
+                # AI 응답 생성 (사이드바 설정값 사용)
+                response = get_ai_response(
+                    prompt=full_prompt,
+                    model_name=st.session_state.sidebar_selected_model,
+                    system_prompt=system_prompt,
+                    enable_thinking=st.session_state.enable_sidebar_reasoning
+                )
+                
+                # 진행 상태 제거
+                if st.session_state.enable_sidebar_reasoning:
+                    progress_placeholder.empty()
+                
+                execution_time = time.time() - start_time
+            
+            # 응답 표시 (전체 화면 폭 사용)
+            st.markdown("### 🤖 AI 응답")
+            st.markdown(response["content"])
+            
+            # Reasoning 과정 표시 (개선된 버전)
+            if response.get("has_thinking") and response.get("thinking"):
+                # Reasoning이 실제로 작동했음을 강조
+                st.success("✅ Reasoning 과정이 성공적으로 완료되었습니다!")
+                
+                # 확장된 Reasoning 표시
+                with st.expander("🧠 AI의 단계별 사고 과정 보기", expanded=True):
+                    
+                    # 모델별 Reasoning 특징 설명
+                    if st.session_state.sidebar_selected_model.startswith('claude-3-7'):
+                        st.info("🔥 **Claude 3.7 Extended Thinking**: 이 모델은 복잡한 문제를 여러 단계로 나누어 심층적으로 분석합니다.")
+                    elif st.session_state.sidebar_selected_model == 'claude-3-5-sonnet-latest':
+                        st.info("⚡ **Claude 3.5 Reasoning**: 효율적이면서도 정확한 단계별 사고 과정을 보여줍니다.")
+                    elif st.session_state.sidebar_selected_model.startswith('o1'):
+                        st.info("🤖 **OpenAI o1 Reasoning**: 고도로 최적화된 내부 추론 과정을 거쳐 답변을 생성했습니다.")
+                    
+                    st.markdown("---")
+                    
+                    # Reasoning 내용 표시
+                    reasoning_content = response["thinking"]
+                    
+                    # 긴 thinking 내용을 단계별로 나누어 표시
+                    if len(reasoning_content) > 1000:
+                        # 미리보기와 전체 내용을 분리
+                        col1, col2 = st.columns([1, 1])
+                        
+                        with col1:
+                            st.markdown("**🔍 사고 과정 미리보기 (처음 500자):**")
+                            preview = reasoning_content[:500] + "..."
+                            st.markdown(f"```\n{preview}\n```")
+                        
+                        with col2:
+                            st.markdown("**📊 Reasoning 통계:**")
+                            st.metric("총 사고 길이", f"{len(reasoning_content):,}자")
+                            st.metric("예상 읽기 시간", f"{len(reasoning_content)//200:.1f}분")
+                        
+                        # 전체 내용을 접을 수 있게 만들기
+                        show_full_reasoning = st.checkbox(
+                            f"📖 전체 사고 과정 보기 ({len(reasoning_content):,}자)",
+                            key=f"show_reasoning_{conv[0]}"
+                        )
+                        
+                        if show_full_reasoning:
+                            st.text_area(
+                                "상세한 사고 과정",
+                                value=reasoning_content,
+                                height=400,
+                                disabled=True,
+                                key=f"reasoning_{conv[0]}"
+                            )
+                    else:
+                        st.markdown("**🔍 사고 과정:**")
+                        st.text(reasoning_content)
+                
+                # Reasoning 품질 평가
+                st.markdown("---")
+                st.markdown("**💡 이 Reasoning 과정의 특징:**")
+                
+                reasoning_length = len(reasoning_content)
+                if reasoning_length > 2000:
+                    st.success("🔥 **심층 분석**: 매우 상세한 사고 과정을 거쳤습니다.")
+                elif reasoning_length > 1000:
+                    st.info("📝 **중간 분석**: 적절한 수준의 사고 과정을 거쳤습니다.")
+                else:
+                    st.warning("⚡ **간단 분석**: 빠른 사고 과정을 거쳤습니다.")
+                
+            elif st.session_state.enable_sidebar_reasoning:
+                # Reasoning이 활성화되었지만 내용이 없는 경우
+                st.warning("⚠️ Reasoning이 활성화되었지만 사고 과정을 가져올 수 없었습니다.")
+                st.info("💡 이는 일시적인 문제일 수 있습니다. 다시 시도해보세요.")
+            
+            # RAG 소스 정보 표시
+            if rag_sources_used:
+                with st.expander("📚 사용된 RAG 소스", expanded=False):
+                    for source in rag_sources_used:
+                        st.write(f"**{source['type'].upper()}**: {source['name']} - {source['details']}")
+            
+            # 실행 시간 표시 (Reasoning 여부에 따라 다른 메시지)
+            if st.session_state.enable_sidebar_reasoning:
+                st.caption(f"🧠 Reasoning 포함 응답 생성 시간: {execution_time:.2f}초")
+            else:
+                st.caption(f"⏱️ 응답 생성 시간: {execution_time:.2f}초")
+            
+            # 대화 저장
+            conversation_id = save_conversation(
+                user_query=user_query,
+                assistant_response=response["content"],
+                model_name=st.session_state.sidebar_selected_model,
+                rag_sources_used=rag_sources_used,
+                reasoning_content=response.get("thinking", "")
+            )
+            
+            if conversation_id:
+                st.success(f"✅ 대화가 저장되었습니다 (ID: {conversation_id})")
+        else:
+            st.warning("질문을 입력해주세요.")
+
+with tab2:
+    st.header("📊 RAG 소스 상태 및 관리")
+    
+    # 전체 RAG 소스 상태 요약
+    st.subheader("📋 현재 RAG 소스 상태")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("### 🗄️ MySQL 데이터베이스")
+        if st.session_state.mysql_data:
+            st.success("✅ 활성화됨")
+            total_rows = sum(len(df) for df in st.session_state.mysql_data.values())
+            st.metric("테이블 수", len(st.session_state.mysql_data))
+            st.metric("총 데이터 행", f"{total_rows:,}")
+            
+            # 테이블별 상세 정보
+            with st.expander("테이블 상세 정보"):
+                for table_name, df in st.session_state.mysql_data.items():
+                    st.write(f"**{table_name}**: {len(df):,}행, {len(df.columns)}개 컬럼")
+                    st.write(f"컬럼: {', '.join(df.columns.tolist()[:5])}{'...' if len(df.columns) > 5 else ''}")
+        else:
+            st.warning("❌ 비활성화")
+            st.info("사이드바에서 MySQL 설정을 진행하세요.")
+    
+    with col2:
+        st.markdown("### 🌐 웹사이트 데이터")
+        if st.session_state.website_data:
+            st.success("✅ 활성화됨")
+            st.metric("페이지 수", len(st.session_state.website_data))
+            
+            # 웹사이트 상세 정보
+            with st.expander("페이지 상세 정보"):
+                for i, page in enumerate(st.session_state.website_data):
+                    st.write(f"**페이지 {i+1}**: {page['title'][:50]}...")
+                    st.write(f"URL: {page['url']}")
+                    st.write(f"콘텐츠 길이: {len(page['content']):,}자")
+        else:
+            st.warning("❌ 비활성화")
+            st.info("사이드바에서 웹사이트 크롤링을 진행하세요.")
+    
+    with col3:
+        st.markdown("### 📄 문서 파일")
+        if st.session_state.files_data:
+            st.success("✅ 활성화됨")
+            total_size = sum(f['size'] for f in st.session_state.files_data)
+            st.metric("파일 수", len(st.session_state.files_data))
+            st.metric("총 크기", f"{total_size:,}자")
+            
+            # 파일 상세 정보
+            with st.expander("파일 상세 정보"):
+                for file_data in st.session_state.files_data:
+                    st.write(f"**{file_data['name']}**: {file_data['size']:,}자")
+        else:
+            st.warning("❌ 비활성화")
+            st.info("사이드바에서 파일 업로드를 진행하세요.")
+    
+    st.divider()
+    
+    # RAG 컨텍스트 미리보기
+    if st.session_state.mysql_data or st.session_state.website_data or st.session_state.files_data:
+        st.subheader("🔍 RAG 컨텍스트 미리보기")
+        
+        if st.button("📝 전체 RAG 컨텍스트 생성 및 미리보기"):
+            with st.spinner("RAG 컨텍스트 생성 중..."):
+                rag_context, rag_sources = create_rag_context(
+                    mysql_data=st.session_state.mysql_data,
+                    website_data=st.session_state.website_data,
+                    files_data=st.session_state.files_data
+                )
+                
+                st.markdown("**📊 RAG 소스 요약:**")
+                for source in rag_sources:
+                    st.write(f"- **{source['type'].upper()}**: {source['name']} ({source['details']})")
+                
+                st.markdown("**📄 RAG 컨텍스트 내용 (처음 1000자):**")
+                preview_text = rag_context[:1000] + "..." if len(rag_context) > 1000 else rag_context
+                st.text_area("RAG 컨텍스트", value=preview_text, height=200, disabled=True)
+                
+                st.info(f"💡 전체 컨텍스트 크기: {len(rag_context):,}자")
+    
+    st.divider()
+    
+    # 빠른 관리 도구
+    st.subheader("🔧 빠른 관리 도구")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔄 모든 RAG 소스 새로고침", help="현재 설정으로 모든 RAG 소스를 다시 로드합니다"):
+            st.info("사이드바에서 각 소스별로 다시 로드해주세요.")
+    
+    with col2:
+        if st.button("📊 RAG 성능 통계", help="RAG 사용 통계를 확인합니다"):
+            # 간단한 통계 표시
+            total_sources = 0
+            total_data_size = 0
+            
+            if st.session_state.mysql_data:
+                total_sources += 1
+                total_data_size += sum(len(df) for df in st.session_state.mysql_data.values())
+            
+            if st.session_state.website_data:
+                total_sources += 1
+                total_data_size += len(st.session_state.website_data)
+            
+            if st.session_state.files_data:
+                total_sources += 1
+                total_data_size += sum(f['size'] for f in st.session_state.files_data)
+            
+            st.success(f"📈 활성 소스: {total_sources}개 | 총 데이터 크기: {total_data_size:,}")
+    
+    with col3:
+        if st.button("🗑️ 전체 초기화", type="secondary", help="모든 RAG 데이터를 초기화합니다"):
+            if st.button("⚠️ 정말 초기화하시겠습니까?", key="confirm_reset"):
+                st.session_state.mysql_data = None
+                st.session_state.website_data = None  
+                st.session_state.files_data = None
+                if 'available_tables' in st.session_state:
+                    del st.session_state.available_tables
+                st.success("✅ 모든 RAG 데이터가 초기화되었습니다.")
+                st.rerun()
+    
+    # 사용 가이드
+    st.divider()
+    st.subheader("💡 RAG 소스 설정 가이드")
+    
+    with st.expander("📖 자세한 사용법", expanded=False):
+        st.markdown("""
+        ### 🗄️ MySQL 데이터베이스 설정
+        1. 사이드바의 "MySQL 데이터베이스" 섹션 클릭
+        2. "DB 연결 테스트"로 연결 확인
+        3. "테이블 목록 조회"로 사용 가능한 테이블 확인
+        4. 원하는 테이블 선택 후 "선택된 테이블 로드" 클릭
+        
+        ### 🌐 웹사이트 크롤링 설정
+        1. 사이드바의 "웹사이트 크롤링" 섹션 클릭
+        2. 크롤링할 웹사이트 URL 입력
+        3. 최대 페이지 수 설정 (1-10)
+        4. "웹사이트 크롤링 시작" 클릭
+        
+        ### 📄 문서 파일 업로드
+        1. 사이드바의 "문서 파일" 섹션 클릭
+        2. TXT, PDF, DOCX, MD 파일 선택 (다중 선택 가능)
+        3. "파일 처리" 클릭하여 내용 분석
+        
+        ### 💡 팁
+        - 여러 RAG 소스를 조합하면 더 풍부한 답변을 얻을 수 있습니다
+        - 너무 많은 데이터를 로드하면 응답 속도가 느려질 수 있습니다
+        - RAG 컨텍스트 미리보기로 데이터 품질을 확인해보세요
+        """)
+    
+    # 현재 설정 요약
+    if not (st.session_state.mysql_data or st.session_state.website_data or st.session_state.files_data):
+        st.warning("⚠️ 현재 활성화된 RAG 소스가 없습니다. 사이드바에서 데이터를 추가해주세요.")
+        st.info("💡 RAG 소스를 추가하면 AI가 해당 데이터를 참조하여 더 정확하고 맞춤형 답변을 제공합니다.")
+
+with tab3:
+    st.header("📝 대화 기록 관리")
+    
+    # 새로운 기능 안내
+    st.info("💡 **새로운 기능**: 이제 각 대화 기록을 편집하거나 삭제할 수 있습니다! ✏️편집 버튼으로 제목, 태그, 메모를 수정하고, 🗑️삭제 버튼으로 불필요한 기록을 제거하세요.")
+    
+    # 검색 필터
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        search_term = st.text_input("🔍 검색어:", placeholder="제목, 질문, 태그로 검색...")
+    
+    with col2:
+        model_filter = st.selectbox("모델 필터:", ["전체"] + available_models)
+        model_filter = None if model_filter == "전체" else model_filter
+    
+    with col3:
+        # Reasoning 필터 추가
+        reasoning_filter = st.selectbox("Reasoning 필터:", ["전체", "Reasoning 있음", "Reasoning 없음"])
+        limit = st.selectbox("표시 개수:", [20, 50, 100], index=1)
+    
+    # 대화 목록 조회
+    conversations = get_conversations(
+        search_term=search_term if search_term else None,
+        model_name=model_filter,
+        limit=limit
+    )
+    
+    # 빠른 필터 적용
+    if 'quick_filter' in st.session_state:
+        if st.session_state.quick_filter == "recent_10":
+            conversations = conversations[:10]
+            st.info("🔍 최근 10개 대화만 표시 중입니다.")
+        elif st.session_state.quick_filter == "reasoning_only":
+            conversations = [conv for conv in conversations if conv[4]]  # has_reasoning = True
+            st.info("🧠 Reasoning 대화만 표시 중입니다.")
+    
+    # Reasoning 필터 적용
+    if reasoning_filter != "전체":
+        if reasoning_filter == "Reasoning 있음":
+            conversations = [conv for conv in conversations if conv[4]]  # has_reasoning = True
+        else:
+            conversations = [conv for conv in conversations if not conv[4]]  # has_reasoning = False
+    
+    if conversations:
+        st.write(f"📋 총 {len(conversations)}개의 대화 기록")
+        
+        for conv in conversations:
+            # 제목에 더 자세한 정보 표시
+            reasoning_emoji = " 🧠💭" if conv[4] else ""
+            model_emoji = "🔥" if conv[3].startswith('claude-3-7') else "⚡" if conv[3] == 'claude-3-5-sonnet-latest' else "🤖" if conv[3].startswith('o1') else "🤖"
+            
+            with st.expander(
+                f"{model_emoji} **{conv[3]}** | {conv[1]} | {conv[6].strftime('%Y-%m-%d %H:%M')}{reasoning_emoji}", 
+                expanded=False
+            ):
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    st.write("**질문:**")
+                    st.write(conv[2][:200] + "..." if len(conv[2]) > 200 else conv[2])
+                    
+                    if conv[8]:  # notes
+                        st.write("**메모:**", conv[8])
+                    
+                    if conv[7]:  # tags
+                        st.write("**태그:**", conv[7])
+                
+                with col2:
+                    st.metric("RAG 소스", conv[5])
+                    
+                    # Reasoning 상태를 더 명확하게 표시
+                    if conv[4]:  # has_reasoning
+                        if conv[3] in reasoning_models:
+                            st.success("🧠 Reasoning 완료")
+                        else:
+                            st.info("🤖 추론 과정 포함")
+                    else:
+                        st.info("⚡ 일반 응답")
+                    
+                    # 편집 및 삭제 버튼 추가
+                    button_col1, button_col2, button_col3 = st.columns(3)
+                    
+                    with button_col1:
+                        if st.button(f"✏️ 편집", key=f"edit_{conv[0]}"):
+                            st.session_state[f"show_edit_{conv[0]}"] = True
+                            st.rerun()
+                    
+                    with button_col2:
+                        if st.button(f"자세히 보기", key=f"detail_{conv[0]}"):
+                            detail = get_conversation_detail(conv[0])
+                            if detail:
+                                st.session_state[f"show_detail_{conv[0]}"] = True
+                                st.rerun()
+                    
+                    with button_col3:
+                        # 삭제 버튼 (확인 상태가 아닐 때만 표시)
+                        delete_key = f"delete_confirm_{conv[0]}"
+                        if delete_key not in st.session_state or not st.session_state[delete_key]:
+                            if st.button("🗑️ 삭제", key=f"delete_{conv[0]}", help="이 대화를 영구 삭제합니다"):
+                                st.session_state[delete_key] = True
+                                st.rerun()
+                
+                # 삭제 확인 UI (컬럼 밖에서 표시)
+                delete_key = f"delete_confirm_{conv[0]}"
+                if delete_key in st.session_state and st.session_state[delete_key]:
+                    st.warning("⚠️ 정말로 이 대화를 삭제하시겠습니까? 삭제된 데이터는 복구할 수 없습니다.")
+                    delete_confirm_col1, delete_confirm_col2 = st.columns(2)
+                    with delete_confirm_col1:
+                        if st.button("✅ 확인", key=f"confirm_delete_{conv[0]}", type="primary"):
+                            if delete_rag_conversation(conv[0]):
+                                st.success("✅ 대화가 삭제되었습니다.")
+                                # 관련 세션 상태 정리
+                                if delete_key in st.session_state:
+                                    del st.session_state[delete_key]
+                                if f"show_detail_{conv[0]}" in st.session_state:
+                                    del st.session_state[f"show_detail_{conv[0]}"]
+                                if f"show_edit_{conv[0]}" in st.session_state:
+                                    del st.session_state[f"show_edit_{conv[0]}"]
+                                st.rerun()
+                            else:
+                                st.error("❌ 삭제 실패")
+                                del st.session_state[delete_key]
+                    with delete_confirm_col2:
+                        if st.button("❌ 취소", key=f"cancel_delete_{conv[0]}", type="secondary"):
+                            del st.session_state[delete_key]
+                            st.rerun()
+                
+                # 편집 폼 표시
+                if st.session_state.get(f"show_edit_{conv[0]}", False):
+                    st.markdown("---")
+                    st.markdown("### ✏️ 대화 정보 편집")
+                    
+                    edit_col1, edit_col2 = st.columns(2)
+                    
+                    with edit_col1:
+                        new_title = st.text_input(
+                            "새 제목", 
+                            value=conv[1], 
+                            key=f"edit_title_{conv[0]}"
+                        )
+                        new_tags = st.text_input(
+                            "새 태그", 
+                            value=conv[7] if conv[7] else '', 
+                            key=f"edit_tags_{conv[0]}",
+                            help="쉼표로 구분하여 여러 태그 입력 가능"
+                        )
+                    
+                    with edit_col2:
+                        new_notes = st.text_area(
+                            "새 메모", 
+                            value=conv[8] if conv[8] else '', 
+                            height=100, 
+                            key=f"edit_notes_{conv[0]}"
+                        )
+                    
+                    # 편집 버튼들 (컬럼 밖에서 표시)
+                    edit_button_col1, edit_button_col2 = st.columns(2)
+                    
+                    with edit_button_col1:
+                        if st.button("💾 저장", key=f"save_edit_{conv[0]}", type="primary"):
+                            if update_rag_conversation(
+                                conv[0],
+                                session_title=new_title,
+                                tags=new_tags,
+                                notes=new_notes
+                            ):
+                                st.success("✅ 대화 정보가 수정되었습니다.")
+                                del st.session_state[f"show_edit_{conv[0]}"]
+                                st.rerun()
+                            else:
+                                st.error("❌ 수정 실패")
+                    
+                    with edit_button_col2:
+                        if st.button("❌ 취소", key=f"cancel_edit_{conv[0]}", type="secondary"):
+                            del st.session_state[f"show_edit_{conv[0]}"]
+                            st.rerun()
+                
+                # 상세 정보 표시
+                if st.session_state.get(f"show_detail_{conv[0]}", False):
+                    st.markdown("---")
+                    detail = get_conversation_detail(conv[0])
+                    if detail:
+                        st.write("**AI 응답:**")
+                        st.markdown(detail['conversation'][3])  # assistant_response
+                        
+                        # Reasoning 내용 표시 (개선된 버전 - expander 중첩 제거)
+                        if detail['conversation'][5]:  # reasoning_content
+                            reasoning_content = detail['conversation'][5]
+                            
+                            # reasoning_content의 데이터 타입 안전 처리
+                            if reasoning_content is not None:
+                                # 정수나 다른 타입을 문자열로 변환
+                                reasoning_content = str(reasoning_content)
+                                
+                                # 빈 문자열이 아닌 경우에만 표시
+                                if reasoning_content.strip():
+                                    # 모델별 Reasoning 설명
+                                    model_name = detail['conversation'][4]  # model_name
+                                    
+                                    st.markdown("---")
+                                    st.markdown("### 🧠 AI의 사고 과정")
+                                    
+                                    if model_name.startswith('claude-3-7'):
+                                        st.info("🔥 **Claude 3.7 Extended Thinking** 사고 과정")
+                                    elif model_name == 'claude-3-5-sonnet-latest':
+                                        st.info("⚡ **Claude 3.5 Reasoning** 사고 과정")
+                                    elif model_name.startswith('o1'):
+                                        st.info("🤖 **OpenAI o1 Reasoning** 사고 과정")
+                                    else:
+                                        st.info("🧠 **AI 사고 과정**")
+                                    
+                                    # Reasoning 길이에 따른 표시 방식
+                                    if len(reasoning_content) > 1000:
+                                        st.markdown(f"**📊 사고 과정 통계**: {len(reasoning_content):,}자")
+                                        
+                                        # 접기/펼치기 버튼으로 대체
+                                        show_full_reasoning = st.checkbox(
+                                            f"전체 사고 과정 보기 ({len(reasoning_content):,}자)",
+                                            key=f"show_reasoning_{conv[0]}"
+                                        )
+                                        
+                                        if show_full_reasoning:
+                                            st.text_area(
+                                                "상세한 사고 과정",
+                                                value=reasoning_content,
+                                                height=400,
+                                                disabled=True,
+                                                key=f"reasoning_{conv[0]}"
+                                            )
+                                        else:
+                                            # 미리보기만 표시
+                                            preview = reasoning_content[:300] + "..."
+                                            st.markdown(f"```\n{preview}\n```")
+                                    else:
+                                        st.markdown("**🔍 사고 과정:**")
+                                        st.text(reasoning_content)
+                        
+                        if detail['sources']:
+                            st.markdown("---")
+                            st.markdown("### 📚 사용된 RAG 소스")
+                            for source in detail['sources']:
+                                st.write(f"**{source[2]}** ({source[3]}): {source[4]}")
+                    
+                    if st.button(f"닫기", key=f"close_{conv[0]}"):
+                        st.session_state[f"show_detail_{conv[0]}"] = False
+                        st.rerun()
+    else:
+        st.info("저장된 대화 기록이 없습니다.")
+        
+    # 대화 기록 통계 (개선된 버전)
+    st.divider()
+    st.subheader("📊 대화 기록 통계")
+    
+    if conversations:
+        # 기본 통계
+        model_counts = {}
+        reasoning_count = 0
+        total_rag_sources = 0
+        reasoning_models_used = set()
+        
+        for conv in conversations:
+            model_name = conv[3]
+            if model_name in model_counts:
+                model_counts[model_name] += 1
+            else:
+                model_counts[model_name] = 1
+                
+            if conv[4]:  # has_reasoning
+                reasoning_count += 1
+                if model_name in reasoning_models:
+                    reasoning_models_used.add(model_name)
+                
+            total_rag_sources += conv[5]  # rag_sources_used
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("총 대화 수", len(conversations))
+            
+        with col2:
+            reasoning_percentage = reasoning_count/len(conversations)*100 if conversations else 0
+            st.metric("Reasoning 사용", f"{reasoning_count}회", f"{reasoning_percentage:.1f}%")
+            
+        with col3:
+            avg_rag_sources = total_rag_sources / len(conversations) if conversations else 0
+            st.metric("평균 RAG 소스", f"{avg_rag_sources:.1f}개")
+        
+        with col4:
+            st.metric("Reasoning 모델", f"{len(reasoning_models_used)}종류")
+        
+        # 모델별 사용 현황 (개선된 버전)
+        if model_counts:
+            st.markdown("**🧠 모델별 사용 현황:**")
+            
+            for model, count in sorted(model_counts.items(), key=lambda x: x[1], reverse=True):
+                percentage = count / len(conversations) * 100
+                
+                # 모델별 이모지 및 특징
+                if model.startswith('claude-3-7'):
+                    model_emoji = "🔥"
+                    model_feature = "(Extended Thinking)"
+                elif model == 'claude-3-5-sonnet-latest':
+                    model_emoji = "⚡"
+                    model_feature = "(Fast Reasoning)"
+                elif model.startswith('o1'):
+                    model_emoji = "🤖"
+                    model_feature = "(Advanced Reasoning)"
+                else:
+                    model_emoji = "🤖"
+                    model_feature = ""
+                
+                st.write(f"{model_emoji} **{model}** {model_feature}: {count}회 ({percentage:.1f}%)")
+        
+        # Reasoning 품질 분석
+        if reasoning_count > 0:
+            st.markdown("---")
+            st.markdown("**🧠 Reasoning 품질 분석:**")
+            
+            reasoning_success_rate = reasoning_count / len(conversations) * 100
+            
+            if reasoning_success_rate > 50:
+                st.success(f"✅ 높은 Reasoning 활용도: {reasoning_success_rate:.1f}%")
+            elif reasoning_success_rate > 25:
+                st.info(f"📝 보통 Reasoning 활용도: {reasoning_success_rate:.1f}%")
+            else:
+                st.warning(f"⚡ 낮은 Reasoning 활용도: {reasoning_success_rate:.1f}%")
+            
+            st.write(f"💡 **추천**: Reasoning 지원 모델({', '.join(reasoning_models)})을 활용하면 더 상세한 분석을 받을 수 있습니다.")
+    
+    else:
+        st.info("📊 대화 기록이 없어 통계를 표시할 수 없습니다.")
+
+    # 관리 기능 안내 추가
+    st.markdown("---")
+    st.markdown("### 🔧 대화 기록 관리 기능")
+    
+    with st.expander("📖 사용 가이드", expanded=False):
+        st.markdown("""
+        ### ✏️ 편집 기능
+        - **제목 수정**: 대화 세션의 제목을 더 명확하게 변경
+        - **태그 추가**: 검색과 분류를 위한 태그 설정 (쉼표로 구분)
+        - **메모 작성**: 대화에 대한 추가 설명이나 노트 기록
+        
+        ### 🗑️ 삭제 기능
+        - **안전한 삭제**: 삭제 전 확인 과정을 거쳐 실수 방지
+        - **완전 삭제**: 대화 내용과 관련 RAG 소스 정보까지 모두 삭제
+        - **복구 불가**: 삭제된 데이터는 복구할 수 없으니 신중하게 선택
+        
+        ### 💡 활용 팁
+        - **태그 활용**: 'business', 'research', 'personal' 등으로 분류
+        - **제목 최적화**: 나중에 찾기 쉬운 명확한 제목으로 변경
+        - **메모 활용**: 대화의 목적이나 결과 요약을 메모로 기록
+        - **정기 정리**: 불필요한 테스트 대화는 정기적으로 삭제
+        """)
+    
+    # 빠른 관리 도구
+    st.markdown("### ⚙️ 빠른 관리 도구")
+    
+    quick_manage_col1, quick_manage_col2, quick_manage_col3 = st.columns(3)
+    
+    with quick_manage_col1:
+        if st.button("🔍 최근 대화 10개 보기", help="가장 최근 10개의 대화 기록을 표시합니다"):
+            st.session_state.quick_filter = "recent_10"
+            st.rerun()
+    
+    with quick_manage_col2:
+        if st.button("🧠 Reasoning 대화만 보기", help="Reasoning 과정이 포함된 대화만 표시합니다"):
+            st.session_state.quick_filter = "reasoning_only"
+            st.rerun()
+    
+    with quick_manage_col3:
+        if st.button("🔄 필터 초기화", help="모든 필터를 초기화하고 전체 대화를 표시합니다"):
+            if 'quick_filter' in st.session_state:
+                del st.session_state.quick_filter
+            st.rerun()
+
+# 사이드바
+st.sidebar.header("🤖 멀티 RAG 에이전트")
+
+# 모델 선택
+st.sidebar.markdown("### 🧠 AI 모델 선택")
+
+# 사이드바에서 모델 선택 (세션 상태 업데이트)
+selected_model = st.sidebar.selectbox(
+    '모델 선택',
+    options=available_models,
+    index=available_models.index(st.session_state.sidebar_selected_model) if st.session_state.sidebar_selected_model in available_models else 0,
+    help='Claude는 ANTHROPIC_API_KEY, OpenAI는 OPENAI_API_KEY 필요'
+)
+
+# 선택된 모델이 변경되면 세션 상태 업데이트
+if selected_model != st.session_state.sidebar_selected_model:
+    st.session_state.sidebar_selected_model = selected_model
+    st.rerun()
+
+# 현재 선택된 모델로 변수 업데이트
+sidebar_selected_model = st.session_state.sidebar_selected_model
+is_reasoning_capable = sidebar_selected_model in reasoning_models
+
+if is_reasoning_capable:
+    st.sidebar.success(f"🧠 **{sidebar_selected_model}**는 고급 Reasoning을 지원합니다!")
+    enable_reasoning = st.sidebar.checkbox(
+        "🧠 Reasoning 활성화", 
+        value=st.session_state.get('enable_sidebar_reasoning', True), 
+        key="sidebar_reasoning",
+        help="이 모델은 사고 과정을 단계별로 보여줄 수 있습니다."
+    )
+    
+    # 세션 상태 업데이트
+    st.session_state.enable_sidebar_reasoning = enable_reasoning
+    enable_sidebar_reasoning = enable_reasoning
+    
+    if enable_sidebar_reasoning:
+        st.sidebar.info("✨ Reasoning이 활성화되어 AI의 사고 과정을 확인할 수 있습니다.")
+        
+        # Reasoning 모델별 특징 설명
+        if sidebar_selected_model.startswith('claude-3-7'):
+            st.sidebar.markdown("🔥 **Claude 3.7**: Extended Thinking으로 심층 분석")
+        elif sidebar_selected_model == 'claude-3-5-sonnet-latest':
+            st.sidebar.markdown("⚡ **Claude 3.5**: 빠르고 효율적인 reasoning")
+        elif sidebar_selected_model.startswith('o1'):
+            st.sidebar.markdown("🤖 **OpenAI o1**: 고도로 최적화된 reasoning")
+    else:
+        st.sidebar.warning("Reasoning이 비활성화되었습니다.")
+else:
+    st.sidebar.warning(f"⚠️ **{sidebar_selected_model}**는 Reasoning을 지원하지 않습니다.")
+    enable_reasoning = st.sidebar.checkbox(
+        "🧠 Reasoning 활성화", 
+        value=False, 
+        disabled=True,
+        key="sidebar_reasoning",
+        help="이 모델은 Reasoning을 지원하지 않습니다."
+    )
+    st.session_state.enable_sidebar_reasoning = False
+    enable_sidebar_reasoning = False
+
+st.sidebar.markdown("---")
+
+# RAG 데이터 소스 설정
+st.sidebar.markdown("### 🔍 RAG 데이터 소스 설정")
+st.sidebar.info("💡 RAG 데이터를 추가하면 더 정확하고 구체적인 분석이 가능합니다!")
+
+# 현재 활성 RAG 소스 표시
+rag_source_count = 0
+if st.session_state.mysql_data:
+    rag_source_count += 1
+if st.session_state.website_data:
+    rag_source_count += 1
+if st.session_state.files_data:
+    rag_source_count += 1
+
+if rag_source_count > 0:
+    st.sidebar.success(f"✅ 활성 RAG 소스: {rag_source_count}개")
+else:
+    st.sidebar.warning("❌ 활성 RAG 소스가 없습니다. 아래에서 데이터를 추가하세요.")
+
+# MySQL 데이터베이스 설정
+with st.sidebar.expander("🗄️ MySQL 데이터베이스", expanded=True):
+    if st.sidebar.button("🔍 DB 연결 테스트", key="sidebar_mysql_test"):
+        connection = connect_to_db()
+        if connection:
+            connection.close()
+            st.sidebar.success("✅ DB 연결 성공")
+        else:
+            st.sidebar.error("❌ DB 연결 실패")
+    
+    if st.sidebar.button("📋 테이블 목록 조회", key="sidebar_mysql_tables"):
+        tables = get_mysql_tables()
+        if tables:
+            st.session_state.available_tables = tables
+            # 기본적으로 모든 테이블 자동 선택이 활성화된 상태로 설정
+            if 'auto_select_all_tables' not in st.session_state:
+                st.session_state.auto_select_all_tables = True
+            st.sidebar.success(f"✅ {len(tables)}개 테이블 발견")
+        else:
+            st.sidebar.error("❌ 테이블 조회 실패")
+    
+    # 테이블 선택
+    if 'available_tables' in st.session_state:
+        # 모든 테이블 자동 선택 옵션
+        auto_select = st.sidebar.checkbox(
+            "🔄 모든 테이블 자동 선택", 
+            value=st.session_state.get('auto_select_all_tables', True),
+            help="체크하면 모든 테이블이 자동으로 선택됩니다. 해제하면 수동으로 선택할 수 있습니다.",
+            key="auto_select_checkbox"
+        )
+        
+        # 체크박스 상태를 세션에 저장
+        st.session_state.auto_select_all_tables = auto_select
+        
+        # 자동 선택이 활성화되면 모든 테이블 선택, 아니면 기존 선택값 유지
+        if auto_select:
+            default_selection = st.session_state.available_tables
+        else:
+            # 수동 모드에서는 기존 선택값 유지 (없으면 빈 리스트)
+            default_selection = st.session_state.get('manual_selected_tables', [])
+        
+        selected_tables = st.sidebar.multiselect(
+            "분석할 테이블 선택",
+            st.session_state.available_tables,
+            default=default_selection,
+            help="너무 많은 테이블을 선택하면 성능이 저하될 수 있습니다.",
+            key="sidebar_mysql_table_select",
+            disabled=auto_select  # 자동 선택 모드에서는 비활성화
+        )
+        
+        # 수동 선택 모드일 때 선택값 저장
+        if not auto_select:
+            st.session_state.manual_selected_tables = selected_tables
+        
+        # 선택된 테이블 수 표시
+        if selected_tables:
+            if auto_select:
+                st.sidebar.info(f"🔄 자동 선택됨: {len(selected_tables)}개 테이블")
+            else:
+                st.sidebar.info(f"✋ 수동 선택됨: {len(selected_tables)}개 테이블")
+        else:
+            if not auto_select:
+                st.sidebar.warning("⚠️ 테이블을 선택해주세요.")
+        
+        if st.sidebar.button("📥 선택된 테이블 로드", key="sidebar_mysql_load") and selected_tables:
+            with st.sidebar:
+                with st.spinner("MySQL 데이터 로딩 중..."):
+                    st.session_state.mysql_data = load_mysql_data(selected_tables)
+                    if st.session_state.mysql_data:
+                        total_rows = sum(len(df) for df in st.session_state.mysql_data.values())
+                        st.sidebar.success(f"✅ {len(selected_tables)}개 테이블 로드 완료! (총 {total_rows:,}행)")
+                        st.rerun()  # 페이지 새로고침 추가
+
+# 웹사이트 크롤링 설정
+with st.sidebar.expander("🌐 웹사이트 크롤링", expanded=True):
+    website_url = st.sidebar.text_input(
+        "웹사이트 URL", 
+        placeholder="https://example.com", 
+        key="sidebar_website_url"
+    )
+    max_pages = st.sidebar.slider("최대 페이지 수", 1, 10, 5, key="sidebar_website_pages")
+    
+    if st.sidebar.button("🕷️ 웹사이트 크롤링 시작", key="sidebar_website_crawl") and website_url:
+        with st.sidebar:
+            with st.spinner("웹사이트 크롤링 중..."):
+                scraped_data = scrape_website_simple(website_url, max_pages)
+                if scraped_data:
+                    st.session_state.website_data = scraped_data
+                    st.sidebar.success(f"✅ {len(scraped_data)}개 페이지 크롤링 완료!")
+                    st.rerun()  # 페이지 새로고침 추가
+                else:
+                    st.sidebar.error("❌ 크롤링 실패")
+
+# 파일 업로드 설정
+with st.sidebar.expander("📄 문서 파일", expanded=True):
+    files = st.sidebar.file_uploader(
+        "파일 업로드",
+        type=['txt', 'pdf', 'docx', 'md'],
+        accept_multiple_files=True,
+        help="여러 파일을 동시에 업로드할 수 있습니다.",
+        key="sidebar_file_upload"
+    )
+    
+    if files and st.sidebar.button("📁 파일 처리", key="sidebar_file_process"):
+        with st.sidebar:
+            with st.spinner("파일 처리 중..."):
+                processed_files = process_files(files)
+                if processed_files:
+                    st.session_state.files_data = processed_files
+                    total_size = sum(f['size'] for f in processed_files)
+                    st.sidebar.success(f"✅ {len(processed_files)}개 파일 처리 완료! (총 {total_size:,}자)")
+                    st.rerun()  # 페이지 새로고침 추가
+
+st.sidebar.markdown("---")
+
+# RAG 데이터 요약 표시
+if st.session_state.mysql_data or st.session_state.website_data or st.session_state.files_data:
+    st.sidebar.markdown("### 📋 로드된 데이터 요약")
+    
+    if st.session_state.mysql_data:
+        total_mysql_rows = sum(len(df) for df in st.session_state.mysql_data.values())
+        st.sidebar.write(f"🗄️ MySQL: {len(st.session_state.mysql_data)}개 테이블 ({total_mysql_rows:,}행)")
+    
+    if st.session_state.website_data:
+        total_pages = len(st.session_state.website_data)
+        st.sidebar.write(f"🌐 웹사이트: {total_pages}개 페이지")
+    
+    if st.session_state.files_data:
+        total_files = len(st.session_state.files_data)
+        total_chars = sum(f['size'] for f in st.session_state.files_data)
+        st.sidebar.write(f"📄 파일: {total_files}개 문서 ({total_chars:,}자)")
+
+# RAG 소스 관리 버튼들
+if st.session_state.mysql_data or st.session_state.website_data or st.session_state.files_data:
+    st.sidebar.markdown("### 🔧 데이터 관리")
+    
+    if st.sidebar.button("🗑️ 모든 RAG 데이터 초기화", key="sidebar_rag_reset"):
+        st.session_state.mysql_data = None
+        st.session_state.website_data = None
+        st.session_state.files_data = None
+        if 'available_tables' in st.session_state:
+            del st.session_state.available_tables
+        st.sidebar.success("✅ RAG 데이터가 초기화되었습니다.")
+        st.rerun()
+
+st.sidebar.markdown("---")
+
+# 주요 기능 안내
+st.sidebar.markdown("""
+### 주요 기능
+- 🗄️ MySQL 데이터베이스 RAG
+- 🌐 웹사이트 크롤링 RAG  
+- 📁 문서 파일 RAG
+- 🧠 AI Reasoning 과정 표시
+- 💾 대화 기록 저장/관리
+
+### 지원 모델
+""")
+
+# 동적으로 모델 정보 표시
+if has_anthropic_key:
+    st.sidebar.markdown("**Claude 모델:**")
+    st.sidebar.markdown("- 🔥 **Claude 3.7 Sonnet** (Extended Thinking)")
+    st.sidebar.markdown("- ⚡ **Claude 3.5 Sonnet** (Fast Reasoning)")  
+    st.sidebar.markdown("- 🤖 **Claude 3 Opus** (일반 모델)")
+
+if has_openai_key:
+    st.sidebar.markdown("**OpenAI 모델:**")
+    st.sidebar.markdown("- 🤖 **o1-preview** (Advanced Reasoning)")
+    st.sidebar.markdown("- 🤖 **o1-mini** (Efficient Reasoning)")
+    st.sidebar.markdown("- 🤖 **GPT-4o** (일반 모델)")
+    st.sidebar.markdown("- ⚡ **GPT-4o-mini** (빠른 모델)")
+
+st.sidebar.markdown("""
+### 🧠 Reasoning 지원 모델
+""")
+
+# Reasoning 지원 모델 강조 표시
+reasoning_info = ""
+if 'claude-3-7-sonnet-latest' in available_models:
+    reasoning_info += "✨ **Claude 3.7**: 가장 상세한 사고 과정\n"
+if 'claude-3-5-sonnet-latest' in available_models:
+    reasoning_info += "⚡ **Claude 3.5**: 빠르고 효율적인 reasoning\n"
+if 'o1-preview' in available_models:
+    reasoning_info += "🧠 **o1-preview**: 고도로 최적화된 추론\n"
+if 'o1-mini' in available_models:
+    reasoning_info += "🤖 **o1-mini**: 효율적인 reasoning\n"
+
+if reasoning_info:
+    st.sidebar.markdown(reasoning_info)
+else:
+    st.sidebar.warning("⚠️ Reasoning 지원 모델이 없습니다.")
+
+st.sidebar.markdown("""
+### 사용법
+1. **RAG 소스 설정**: 좌측에서 데이터 로드
+2. **모델 선택**: AI 모델과 Reasoning 옵션 선택
+3. **질문하기**: RAG 기반으로 질문하고 답변 받기
+4. **기록 관리**: 대화 내용 저장/검색/관리
+
+### 💡 Reasoning 팁
+- 복잡한 질문일수록 Reasoning 효과 증대
+- Reasoning 과정을 통해 AI 사고 과정 학습 가능
+- 모델별로 다른 스타일의 reasoning 제공
+""")
+
+st.sidebar.divider()
+st.sidebar.markdown("**📊 현재 상태**")
+st.sidebar.metric("MySQL", "✅" if st.session_state.mysql_data else "❌")
+st.sidebar.metric("웹사이트", "✅" if st.session_state.website_data else "❌") 
+st.sidebar.metric("파일", "✅" if st.session_state.files_data else "❌") 

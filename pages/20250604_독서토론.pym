@@ -21,8 +21,8 @@ load_dotenv()
 
 # 디버깅: OpenAI API 키 상태 확인
 openai_key = os.getenv('OPENAI_API_KEY')
-#print(f"[DEBUG] OpenAI API Key 상태: {openai_key[:10] if openai_key else 'None'}...")
-#print(f"[DEBUG] OpenAI API Key 길이: {len(openai_key) if openai_key else 0}")
+print(f"[DEBUG] OpenAI API Key 상태: {openai_key[:10] if openai_key else 'None'}...")
+print(f"[DEBUG] OpenAI API Key 길이: {len(openai_key) if openai_key else 0}")
 
 st.title("📚 독서토론 통합 관리")
 # 모델 선택 및 API 키 확인
@@ -96,201 +96,6 @@ def get_materials(material_type):
     finally:
         cursor.close()
         conn.close()
-
-# 우화 생성 함수 (Claude/OpenAI 모두 지원)
-def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
-    # 각 우화 스타일별 구체적인 지시사항
-    fable_instructions = {
-        "이솝우화": (
-            "아래 요약 내용을 바탕으로 이솝우화 스타일의 1분 30초 분량 대화체 우화를 만들어 주세요. "
-            "동물들이 주인공이 되어 생생한 대화를 나누며, 마지막에 명확한 교훈을 제시하는 형식으로 작성해 주세요. "
-            "존댓말을 사용하고, 간결하면서도 깊은 의미를 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "탈무드": (
-            "아래 요약 내용을 바탕으로 탈무드 스타일의 1분 30초 분량 대화체 지혜 이야기를 만들어 주세요. "
-            "랍비와 제자들의 생생한 대화 형식으로 구성하고, 질문과 답변을 통해 깊은 통찰을 전달해 주세요. "
-            "유대 지혜의 전통에 맞게 실용적이면서도 철학적인 교훈을 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "성경이야기": (
-            "아래 요약 내용을 바탕으로 성경 스타일의 1분 30초 분량 대화체 비유 이야기를 만들어 주세요. "
-            "등장인물들의 생생한 대화를 통해 일상적인 상황에서 영적, 도덕적 교훈을 전달하는 형식으로 작성해 주세요. "
-            "사랑, 용서, 겸손, 섬김의 가치를 반영하여 따뜻하고 감동적인 대화로 구성해 주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "4대 성인 대화(예수님, 부처님, 공자님, 소크라테스님)": (
-            "아래 요약 내용을 바탕으로 4대 성인이 대화하는 1분 30초 분량의 이야기를 만들어 주세요. "
-            "각 성인의 고유한 사상을 반영한 생생한 대화로 구성해야 합니다:\n"
-            "- 예수님: 사랑과 용서, 겸손과 섬김의 가치를 담은 따뜻한 말투\n"
-            "- 부처님: 자비와 깨달음, 중도와 무상의 가르침을 담은 자비로운 말투\n"
-            "- 공자님: 인(仁)과 예(禮), 수신제가치국평천하의 도덕적 가르침을 담은 온화한 말투\n"
-            "- 소크라테스님: '나는 아무것도 모른다'는 겸손함과 대화를 통한 진리 탐구를 담은 지혜로운 말투\n"
-            "중요: 각 성인이 서로를 호칭할 때는 반드시 '소크라테스님', '공자님', '예수님', '부처님'이라는 정중한 호칭을 사용해 주세요.\n"
-            "각자의 관점에서 주제에 대해 대화하며, 서로 다른 접근법으로 같은 진리에 도달하는 과정을 보여주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "장자 이야기": (
-            "아래 요약 내용을 바탕으로 장자 스타일의 1분 30초 분량 대화체 우화를 만들어 주세요. "
-            "장자의 철학인 무위자연(無爲自然), 상대성, 자유로운 정신을 반영하여 "
-            "등장인물들의 기발하고 상상력이 풍부한 대화로 구성해 주세요. "
-            "고정관념을 뒤흔들고 새로운 관점을 제시하는 장자 특유의 역설적 지혜를 대화로 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "노자의 도덕경": (
-            "아래 요약 내용을 바탕으로 노자의 도덕경 스타일의 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "노자의 철학인 도(道), 무위(無爲), 음양(陰陽)의 조화, 겸손함을 반영하여 "
-            "노자와 제자 또는 구도자들의 깊이 있는 대화로 구성해 주세요. "
-            "물과 같이 부드럽고 겸손하지만 강한 힘을 지닌 지혜, 자연의 순리를 따르는 가르침을 대화로 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "삼국지의 제갈량": (
-            "아래 요약 내용을 바탕으로 삼국지의 제갈량이 등장하는 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "제갈량과 유비, 관우, 장비, 조조, 주유 등 삼국지 등장인물들의 생생한 대화로 구성하고, "
-            "제갈량의 뛰어난 지략과 충의, 인재 경영과 전략적 사고를 반영해 주세요. "
-            "천하삼분지계, 출사표의 정신, 충성과 의리의 가치를 대화를 통해 전달하고, "
-            "현대 비즈니스와 리더십에 적용할 수 있는 지혜를 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "초한지의 장량": (
-            "아래 요약 내용을 바탕으로 초한지의 장량(장자방)이 등장하는 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "장량과 유방(한고조), 소하, 한신, 항우, 범증 등 초한지 등장인물들의 생생한 대화로 구성하고, "
-            "장량의 탁월한 모략과 지략, 은인자중의 지혜, 때를 아는 통찰력을 반영해 주세요. "
-            "사면초가, 배수진, 명장암도 등의 전략적 사고와 인간관계의 묘수를 대화로 표현하고, "
-            "현대의 경영전략과 협상술에 적용할 수 있는 지혜를 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "주역": (
-            "아래 요약 내용을 바탕으로 주역(易經) 스타일의 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "중요: 반드시 요약 내용의 핵심 주제, 상황, 문제점, 해결방안을 세밀하게 분석한 후, "
-            "그 내용과 정확히 부합하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. "
-            "선정 과정: 1) 요약 내용의 핵심 키워드 추출 2) 해당 상황의 성격 분석 3) 가장 적합한 괘 선정 4) 선정 이유 간략히 설명 "
-            "선택한 괘의 이름, 의미, 그리고 왜 이 괘가 요약 내용과 일치하는지 명확히 설명해 주세요. "
-            "그 괘의 철학과 해석을 바탕으로 주역의 대가와 구도자, 또는 현자들의 깊이 있는 대화로 구성해 주세요. "
-            "음양의 조화, 변화의 이치, 때의 중요성, 순응과 변통의 지혜를 대화에 담아 주세요. "
-            "선택한 괘의 괘사(卦辭)나 효사(爻辭)의 내용을 정확히 인용하며, 현대적 적용 방안도 제시해 주세요. "
-            "이야기 마지막에는 선택한 괘와 관련된 '오늘의 명언'을 한글과 영어로 작성해 주세요."
-        ),
-        "제자백가": (
-            "아래 요약 내용을 바탕으로 제자백가 스타일의 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "중요: 반드시 요약 내용의 핵심 주제, 상황, 문제점, 해결방안을 세밀하게 분석한 후, "
-            "그 내용에 가장 적합한 제자백가 철학자를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. "
-            "주요 제자백가 철학자: 공자, 맹자, 순자(유교), 노자, 장자, 열자(도교), 묵자(묵가), 한비자, 상앙(법가), 관자(관학), 신불해(술가) 등 "
-            "선정 과정: 1) 요약 내용의 핵심 키워드 추출 2) 해당 상황에 맞는 철학 사상 분석 3) 가장 적합한 철학자 선정 4) 선정 이유 간략히 설명 "
-            "선택한 철학자의 이름, 사상, 그리고 왜 이 철학자가 요약 내용과 일치하는지 명확히 설명해 주세요. "
-            "선택한 철학자와 그의 제자들, 또는 다른 사상가들과의 깊이 있는 대화로 구성해 주세요. "
-            "해당 철학자의 핵심 사상과 가르침을 대화에 자연스럽게 담아내고, 현대적 적용 방안도 제시해 주세요. "
-            "이야기 마지막에는 선택한 철학자의 사상과 관련된 '오늘의 명언'을 한글과 영어로 작성해 주세요."
-        )
-    }
-    
-    fable_instruction = fable_instructions.get(fable_type, fable_instructions["이솝우화"])
-    
-    if model_name.startswith('claude'):
-        client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.7, max_tokens=2500)
-        
-        # extra_prompt가 있으면 그것을 우선적으로 반영
-        if extra_prompt and extra_prompt.strip():
-            prompt = f"""
-{fable_instruction}
-
-[중요: 아래 추가 요청사항을 반드시 우선적으로 반영해 주세요]
-{extra_prompt.strip()}
-
----
-{text}
-"""
-        else:
-            prompt = f"""
-{fable_instruction}
----
-{text}
-"""
-        # 각 우화 스타일별 시스템 프롬프트
-        system_prompts = {
-            "이솝우화": "당신은 이솝우화 전문 스토리텔러입니다. 동물들이 주인공인 1분 30초 분량의 생생한 대화체 우화를 만들어 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "탈무드": "당신은 탈무드 지혜 전달자입니다. 랍비와 제자들의 생생한 대화를 통해 1분 30초 분량의 실용적이고 철학적인 교훈을 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "성경이야기": "당신은 성경 비유 이야기 전문가입니다. 사랑, 용서, 겸손의 가치를 담은 1분 30초 분량의 감동적인 대화체 비유를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "4대 성인 대화(예수님, 부처님, 공자님, 소크라테스님)": "당신은 4대 성인의 사상을 정확히 아는 철학 대화 전문가입니다. 각 성인의 고유한 철학과 가르침을 반영한 1분 30초 분량의 생생한 대화를 존댓말로 구성하고, 서로를 호칭할 때는 반드시 '소크라테스님', '공자님', '예수님', '부처님'을 사용하며, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "장자 이야기": "당신은 장자 철학 전문가입니다. 무위자연과 상대성, 자유로운 정신을 담은 1분 30초 분량의 기발하고 역설적인 대화체 우화를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "노자의 도덕경": "당신은 노자 도덕경 전문가입니다. 도(道), 무위(無爲), 음양의 조화와 겸손함을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "삼국지의 제갈량": "당신은 삼국지 전문가입니다. 제갈량의 지략과 충의, 인재경영을 담은 1분 30초 분량의 삼국지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "초한지의 장량": "당신은 초한지 전문가입니다. 장량의 모략과 지략, 은인자중의 지혜를 담은 1분 30초 분량의 초한지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "주역": "당신은 주역(易經) 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다.",
-            "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자(공자, 맹자, 순자, 노자, 장자, 묵자, 한비자, 관자 등)를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다."
-        }
-        
-        system_prompt = system_prompts.get(fable_type, system_prompts["이솝우화"])
-        
-        # extra_prompt가 있을 때는 시스템 프롬프트에 추가 지시 포함
-        if extra_prompt and extra_prompt.strip():
-            system_prompt += " 사용자의 추가 요청사항이 있을 경우 기본 스타일보다 사용자 요청을 우선적으로 반영하여 창작해 주세요."
-        
-        response = client.invoke([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ])
-        return response.content if hasattr(response, 'content') else str(response)
-    else:
-        # OpenAI API 키 검증
-        openai_key = os.getenv('OPENAI_API_KEY')
-        if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
-            raise ValueError(f"OpenAI API 키가 올바르지 않습니다. 현재 값: {openai_key}")
-        
-        try:
-            client = OpenAI(api_key=openai_key)
-            
-            # extra_prompt가 있으면 그것을 우선적으로 반영
-            if extra_prompt and extra_prompt.strip():
-                prompt = f"""
-{fable_instruction}
-
-[중요: 아래 추가 요청사항을 반드시 우선적으로 반영해 주세요]
-{extra_prompt.strip()}
-
----
-{text}
-"""
-            else:
-                prompt = f"""
-{fable_instruction}
----
-{text}
-"""
-            # 각 우화 스타일별 시스템 프롬프트
-            system_prompts = {
-                "이솝우화": "당신은 이솝우화 전문 스토리텔러입니다. 동물들이 주인공인 1분 30초 분량의 생생한 대화체 우화를 만들어 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "탈무드": "당신은 탈무드 지혜 전달자입니다. 랍비와 제자들의 생생한 대화를 통해 1분 30초 분량의 실용적이고 철학적인 교훈을 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "성경이야기": "당신은 성경 비유 이야기 전문가입니다. 사랑, 용서, 겸손의 가치를 담은 1분 30초 분량의 감동적인 대화체 비유를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "4대 성인 대화(예수님, 부처님, 공자님, 소크라테스님)": "당신은 4대 성인의 사상을 정확히 아는 철학 대화 전문가입니다. 각 성인의 고유한 철학과 가르침을 반영한 1분 30초 분량의 생생한 대화를 존댓말로 구성하고, 서로를 호칭할 때는 반드시 '소크라테스님', '공자님', '예수님', '부처님'을 사용하며, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "장자 이야기": "당신은 장자 철학 전문가입니다. 무위자연과 상대성, 자유로운 정신을 담은 1분 30초 분량의 기발하고 역설적인 대화체 우화를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "노자의 도덕경": "당신은 노자 도덕경 전문가입니다. 도(道), 무위(無爲), 음양의 조화와 겸손함을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "삼국지의 제갈량": "당신은 삼국지 전문가입니다. 제갈량의 지략과 충의, 인재경영을 담은 1분 30초 분량의 삼국지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "초한지의 장량": "당신은 초한지 전문가입니다. 장량의 모략과 지략, 은인자중의 지혜를 담은 1분 30초 분량의 초한지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "주역": "당신은 주역(易經) 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다.",
-                "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자(공자, 맹자, 순자, 노자, 장자, 묵자, 한비자, 관자 등)를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다."
-            }
-            
-            system_prompt = system_prompts.get(fable_type, system_prompts["이솝우화"])
-            
-            # extra_prompt가 있을 때는 시스템 프롬프트에 추가 지시 포함
-            if extra_prompt and extra_prompt.strip():
-                system_prompt += " 사용자의 추가 요청사항이 있을 경우 기본 스타일보다 사용자 요청을 우선적으로 반영하여 창작해 주세요."
-            
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=2500,
-                temperature=0.7
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            st.error(f"OpenAI API 호출 중 오류: {str(e)}")
-            st.error(f"API 키 상태: {openai_key[:10] if openai_key else 'None'}... (길이: {len(openai_key) if openai_key else 0})")
-            raise e
 
 # 요약 함수 (Claude/OpenAI 모두 지원)
 def ai_summarize(text, model_name, extra_prompt=None):
@@ -429,55 +234,6 @@ def text_to_speech(text):
             st.error(f"API 키 상태: {openai_key[:10] if openai_key else 'None'}... (길이: {len(openai_key) if openai_key else 0})")
         return None
 
-def text_to_speech_fable(text, fable_type):
-    """우화용 다중 화자 음성 생성 함수"""
-    try:
-        # OpenAI API 키 검증
-        openai_key = os.getenv('OPENAI_API_KEY')
-        if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
-            st.error(f"OpenAI API 키가 올바르지 않습니다. 현재 값: {openai_key}")
-            return None
-            
-        client = OpenAI(api_key=openai_key)
-        
-        # 우화 스타일별 voice 및 속도 설정
-        voice_settings = {
-            "이솝우화": {"voice": "nova", "speed": 1.0},  # 활발한 동물 캐릭터
-            "탈무드": {"voice": "echo", "speed": 0.9},   # 지혜로운 랍비
-            "성경이야기": {"voice": "shimmer", "speed": 0.9},  # 따뜻한 성경 이야기
-            "4대 성인 대화(예수님, 부처님, 공자님, 소크라테스님)": {"voice": "onyx", "speed": 0.8},  # 거룩하고 깊이 있는 목소리
-            "장자 이야기": {"voice": "alloy", "speed": 0.9},  # 신비로운 철학자
-            "노자의 도덕경": {"voice": "onyx", "speed": 0.8},  # 깊이 있고 거룩한 목소리
-            "삼국지의 제갈량": {"voice": "echo", "speed": 0.9},  # 지략가의 차분한 목소리
-            "초한지의 장량": {"voice": "alloy", "speed": 0.9},  # 모략가의 신중한 목소리
-            "주역": {"voice": "onyx", "speed": 0.8},  # 깊이 있고 신비로운 주역 현자의 목소리
-            "제자백가": {"voice": "echo", "speed": 0.9}  # 철학자들의 깊이 있고 지혜로운 목소리
-        }
-        
-        # 기본값 설정
-        setting = voice_settings.get(fable_type, {"voice": "alloy", "speed": 1.0})
-        
-        response = client.audio.speech.create(
-            model="tts-1",
-            voice=setting["voice"],
-            input=text,
-            speed=setting["speed"]
-        )
-        audio_data = response.content
-        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-        audio_html = f'''
-            <audio controls>
-                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
-                Your browser does not support the audio element.
-            </audio>
-        '''
-        return audio_html
-    except Exception as e:
-        st.error(f"우화 음성 변환 중 오류 발생: {str(e)}")
-        if 'openai_key' in locals():
-            st.error(f"API 키 상태: {openai_key[:10] if openai_key else 'None'}... (길이: {len(openai_key) if openai_key else 0})")
-        return None
-
 # --- JS 동적 효과 함수 추가 (스코프 적용) ---
 def get_alarm_js_scoped():
     return """
@@ -574,30 +330,17 @@ def discussion_order_tab():
         "I find that the harder I work, the more luck I seem to have. – Thomas Jefferson\n열심히 일 할수록 운이 더 좋아지는 것 같다. – 토머스 제퍼슨",
         # ... (필요시 추가)
     ]
-    
-    # 다른 탭의 보호된 상태들을 절대 건드리지 않도록 보호
-    protected_keys = ['ai_summary_result', 'tts_audio', 'ai_app_summary_result', 'tts_app_audio', 
-                     'ai_fable_result', 'tts_fable_audio',
-                     'ai_summary_result_backup', 'tts_audio_backup', 'ai_app_summary_result_backup', 'tts_app_audio_backup',
-                     'ai_fable_result_backup', 'tts_fable_audio_backup']
-    
-    # 순서/타이머 관련 상태만 초기화 (다른 상태는 보호)
-    timer_only_states = {
-        'order_generated': False,
-        'final_order': [],
-        'order_timer_started': False,
-        'order_start_time': None,
-        'order_duration': timedelta(minutes=15),
-        'order_timer_finished': False,
-        'order_alarm_enabled': True,
-        'order_toast_enabled': True
-    }
-    
-    # 타이머 관련 상태만 안전하게 초기화 (보호된 상태는 절대 건드리지 않음)
-    for key, default_value in timer_only_states.items():
-        if key not in st.session_state:
-            st.session_state[key] = default_value
-    
+    # 순서/타이머 관련 상태 초기화 (최상단에서 보장)
+    if 'order_generated' not in st.session_state:
+        st.session_state.order_generated = False
+        st.session_state.final_order = []
+    if 'order_timer_started' not in st.session_state:
+        st.session_state.order_timer_started = False
+        st.session_state.order_start_time = None
+        st.session_state.order_duration = timedelta(minutes=15)
+        st.session_state.order_timer_finished = False
+        st.session_state.order_alarm_enabled = True
+        st.session_state.order_toast_enabled = True
     # 스타일 및 JS (최초 1회만)
     if 'order_js_loaded' not in st.session_state:
         st.markdown("""
@@ -666,35 +409,27 @@ def discussion_order_tab():
                 st.markdown(f"<div style='background: linear-gradient(145deg, #ffffff, #f0f0f0); padding: 10px; border-radius: 8px; margin: 5px 0; box-shadow: 3px 3px 6px #d9d9d9, -3px -3px 6px #ffffff;'><div style='color: #0066cc; margin: 0; font-size: 16px; display: flex; align-items: center;'><span style='font-weight: bold; min-width: 24px;'>{i}.</span><span style='margin-left: 8px;'>{person}</span><span style='margin-left: 8px; opacity: 0.8;'>{CHARACTERS[person]}</span></div></div>", unsafe_allow_html=True)
         with col2:
             st.markdown('<h2 style="color: #fff; font-size: 24px; margin-bottom: 20px;">⏱️ 토론 타이머</h2>', unsafe_allow_html=True)
-            
+            # 타이머 관련 상태 초기화 (최상단에서 보장)
+            if 'order_timer_started' not in st.session_state:
+                st.session_state.order_timer_started = False
+                st.session_state.order_start_time = None
+                st.session_state.order_duration = timedelta(minutes=15)
+                st.session_state.order_timer_finished = False
             # 타이머 시간 설정 슬라이더 (1~30분, 기본 15분)
             timer_duration = st.slider("⏰ 시간 (분)", min_value=1, max_value=30, value=int(st.session_state.order_duration.total_seconds() // 60), key="order_timer_duration")
             st.session_state.order_duration = timedelta(minutes=timer_duration)
 
             if not st.session_state.order_timer_started:
                 if st.button("⏱️ 토론 시작하기", use_container_width=True):
-                    # 다른 탭의 세션 상태 보호를 위한 백업
-                    for key in protected_keys:
-                        if key in st.session_state and st.session_state[key] is not None:
-                            st.session_state[f"{key}_protected"] = st.session_state[key]
-                    
-                    # 타이머만 시작
                     st.session_state.order_timer_started = True
                     st.session_state.order_start_time = datetime.now().timestamp()
                     st.session_state.order_timer_finished = False
             else:
                 if st.button("🔄 타이머 리셋", use_container_width=True):
-                    # 다른 탭의 세션 상태 보호를 위한 백업 복원
-                    for key in protected_keys:
-                        protected_key = f"{key}_protected"
-                        if protected_key in st.session_state:
-                            st.session_state[key] = st.session_state[protected_key]
-                    
-                    # 타이머 관련 상태만 리셋 (보호된 상태는 절대 건드리지 않음)
+                    # 타이머 관련 세션 상태만 리셋 (다른 탭의 세션 상태는 보호)
                     st.session_state.order_timer_started = False
                     st.session_state.order_start_time = None
                     st.session_state.order_timer_finished = False
-                    
                 # JS 기반 실시간 타이머 표시
                 start_time = st.session_state.order_start_time
                 duration = int(st.session_state.order_duration.total_seconds())  # 초 단위
@@ -734,57 +469,25 @@ def discussion_order_tab():
                 ''', height=80)
     st.markdown("---")
     if st.button("🔄 다시 정하기", key="order_reset", use_container_width=True):
-        # 다른 탭의 세션 상태 보호를 위한 백업 복원 (우화 포함)
-        for key in protected_keys:
-            protected_key = f"{key}_protected"
-            if protected_key in st.session_state:
-                st.session_state[key] = st.session_state[protected_key]
-        
-        # 타이머 관련 세션 상태만 초기화 (보호된 상태는 절대 건드리지 않음)
+        # 타이머 관련 세션 상태만 초기화 (다른 탭의 세션 상태는 보호)
         st.session_state.order_generated = False
         st.session_state.order_timer_started = False
         st.session_state.order_start_time = None
         st.session_state.order_timer_finished = False
-        st.session_state.final_order = []
     st.markdown("</div>", unsafe_allow_html=True)
 
 def main():
-    # 독서토론 검색/조회 탭의 세션 상태를 영구적으로 보호 - 더 강화된 보호
-    protected_states = {
-        'ai_summary_result': None,
-        'tts_audio': None,
-        'ai_app_summary_result': None,
-        'tts_app_audio': None,
-        'ai_fable_result': None,
-        'tts_fable_audio': None
-    }
-    
-    # 보호된 상태들을 안전하게 초기화 (기존 값이 있으면 유지)
-    for key, default_value in protected_states.items():
-        if key not in st.session_state:
-            st.session_state[key] = default_value
-        # 추가 보호: None이 아닌 값이 있다면 백업
-        if st.session_state[key] is not None:
-            st.session_state[f"{key}_backup"] = st.session_state[key]
-    
-    # 타이머 관련 상태들도 안전하게 초기화
-    timer_states = {
-        'order_generated': False,
-        'final_order': [],
-        'order_timer_started': False,
-        'order_start_time': None,
-        'order_duration': timedelta(minutes=15),
-        'order_timer_finished': False,
-        'order_alarm_enabled': True,
-        'order_toast_enabled': True
-    }
-    
-    for key, default_value in timer_states.items():
-        if key not in st.session_state:
-            st.session_state[key] = default_value
+    # 독서토론 검색/조회 탭의 세션 상태를 영구적으로 보호
+    if 'ai_summary_result' not in st.session_state:
+        st.session_state['ai_summary_result'] = None
+    if 'tts_audio' not in st.session_state:
+        st.session_state['tts_audio'] = None
+    if 'ai_app_summary_result' not in st.session_state:
+        st.session_state['ai_app_summary_result'] = None
+    if 'tts_app_audio' not in st.session_state:
+        st.session_state['tts_app_audio'] = None
    
     tab1, tab2, tab3, tab_order = st.tabs(["요약/적용 파일 등록", "적용 파일 생성", "독서토론 검색/조회", "발표 순서/타이머"])
-    
     with tab1:
         st.header("요약/적용 파일 등록")
         col1, col2 = st.columns(2)
@@ -870,24 +573,7 @@ def main():
 
     with tab3:
         st.header("독서토론 검색/조회")
-        
-        # 백업된 상태가 있다면 복원 (추가 보호)
-        for key in protected_states.keys():
-            backup_key = f"{key}_backup"
-            permanent_backup_key = f"{key}_permanent_backup"
-            
-            # 영구 백업에서 복원 (최우선)
-            if permanent_backup_key in st.session_state and st.session_state[permanent_backup_key] is not None:
-                if st.session_state[key] is None:
-                    st.session_state[key] = st.session_state[permanent_backup_key]
-                    # 일반 백업도 동시에 복원
-                    st.session_state[backup_key] = st.session_state[permanent_backup_key]
-            # 일반 백업에서 복원 (차선)
-            elif backup_key in st.session_state and st.session_state[backup_key] is not None:
-                if st.session_state[key] is None:
-                    st.session_state[key] = st.session_state[backup_key]
-        
-        subtab1, subtab2, subtab3 = st.tabs(["요약 파일", "적용 파일", "우화"])
+        subtab1, subtab2 = st.tabs(["요약 파일", "적용 파일"])
         with subtab1:
             st.subheader("요약 파일 검색/AI 요약/음성 생성")
             summaries = get_materials("summary")
@@ -905,10 +591,6 @@ def main():
                         try:
                             ai_summary = ai_summarize_keypoints(selected_summary['content'], st.session_state.selected_model, extra_prompt_summary)
                             st.session_state['ai_summary_result'] = ai_summary
-                            # 백업도 함께 저장
-                            st.session_state['ai_summary_result_backup'] = ai_summary
-                            # 영구 백업도 함께 저장
-                            st.session_state['ai_summary_result_permanent_backup'] = ai_summary
                         except Exception as e:
                             st.error(f"AI 요약 중 오류: {str(e)}")
                 if st.session_state['ai_summary_result']:
@@ -928,10 +610,6 @@ def main():
                             tts_audio = text_to_speech(summarized_text)
                             if tts_audio:
                                 st.session_state['tts_audio'] = tts_audio
-                                # 백업도 함께 저장
-                                st.session_state['tts_audio_backup'] = tts_audio
-                                # 영구 백업도 함께 저장
-                                st.session_state['tts_audio_permanent_backup'] = tts_audio
                         except Exception as e:
                             st.error(f"음성 생성 중 오류: {str(e)}")
                 if st.session_state['tts_audio']:
@@ -955,10 +633,6 @@ def main():
                         try:
                             ai_app_summary = ai_summarize_application_summary(selected_application['content'], st.session_state.selected_model, extra_prompt_app)
                             st.session_state['ai_app_summary_result'] = ai_app_summary
-                            # 백업도 함께 저장
-                            st.session_state['ai_app_summary_result_backup'] = ai_app_summary
-                            # 영구 백업도 함께 저장
-                            st.session_state['ai_app_summary_result_permanent_backup'] = ai_app_summary
                         except Exception as e:
                             st.error(f"AI 요약 중 오류: {str(e)}")
                 if st.session_state['ai_app_summary_result']:
@@ -974,95 +648,12 @@ def main():
                             tts_app_audio = text_to_speech(summarized_text)
                             if tts_app_audio:
                                 st.session_state['tts_app_audio'] = tts_app_audio
-                                # 백업도 함께 저장
-                                st.session_state['tts_app_audio_backup'] = tts_app_audio
-                                # 영구 백업도 함께 저장
-                                st.session_state['tts_app_audio_permanent_backup'] = tts_app_audio
                         except Exception as e:
                             st.error(f"음성 생성 중 오류: {str(e)}")
                 if st.session_state['tts_app_audio']:
                     st.markdown(st.session_state['tts_app_audio'], unsafe_allow_html=True)
             else:
                 st.info("등록된 적용 파일이 없습니다.")
-        
-        with subtab3:
-            st.subheader("우화 생성/음성 생성")
-            summaries = get_materials("summary")
-            if summaries:
-                summary_options = [f"{s['book_title']} - {s['file_name']} ({s['created_at'].strftime('%Y-%m-%d')})" for s in summaries]
-                selected_idx = st.selectbox("요약 파일 선택 (최신순)", range(len(summary_options)), format_func=lambda i: summary_options[i], key="fable_summary_selectbox")
-                selected_summary = summaries[selected_idx]
-                
-                # 우화 스타일 선택
-                fable_types = ["이솝우화", "탈무드", "성경이야기", "4대 성인 대화(예수님, 부처님, 공자님, 소크라테스님)", "장자 이야기", "노자의 도덕경", "삼국지의 제갈량", "초한지의 장량", "주역", "제자백가"]
-                selected_fable_type = st.selectbox("우화 스타일 선택", fable_types, key="fable_type_select")
-                
-                # 오프닝 멘트와 다음 토론 주제 입력란
-                col1, col2 = st.columns(2)
-                with col1:
-                    opening_ment_custom = st.text_area("오프닝 멘트 (선택)", key="fable_opening_ment", 
-                                                     value="즐거운 독서토론 되셨는지요. 이번 독서토론 내용을 바탕으로 한 우화를 들려드리겠습니다.", 
-                                                     height=80)
-                with col2:
-                    next_topic_fable = st.text_input("다음 토론 주제", placeholder="다음 독서 토론의 주제를 입력해주세요", key="next_topic_fable")
-                
-                st.write(f"### {selected_summary['file_name']}")
-                st.markdown(format_bullet_points(selected_summary['content']))
-                st.write(f"*등록일: {selected_summary['created_at'].strftime('%Y-%m-%d')}*")
-                
-                extra_prompt_fable = st.text_area("AI 프롬프트에 추가로 참고할 내용(선택)", key="fable_extra_prompt", placeholder="특정 관점, 강조점, 추가 지시사항 등 자유롭게 입력하세요.", height=80)
-                
-                if st.button("AI 우화 생성", key="fable_ai_generate"):
-                    with st.spinner(f"AI가 {selected_fable_type} 스타일의 우화를 생성 중입니다..."):
-                        try:
-                            ai_fable = ai_generate_fable(selected_summary['content'], selected_fable_type, st.session_state.selected_model, extra_prompt_fable)
-                            st.session_state['ai_fable_result'] = ai_fable
-                            # 백업도 함께 저장
-                            st.session_state['ai_fable_result_backup'] = ai_fable
-                            # 영구 백업도 함께 저장
-                            st.session_state['ai_fable_result_permanent_backup'] = ai_fable
-                        except Exception as e:
-                            st.error(f"AI 우화 생성 중 오류: {str(e)}")
-                
-                if st.session_state['ai_fable_result']:
-                    st.markdown("### 생성된 우화")
-                    st.markdown(st.session_state['ai_fable_result'])
-                
-                if st.button("음성 생성", key="fable_tts"):
-                    if not st.session_state.get('ai_fable_result'):
-                        st.warning("먼저 AI 우화를 생성해 주세요.")
-                    else:
-                        with st.spinner("음성을 생성하고 있습니다..."):
-                            try:
-                                # 오프닝 멘트 + 우화 + 클로징 멘트 조합
-                                tts_parts = []
-                                if opening_ment_custom and opening_ment_custom.strip():
-                                    tts_parts.append(opening_ment_custom.strip())
-                                
-                                if st.session_state.get('ai_fable_result'):
-                                    tts_parts.append(st.session_state['ai_fable_result'])
-                                
-                                # 다음 토론 주제 기반 클로징 멘트 생성
-                                if next_topic_fable and next_topic_fable.strip():
-                                    closing_ment = f"다음 시간에는 {next_topic_fable.strip()}에 대한 독서 토론을 진행할 예정입니다."
-                                    tts_parts.append(closing_ment)
-                                
-                                tts_text = "\n".join(tts_parts)
-                                summarized_text = summarize_for_tts(tts_text, max_length=4000)  # 1분 30초 분량으로 길이 조정
-                                tts_fable_audio = text_to_speech_fable(summarized_text, selected_fable_type)
-                                if tts_fable_audio:
-                                    st.session_state['tts_fable_audio'] = tts_fable_audio
-                                    # 백업도 함께 저장
-                                    st.session_state['tts_fable_audio_backup'] = tts_fable_audio
-                                    # 영구 백업도 함께 저장
-                                    st.session_state['tts_fable_audio_permanent_backup'] = tts_fable_audio
-                            except Exception as e:
-                                st.error(f"음성 생성 중 오류: {str(e)}")
-                
-                if st.session_state['tts_fable_audio']:
-                    st.markdown(st.session_state['tts_fable_audio'], unsafe_allow_html=True)
-            else:
-                st.info("등록된 요약 파일이 없습니다.")
 
     with tab_order:
         discussion_order_tab()
@@ -1213,16 +804,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[ERROR] 타이머 종료 음성 생성 중 오류: {str(e)}")
             st.session_state['order_end_audio'] = ''
-    
-    # 핵심 보호된 상태들의 추가 백업 (앱 전체 실행 중 유지)
-    protected_session_keys = ['ai_summary_result', 'tts_audio', 'ai_app_summary_result', 'tts_app_audio', 'ai_fable_result', 'tts_fable_audio']
-    for key in protected_session_keys:
-        # 영구 백업 생성 (앱 전체 실행 중 유지)
-        if key in st.session_state and st.session_state[key] is not None:
-            st.session_state[f"{key}_permanent_backup"] = st.session_state[key]
-        # 영구 백업에서 복원 (값이 None이 되었을 때)
-        elif f"{key}_permanent_backup" in st.session_state and st.session_state[f"{key}_permanent_backup"] is not None:
-            st.session_state[key] = st.session_state[f"{key}_permanent_backup"]
-    
     main() 
-

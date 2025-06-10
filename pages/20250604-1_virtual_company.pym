@@ -830,7 +830,7 @@ def load_mysql_data(selected_tables):
         return {}
 
 def scrape_website_simple(url, max_pages=5):
-    """간단한 웹사이트 크롤링 - 개선된 버전"""
+    """간단한 웹사이트 크롤링"""
     try:
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
@@ -844,9 +844,8 @@ def scrape_website_simple(url, max_pages=5):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         
-        successfully_scraped = 0  # 실제로 스크래핑된 페이지 수
-        
-        while urls_to_visit and successfully_scraped < max_pages:
+        page_count = 0
+        while urls_to_visit and page_count < max_pages:
             current_url = urls_to_visit.pop(0)
             
             if current_url in visited_urls:
@@ -857,6 +856,7 @@ def scrape_website_simple(url, max_pages=5):
                 response.raise_for_status()
                 
                 visited_urls.add(current_url)
+                page_count += 1
                 
                 soup = BeautifulSoup(response.content, "html.parser")
                 
@@ -868,33 +868,27 @@ def scrape_website_simple(url, max_pages=5):
                 lines = [line.strip() for line in page_text.split('\n') if line.strip()]
                 cleaned_text = '\n'.join(lines)
                 
-                # 콘텐츠가 있으면 추가 (길이 제한 완화)
-                if len(cleaned_text) > 50:  # 50자로 기준 낮춤
-                    page_title = soup.title.string.strip() if soup.title and soup.title.string else f'페이지 {successfully_scraped + 1}'
+                if len(cleaned_text) > 200:
+                    page_title = soup.title.string.strip() if soup.title and soup.title.string else 'No Title'
                     texts.append({
                         'content': cleaned_text,
                         'url': current_url,
                         'title': page_title
                     })
-                    successfully_scraped += 1
                 
-                # 더 많은 링크 찾기 (제한 완화)
+                # 새로운 링크 찾기 (같은 도메인만)
                 base_domain = urlparse(url).netloc
+                if page_count < max_pages:
+                    for link in soup.find_all("a", href=True)[:10]:
+                        absolute_link = urljoin(current_url, link['href'])
+                        parsed_link = urlparse(absolute_link)
+                        
+                        if (parsed_link.netloc == base_domain and 
+                            absolute_link not in visited_urls and 
+                            absolute_link not in urls_to_visit):
+                            urls_to_visit.append(absolute_link)
                 
-                # 링크 탐색을 더 적극적으로
-                for link in soup.find_all("a", href=True)[:20]:  # 20개로 증가
-                    absolute_link = urljoin(current_url, link['href'])
-                    parsed_link = urlparse(absolute_link)
-                    
-                    # 조건 완화: 같은 도메인 + 기본적인 필터링
-                    if (parsed_link.netloc == base_domain and 
-                        absolute_link not in visited_urls and 
-                        absolute_link not in urls_to_visit and
-                        not any(x in absolute_link.lower() for x in ['#', 'javascript:', 'mailto:', 'tel:']) and
-                        len(urls_to_visit) < 50):  # 대기 큐 크기 제한
-                        urls_to_visit.append(absolute_link)
-                
-                time.sleep(0.5)  # 지연시간 단축 (1초 → 0.5초)
+                time.sleep(1)  # 지연시간
                 
             except Exception as e:
                 logger.error(f"페이지 크롤링 오류 {current_url}: {e}")
@@ -2689,48 +2683,33 @@ if (st.session_state.analysis_complete or st.session_state.get('analysis_saved',
         for i, source_info in enumerate(st.session_state.current_rag_sources):
             with cols[i]:
                 if source_info['type'] == 'mysql':
-                    # HTML 이스케이프 처리
-                    safe_name = str(source_info['name']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_details = str(source_info['details']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_tables = [str(table).replace('<', '&lt;').replace('>', '&gt;') for table in source_info['tables'][:3]]
-                    
                     st.markdown(f"""
                     <div style="background: linear-gradient(145deg, #e3f2fd, #ffffff); border-left: 4px solid #2196f3; border-radius: 8px; padding: 15px; margin: 5px 0;">
-                        <h4 style="margin: 0; color: #1976d2;">🗄️ {safe_name}</h4>
-                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{safe_details}</p>
+                        <h4 style="margin: 0; color: #1976d2;">🗄️ {source_info['name']}</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{source_info['details']}</p>
                         <p style="margin: 5px 0; font-size: 0.8rem; color: #888;">
-                            테이블: {', '.join(safe_tables)}
+                            테이블: {', '.join(source_info['tables'][:3])}
                             {f" 등 {len(source_info['tables'])}개" if len(source_info['tables']) > 3 else ""}
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
                 elif source_info['type'] == 'website':
-                    # HTML 이스케이프 처리
-                    safe_name = str(source_info['name']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_details = str(source_info['details']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_url_title = str(source_info['urls'][0]['title']).replace('<', '&lt;').replace('>', '&gt;') if source_info['urls'] else 'N/A'
-                    
                     st.markdown(f"""
                     <div style="background: linear-gradient(145deg, #e8f5e8, #ffffff); border-left: 4px solid #4caf50; border-radius: 8px; padding: 15px; margin: 5px 0;">
-                        <h4 style="margin: 0; color: #388e3c;">🌐 {safe_name}</h4>
-                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{safe_details}</p>
+                        <h4 style="margin: 0; color: #388e3c;">🌐 {source_info['name']}</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{source_info['details']}</p>
                         <p style="margin: 5px 0; font-size: 0.8rem; color: #888;">
-                            주요 사이트: {safe_url_title}
+                            주요 사이트: {source_info['urls'][0]['title'] if source_info['urls'] else 'N/A'}
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
                 elif source_info['type'] == 'files':
-                    # HTML 이스케이프 처리
-                    safe_name = str(source_info['name']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_details = str(source_info['details']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_files = [str(file).replace('<', '&lt;').replace('>', '&gt;') for file in source_info.get('files', [])[:2]]
-                    
                     st.markdown(f"""
                     <div style="background: linear-gradient(145deg, #fff3e0, #ffffff); border-left: 4px solid #ff9800; border-radius: 8px; padding: 15px; margin: 5px 0;">
-                        <h4 style="margin: 0; color: #f57c00;">📄 {safe_name}</h4>
-                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{safe_details}</p>
+                        <h4 style="margin: 0; color: #f57c00;">📄 {source_info['name']}</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{source_info['details']}</p>
                         <p style="margin: 5px 0; font-size: 0.8rem; color: #888;">
-                            파일: {', '.join(safe_files)}
+                            파일: {', '.join(source_info.get('files', [])[:2])}
                             {f" 등 {len(source_info.get('files', []))}개" if len(source_info.get('files', [])) > 2 else ""}
                         </p>
                     </div>
@@ -2758,32 +2737,25 @@ if (st.session_state.analysis_complete or st.session_state.get('analysis_saved',
                 st.markdown("### 🗄️ MySQL 데이터베이스 참고 내용")
                 for table_name, df in st.session_state.mysql_data.items():
                     with st.expander(f"📊 {table_name} 테이블 ({len(df):,}행)"):
-                        # HTML 이스케이프를 위해 컬럼명 안전하게 처리
-                        safe_columns = [str(col).replace('<', '&lt;').replace('>', '&gt;') for col in df.columns.tolist()]
-                        st.markdown(f"**컬럼**: {', '.join(safe_columns)}")
+                        st.markdown(f"**컬럼**: {', '.join(df.columns.tolist())}")
                         st.markdown("**샘플 데이터**:")
-                        
-                        # 데이터프레임의 HTML 태그를 안전하게 처리
-                        safe_df = df.head(3).copy()
-                        for col in safe_df.columns:
-                            if safe_df[col].dtype == 'object':  # 문자열 컬럼만 처리
-                                safe_df[col] = safe_df[col].astype(str).str.replace('<', '&lt;').str.replace('>', '&gt;')
-                        
-                        st.dataframe(safe_df, use_container_width=True)
+                        st.dataframe(df.head(3))
                         
             elif source['type'] == 'website' and st.session_state.website_data:
                 st.markdown("### 🌐 웹사이트 크롤링 참고 내용")
                 for i, page_data in enumerate(st.session_state.website_data[:3]):
-                    # HTML 이스케이프 처리
-                    safe_title = str(page_data['title']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_url = str(page_data['url']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_content = str(page_data['content']).replace('<', '&lt;').replace('>', '&gt;')
-                    
-                    with st.expander(f"🌐 {safe_title}"):
-                        st.markdown(f"**URL**: {safe_url}")
+                    with st.expander(f"🌐 {page_data['title']}"):
+                        st.markdown(f"**URL**: {page_data['url']}")
                         st.markdown(f"**내용 길이**: {len(page_data['content']):,}자")
                         st.markdown("**주요 내용**:")
-                        st.text(safe_content[:500] + "..." if len(safe_content) > 500 else safe_content)
+                        st.text(page_data['content'][:500] + "..." if len(page_data['content']) > 500 else page_data['content'])
+                        
+            elif source['type'] == 'files' and st.session_state.files_data:
+                st.markdown("### 📄 업로드 문서 참고 내용")
+                for file_data in st.session_state.files_data:
+                    with st.expander(f"📄 {file_data['name']} ({file_data['size']:,}자)"):
+                        st.markdown("**주요 내용**:")
+                        st.text(file_data['content'][:500] + "..." if len(file_data['content']) > 500 else file_data['content'])
         
         st.info("💡 위의 구체적인 데이터들이 C-Level 임원진 분석과 CEO 최종 의사결정에 실제로 활용되었습니다.")
     

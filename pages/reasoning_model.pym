@@ -227,15 +227,53 @@ def check_database_connection():
         cursor.execute("SELECT DATABASE()")
         db_name = cursor.fetchone()[0]
         
-        # 가상회사 테이블 확인
-        cursor.execute("SHOW TABLES LIKE 'virtual_company_%'")
-        tables = cursor.fetchall()
-        table_count = len(tables)
+        # v2 테이블 확인 (우선순위)
+        v2_tables = [
+            'virtual_company_analyses_v2',
+            'virtual_company_persona_analyses_v2',
+            'virtual_company_rag_sources_v2',
+            'virtual_company_analysis_metrics_v2'
+        ]
+        
+        v2_count = 0
+        for table in v2_tables:
+            cursor.execute(f"SHOW TABLES LIKE '{table}'")
+            if cursor.fetchone():
+                v2_count += 1
+        
+        # 기존 테이블 확인
+        legacy_tables = [
+            'virtual_company_analyses',
+            'virtual_company_persona_analyses',
+            'virtual_company_rag_sources',
+            'virtual_company_analysis_metrics'
+        ]
+        
+        legacy_count = 0
+        for table in legacy_tables:
+            cursor.execute(f"SHOW TABLES LIKE '{table}'")
+            if cursor.fetchone():
+                legacy_count += 1
         
         cursor.close()
         connection.close()
         
-        return True, f"연결 성공 (DB: {db_name}, Virtual Company 테이블: {table_count}개)"
+        # v2 테이블이 완전한 경우
+        if v2_count == 4:
+            return True, f"연결 성공 (DB: {db_name}, Virtual Company v2 테이블: {v2_count}개 완료)"
+        
+        # 기존 테이블이 완전한 경우
+        elif legacy_count == 4:
+            return True, f"연결 성공 (DB: {db_name}, Virtual Company 테이블: {legacy_count}개 완료)"
+        
+        # 일부 테이블만 있는 경우
+        elif v2_count > 0 or legacy_count > 0:
+            total_count = v2_count + legacy_count
+            return True, f"연결 성공 (DB: {db_name}, Virtual Company 테이블: {total_count}개 불완전 - v2:{v2_count}, legacy:{legacy_count})"
+        
+        # 테이블이 없는 경우
+        else:
+            return True, f"연결 성공 (DB: {db_name}, Virtual Company 테이블: 0개)"
         
     except Exception as e:
         return False, f"연결 오류: {str(e)}"
@@ -258,6 +296,90 @@ st.set_page_config(
 )
 
 st.title("🏢 Virtual Company")
+
+# 현재 선택된 모델 정보 표시
+if 'selected_model' in st.session_state:
+    current_model = st.session_state.selected_model
+    
+    # 모델 타입 분석
+    is_reasoning_model = False
+    model_description = ""
+    model_badge = ""
+    
+    if current_model.startswith('claude-opus-4'):
+        is_reasoning_model = True
+        model_description = "Claude 4 Opus - 최고 성능 reasoning 모델"
+        model_badge = "🔥 PREMIUM REASONING"
+    elif current_model.startswith('claude-sonnet-4'):
+        is_reasoning_model = True
+        model_description = "Claude 4 Sonnet - 고성능 reasoning 모델"
+        model_badge = "🧠 ADVANCED REASONING"
+    elif current_model.startswith('claude-3-7'):
+        is_reasoning_model = True
+        model_description = "Claude 3.7 Sonnet - Extended Thinking 지원"
+        model_badge = "💭 EXTENDED THINKING"
+    elif current_model.startswith('o1'):
+        is_reasoning_model = True
+        if 'mini' in current_model:
+            model_description = "OpenAI o1-mini - 경량 reasoning 모델"
+            model_badge = "⚡ FAST REASONING"
+        elif 'preview' in current_model:
+            model_description = "OpenAI o1-preview - 강력한 reasoning 모델"
+            model_badge = "🧠 ADVANCED REASONING"
+        else:
+            model_description = "OpenAI o1 - 완전한 reasoning 모델"
+            model_badge = "🔥 FULL REASONING"
+    elif current_model.startswith('claude-3-5-sonnet'):
+        model_description = "Claude 3.5 Sonnet - 균형잡힌 고성능 모델"
+        model_badge = "⚡ HIGH PERFORMANCE"
+    elif current_model.startswith('claude-3-5-haiku'):
+        model_description = "Claude 3.5 Haiku - 빠른 응답 모델"
+        model_badge = "🚀 FAST RESPONSE"
+    elif current_model.startswith('gpt-4o'):
+        if 'mini' in current_model:
+            model_description = "GPT-4o mini - 경량 멀티모달 모델"
+            model_badge = "💡 EFFICIENT"
+        else:
+            model_description = "GPT-4o - 멀티모달 일반 모델"
+            model_badge = "🎯 MULTIMODAL"
+    else:
+        model_description = f"{current_model} - AI 모델"
+        model_badge = "🤖 AI MODEL"
+    
+    # 모델 정보 표시
+    badge_color = "#e74c3c" if is_reasoning_model else "#3498db"
+    
+    st.markdown(f"""
+    <div style="
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 15px;
+        padding: 20px;
+        margin: 15px 0;
+        color: white;
+        text-align: center;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    ">
+        <div style="
+            background: {badge_color};
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            display: inline-block;
+            font-size: 0.8rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        ">
+            {model_badge}
+        </div>
+        <h3 style="margin: 10px 0; font-size: 1.2rem;">{model_description}</h3>
+        <div style="font-size: 0.9rem; opacity: 0.9;">
+            {'🧠 이 모델은 복잡한 추론과 단계별 사고에 특화되어 있습니다' if is_reasoning_model else '⚡ 빠르고 효율적인 범용 AI 모델입니다'}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
@@ -267,9 +389,13 @@ if not admin_pw:
     st.stop()
 
 if not st.session_state.authenticated:
-    password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    st.markdown('<h1 class="main-title">🏬 Virtual AqaraLife C-Level 멀티에이전트 + RAG</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="main-subtitle">관리자 인증이 필요한 페이지입니다.</p>', unsafe_allow_html=True)
+    
+    password = st.text_input("🔐 관리자 비밀번호를 입력하세요", type="password")
     if password == admin_pw:
         st.session_state.authenticated = True
+        st.success("✅ 인증 성공! 페이지를 새로고침합니다...")
         st.rerun()
     else:
         if password:  # 비밀번호가 입력된 경우에만 오류 메시지 표시
@@ -659,6 +785,52 @@ CEO_PERSONA = {
 - 투자자, 임직원, 고객에게 전달할 핵심 메시지 포함"""
 }
 
+# 페르소나별 분석 단계 정의
+PERSONA_ANALYSIS_STAGES = {
+    "CTO": [
+        {"stage": "기술 현황 분석", "message": "기술 아키텍처 및 현황을 분석하고 있습니다..."},
+        {"stage": "기술적 타당성 검토", "message": "기술적 타당성과 구현 가능성을 검토하고 있습니다..."},
+        {"stage": "리스크 및 대안 분석", "message": "기술 리스크와 대안 솔루션을 분석하고 있습니다..."},
+        {"stage": "구현 계획 수립", "message": "구현 계획과 리소스 요구사항을 수립하고 있습니다..."},
+        {"stage": "CTO 분석 완료", "message": "💻 CTO 기술 전략 분석이 완료되었습니다."}
+    ],
+    "CSO_Strategy": [
+        {"stage": "시장 현황 분석", "message": "시장 동향 및 기회를 분석하고 있습니다..."},
+        {"stage": "경쟁 환경 분석", "message": "경쟁사 분석 및 포지셔닝을 검토하고 있습니다..."},
+        {"stage": "전략적 옵션 검토", "message": "전략적 옵션과 시나리오를 검토하고 있습니다..."},
+        {"stage": "실행 계획 수립", "message": "전략 실행 계획과 로드맵을 수립하고 있습니다..."},
+        {"stage": "CSO 분석 완료", "message": "🎯 CSO 전략 기획 분석이 완료되었습니다."}
+    ],
+    "CMO": [
+        {"stage": "시장 및 고객 분석", "message": "시장 및 타겟 고객을 분석하고 있습니다..."},
+        {"stage": "브랜드 포지셔닝 분석", "message": "브랜드 전략과 포지셔닝을 분석하고 있습니다..."},
+        {"stage": "마케팅 채널 전략", "message": "마케팅 채널과 캠페인 전략을 수립하고 있습니다..."},
+        {"stage": "성과 측정 체계", "message": "마케팅 성과 측정 체계를 구축하고 있습니다..."},
+        {"stage": "CMO 분석 완료", "message": "📢 CMO 마케팅 전략 분석이 완료되었습니다."}
+    ],
+    "CFO": [
+        {"stage": "재무 현황 분석", "message": "재무 현황과 성과를 분석하고 있습니다..."},
+        {"stage": "투자 타당성 평가", "message": "투자 타당성과 수익성을 평가하고 있습니다..."},
+        {"stage": "리스크 분석", "message": "재무 리스크와 대응 방안을 분석하고 있습니다..."},
+        {"stage": "재무 전략 수립", "message": "재무 전략과 자금 계획을 수립하고 있습니다..."},
+        {"stage": "CFO 분석 완료", "message": "💰 CFO 재무 전략 분석이 완료되었습니다."}
+    ],
+    "CSO_Sales": [
+        {"stage": "영업 현황 분석", "message": "영업 현황과 성과를 분석하고 있습니다..."},
+        {"stage": "고객 관계 분석", "message": "고객 관계와 만족도를 분석하고 있습니다..."},
+        {"stage": "시장 기회 발굴", "message": "시장 기회와 성장 가능성을 발굴하고 있습니다..."},
+        {"stage": "영업 전략 수립", "message": "영업 전략과 실행 계획을 수립하고 있습니다..."},
+        {"stage": "CSO 분석 완료", "message": "🤝 CSO 영업 전략 분석이 완료되었습니다."}
+    ],
+    "CIO": [
+        {"stage": "IT 현황 분석", "message": "IT 인프라와 시스템을 분석하고 있습니다..."},
+        {"stage": "데이터 전략 분석", "message": "데이터 거버넌스와 활용 전략을 분석하고 있습니다..."},
+        {"stage": "보안 및 컴플라이언스", "message": "보안 위협과 컴플라이언스를 검토하고 있습니다..."},
+        {"stage": "디지털 전환 계획", "message": "디지털 전환 계획과 로드맵을 수립하고 있습니다..."},
+        {"stage": "CIO 분석 완료", "message": "🔐 CIO 정보 전략 분석이 완료되었습니다."}
+    ]
+}
+
 # ==================== 관리자 인증 ====================
 
 # 인증 기능 (간단한 비밀번호 보호)
@@ -682,7 +854,6 @@ if not st.session_state.authenticated:
     else:
         if password:  # 비밀번호가 입력된 경우에만 오류 메시지 표시
             st.error("❌ 올바르지 않은 비밀번호입니다. 관리자 권한이 필요합니다.")
-        st.info("💡 이 페이지는 C-Level 임원진 분석과 RAG 기능을 포함한 고급 기능을 제공합니다.")
         st.stop()
 
 # ==================== RAG 데이터 소스 설정 ====================
@@ -830,7 +1001,7 @@ def load_mysql_data(selected_tables):
         return {}
 
 def scrape_website_simple(url, max_pages=5):
-    """간단한 웹사이트 크롤링 - 개선된 버전"""
+    """간단한 웹사이트 크롤링"""
     try:
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
@@ -844,9 +1015,8 @@ def scrape_website_simple(url, max_pages=5):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         
-        successfully_scraped = 0  # 실제로 스크래핑된 페이지 수
-        
-        while urls_to_visit and successfully_scraped < max_pages:
+        page_count = 0
+        while urls_to_visit and page_count < max_pages:
             current_url = urls_to_visit.pop(0)
             
             if current_url in visited_urls:
@@ -857,6 +1027,7 @@ def scrape_website_simple(url, max_pages=5):
                 response.raise_for_status()
                 
                 visited_urls.add(current_url)
+                page_count += 1
                 
                 soup = BeautifulSoup(response.content, "html.parser")
                 
@@ -868,33 +1039,27 @@ def scrape_website_simple(url, max_pages=5):
                 lines = [line.strip() for line in page_text.split('\n') if line.strip()]
                 cleaned_text = '\n'.join(lines)
                 
-                # 콘텐츠가 있으면 추가 (길이 제한 완화)
-                if len(cleaned_text) > 50:  # 50자로 기준 낮춤
-                    page_title = soup.title.string.strip() if soup.title and soup.title.string else f'페이지 {successfully_scraped + 1}'
+                if len(cleaned_text) > 200:
+                    page_title = soup.title.string.strip() if soup.title and soup.title.string else 'No Title'
                     texts.append({
                         'content': cleaned_text,
                         'url': current_url,
                         'title': page_title
                     })
-                    successfully_scraped += 1
                 
-                # 더 많은 링크 찾기 (제한 완화)
+                # 새로운 링크 찾기 (같은 도메인만)
                 base_domain = urlparse(url).netloc
+                if page_count < max_pages:
+                    for link in soup.find_all("a", href=True)[:10]:
+                        absolute_link = urljoin(current_url, link['href'])
+                        parsed_link = urlparse(absolute_link)
+                        
+                        if (parsed_link.netloc == base_domain and 
+                            absolute_link not in visited_urls and 
+                            absolute_link not in urls_to_visit):
+                            urls_to_visit.append(absolute_link)
                 
-                # 링크 탐색을 더 적극적으로
-                for link in soup.find_all("a", href=True)[:20]:  # 20개로 증가
-                    absolute_link = urljoin(current_url, link['href'])
-                    parsed_link = urlparse(absolute_link)
-                    
-                    # 조건 완화: 같은 도메인 + 기본적인 필터링
-                    if (parsed_link.netloc == base_domain and 
-                        absolute_link not in visited_urls and 
-                        absolute_link not in urls_to_visit and
-                        not any(x in absolute_link.lower() for x in ['#', 'javascript:', 'mailto:', 'tel:']) and
-                        len(urls_to_visit) < 50):  # 대기 큐 크기 제한
-                        urls_to_visit.append(absolute_link)
-                
-                time.sleep(0.5)  # 지연시간 단축 (1초 → 0.5초)
+                time.sleep(1)  # 지연시간
                 
             except Exception as e:
                 logger.error(f"페이지 크롤링 오류 {current_url}: {e}")
@@ -1282,8 +1447,8 @@ def create_rag_context():
     return context_text
 
 # AI 분석 함수
-def get_ai_response(prompt, model_name, system_prompt=""):
-    """AI 모델로부터 응답을 받는 함수"""
+def get_ai_response(prompt, model_name, system_prompt="", enable_thinking=False, thinking_budget=4000):
+    """AI 모델로부터 응답을 받는 함수 (reasoning 과정 표시 지원)"""
     try:
         if model_name.startswith('claude'):
             client = ChatAnthropic(
@@ -1292,137 +1457,223 @@ def get_ai_response(prompt, model_name, system_prompt=""):
                 temperature=0.7, 
                 max_tokens=8192
             )
-            response = client.invoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ])
-            return response.content if hasattr(response, 'content') else str(response)
-        else:
-            openai_key = os.getenv('OPENAI_API_KEY')
-            if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
-                raise ValueError("OpenAI API 키가 올바르지 않습니다.")
             
-            client = OpenAI(api_key=openai_key)
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
+            # Reasoning 모델인지 확인 (Claude 4, 3.7, 3.5 sonnet v2)
+            is_reasoning_model = (
+                model_name.startswith('claude-opus-4') or 
+                model_name.startswith('claude-sonnet-4') or 
+                model_name.startswith('claude-3-7') or
+                model_name == 'claude-3-5-sonnet-latest'
+            )
+            
+            if is_reasoning_model and enable_thinking:
+                # Extended Thinking 사용
+                import anthropic
+                direct_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+                
+                response = direct_client.messages.create(
+                    model=model_name,
+                    max_tokens=8192,
+                    thinking={
+                        "type": "enabled",
+                        "budget_tokens": thinking_budget
+                    },
+                    messages=[
+                        {"role": "system", "content": system_prompt} if system_prompt else {},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                
+                # thinking과 text 블록 분리
+                thinking_content = ""
+                final_content = ""
+                
+                for block in response.content:
+                    if hasattr(block, 'type'):
+                        if block.type == "thinking":
+                            thinking_content = block.thinking
+                        elif block.type == "text":
+                            final_content = block.text
+                        elif block.type == "redacted_thinking":
+                            thinking_content += "\n[일부 사고 과정이 보안상 암호화되었습니다]"
+                
+                return {
+                    "content": final_content,
+                    "thinking": thinking_content,
+                    "has_thinking": True
+                }
+            else:
+                # 일반 모드
+                response = client.invoke([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
-                ],
-                max_tokens=8192,
-                temperature=0.7
-            )
-            return response.choices[0].message.content
+                ])
+                content = response.content if hasattr(response, 'content') else str(response)
+                return {
+                    "content": content,
+                    "thinking": "",
+                    "has_thinking": False
+                }
+                
+        else:
+            # OpenAI 모델들
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if not openai_key:
+                st.error("❌ OpenAI API 키가 설정되지 않았습니다!")
+                return {
+                    "content": "OpenAI API 키가 필요합니다.",
+                    "thinking": "",
+                    "has_thinking": False
+                }
+            
+            from openai import OpenAI
+            openai_client = OpenAI(api_key=openai_key)
+            
+            # o1 reasoning 모델인지 확인
+            is_o1_model = model_name.startswith('o1')
+            
+            if is_o1_model:
+                # o1 모델은 system message 지원하지 않음
+                response = openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "user", "content": f"{system_prompt}\n\n{prompt}" if system_prompt else prompt}
+                    ],
+                    max_completion_tokens=8192
+                )
+                
+                content = response.choices[0].message.content
+                
+                # o1 모델의 경우 reasoning 정보는 현재 API로 직접 접근 불가
+                # 하지만 응답 자체에 reasoning이 포함되어 있을 수 있음
+                return {
+                    "content": content,
+                    "thinking": "🧠 이 모델은 내부적으로 복잡한 reasoning 과정을 거쳐 답변을 생성했습니다.",
+                    "has_thinking": True
+                }
+            else:
+                # 일반 OpenAI 모델
+                response = openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=8192
+                )
+                
+                content = response.choices[0].message.content
+                return {
+                    "content": content,
+                    "thinking": "",
+                    "has_thinking": False
+                }
+            
     except Exception as e:
-        st.error(f"AI 응답 중 오류: {str(e)}")
-        return None
+        st.error(f"❌ AI 응답 생성 중 오류가 발생했습니다: {str(e)}")
+        return {
+            "content": f"오류가 발생했습니다: {str(e)}",
+            "thinking": "",
+            "has_thinking": False
+        }
 
-# C-Level 페르소나별 분석 단계 정의
-PERSONA_ANALYSIS_STAGES = {
-    "CTO": [
-        {"progress": 15, "message": "기술 요구사항 분석 중..."},
-        {"progress": 30, "message": "시스템 아키텍처 검토 중..."},
-        {"progress": 45, "message": "기술 트렌드 조사 중..."},
-        {"progress": 60, "message": "구현 가능성 평가 중..."},
-        {"progress": 75, "message": "보안 및 확장성 검토 중..."},
-        {"progress": 90, "message": "기술 솔루션 수립 중..."},
-        {"progress": 100, "message": "기술 분석 완료!"}
-    ],
-    "CSO_Strategy": [
-        {"progress": 12, "message": "시장 환경 분석 중..."},
-        {"progress": 28, "message": "경쟁사 현황 조사 중..."},
-        {"progress": 42, "message": "성장 기회 탐색 중..."},
-        {"progress": 58, "message": "전략적 위험 평가 중..."},
-        {"progress": 72, "message": "사업 모델 검토 중..."},
-        {"progress": 88, "message": "전략 방향 수립 중..."},
-        {"progress": 100, "message": "전략 분석 완료!"}
-    ],
-    "CMO": [
-        {"progress": 18, "message": "고객 니즈 분석 중..."},
-        {"progress": 32, "message": "브랜드 포지셔닝 검토 중..."},
-        {"progress": 48, "message": "마케팅 채널 조사 중..."},
-        {"progress": 62, "message": "고객 경험 설계 중..."},
-        {"progress": 78, "message": "캠페인 전략 수립 중..."},
-        {"progress": 92, "message": "마케팅 플랜 완성 중..."},
-        {"progress": 100, "message": "마케팅 분석 완료!"}
-    ],
-    "CFO": [
-        {"progress": 10, "message": "재무 데이터 수집 중..."},
-        {"progress": 25, "message": "투자 수익률 계산 중..."},
-        {"progress": 40, "message": "리스크 요인 분석 중..."},
-        {"progress": 55, "message": "비용 구조 검토 중..."},
-        {"progress": 70, "message": "수익성 모델링 중..."},
-        {"progress": 85, "message": "재무 전략 수립 중..."},
-        {"progress": 100, "message": "재무 분석 완료!"}
-    ],
-    "CSO_Sales": [
-        {"progress": 16, "message": "시장 규모 조사 중..."},
-        {"progress": 34, "message": "고객 세그먼트 분석 중..."},
-        {"progress": 50, "message": "영업 채널 평가 중..."},
-        {"progress": 66, "message": "파트너십 기회 탐색 중..."},
-        {"progress": 80, "message": "영업 전략 설계 중..."},
-        {"progress": 94, "message": "실행 계획 수립 중..."},
-        {"progress": 100, "message": "영업 분석 완료!"}
-    ],
-    "CIO": [
-        {"progress": 14, "message": "시스템 현황 분석 중..."},
-        {"progress": 29, "message": "데이터 구조 검토 중..."},
-        {"progress": 44, "message": "보안 요구사항 평가 중..."},
-        {"progress": 59, "message": "IT 거버넌스 설계 중..."},
-        {"progress": 74, "message": "인프라 최적화 계획 중..."},
-        {"progress": 89, "message": "정보전략 수립 중..."},
-        {"progress": 100, "message": "정보시스템 분석 완료!"}
-    ]
-}
+def display_reasoning_process(thinking_content, model_name):
+    """Reasoning 과정을 UI에 표시하는 함수"""
+    if not thinking_content:
+        return
+    
+    with st.expander("🧠 AI가 어떻게 생각했는지 살펴보세요", expanded=False):
+        st.markdown("### 💭 AI가 어떻게 생각했는지 살펴보세요")
+        
+        # 모델별 설명
+        if model_name.startswith('claude-opus-4'):
+            st.info("🔥 **Claude 4 Opus**: 최고 수준의 reasoning 과정을 보여줍니다.")
+        elif model_name.startswith('claude-sonnet-4'):
+            st.info("🧠 **Claude 4 Sonnet**: 고급 reasoning 과정을 단계별로 보여줍니다.")
+        elif model_name.startswith('claude-3-7'):
+            st.info("✨ **Claude 3.7 Sonnet**: Extended Thinking으로 심층 분석 과정을 보여줍니다.")
+        elif model_name.startswith('o1'):
+            st.info("🤖 **OpenAI o1**: 내부 reasoning 과정을 거쳐 생성된 답변입니다.")
+        
+        # 사고 과정 표시
+        st.markdown("**🔍 사고 과정:**")
+        
+        # 긴 thinking 내용을 단계별로 나누어 표시
+        if len(thinking_content) > 1000:
+            # 긴 내용의 경우 접을 수 있게 만들기
+            with st.expander("전체 사고 과정 보기", expanded=False):
+                st.text_area(
+                    "상세한 사고 과정",
+                    value=thinking_content,
+                    height=300,
+                    disabled=True
+                )
+            
+            # 요약된 첫 부분만 미리보기로 표시
+            preview = thinking_content[:500] + "..." if len(thinking_content) > 500 else thinking_content
+            st.markdown(f"```\n{preview}\n```")
+        else:
+            st.markdown(f"```\n{thinking_content}\n```")
+        
+        # 유용한 팁 표시
+        st.markdown("---")
+        st.markdown("""
+        **💡 Reasoning 과정을 보는 이유:**
+        - 🎯 AI의 논리적 사고 과정 이해
+        - 🔍 답변의 신뢰성 검증
+        - 📚 AI의 문제 해결 방식 학습
+        - 🐛 잠재적 오류나 편향 발견
+        """)
 
-# AI 분석 함수 (기본 버전 - RAG 없음)
-def analyze_with_persona_simple(user_query, persona_key, persona_info, custom_prompt="", model_name="claude-3-7-sonnet-latest"):
-    """특정 페르소나로 분석 수행 (RAG 없는 기본 버전)"""
-    # 기본 프롬프트 구성
-    analysis_prompt = f"""
-다음 주제/질문에 대해 {persona_info['role']} 관점에서 전문적으로 분석해주세요:
+def analyze_with_persona_simple_with_reasoning(user_query, persona_key, persona_info, custom_prompt="", model_name="claude-3-7-sonnet-latest", enable_thinking=True):
+    """Reasoning 과정을 포함한 페르소나 분석 함수"""
+    try:
+        system_prompt = f"""
+{persona_info['role']}로서 다음 질문에 대해 분석해주세요.
 
-【주제/질문】
-{user_query}
+전문성: {persona_info['expertise']}
+관점: {persona_info['perspective']}
 
-【분석 요구사항】
-- {persona_info['perspective']}
-- 구체적이고 실행 가능한 제안 포함
-- 본인의 전문 분야에 특화된 인사이트 제공
-- 다른 부서와의 협업 방안 고려
+{custom_prompt}
 
+분석 시 다음 구조로 응답해주세요:
+1. 핵심 이슈 파악
+2. 전문 분야 관점에서의 분석
+3. 리스크와 기회 요소
+4. 구체적인 실행 방안
+5. 예상 결과 및 KPI
 """
-    
-    # 커스텀 프롬프트가 있다면 추가
-    if custom_prompt and custom_prompt.strip():
-        analysis_prompt += f"""
-【추가 분석 요청사항】
-{custom_prompt.strip()}
-
-"""
-    
-    analysis_prompt += """
-【응답 형식】
-## 핵심 분석
-(2-3줄로 핵심 포인트 요약)
-
-## 상세 분석
-(전문 분야 관점에서 상세한 분석)
-
-## 실행 제안
-(구체적이고 실행 가능한 액션 아이템들)
-
-## 다른 부서 협업 방안
-(다른 C-level과의 협업이 필요한 부분)
-
-## 리스크 및 고려사항
-(주의해야 할 점들)
-"""
-    
-    return get_ai_response(analysis_prompt, model_name, persona_info['system_prompt'])
-
-    
-    return get_ai_response(analysis_prompt, model_name, persona_info['system_prompt'])
+        
+        # Reasoning이 가능한 모델인지 확인
+        is_reasoning_capable = (
+            model_name.startswith('claude-opus-4') or 
+            model_name.startswith('claude-sonnet-4') or 
+            model_name.startswith('claude-3-7') or
+            model_name.startswith('o1') or
+            model_name == 'claude-3-5-sonnet-latest'
+        )
+        
+        if is_reasoning_capable and enable_thinking:
+            response = get_ai_response(
+                user_query, 
+                model_name, 
+                system_prompt, 
+                enable_thinking=True,
+                thinking_budget=6000  # 분석용으로 조금 더 큰 budget
+            )
+        else:
+            response = get_ai_response(user_query, model_name, system_prompt)
+        
+        return response
+        
+    except Exception as e:
+        st.error(f"❌ {persona_key} 분석 중 오류 발생: {str(e)}")
+        return {
+            "content": f"분석 중 오류가 발생했습니다: {str(e)}",
+            "thinking": "",
+            "has_thinking": False
+        }
 
 def analyze_persona_concurrent_rag(args):
     """RAG 기능이 포함된 ThreadPoolExecutor 래퍼 함수"""
@@ -1433,6 +1684,10 @@ def analyze_persona_concurrent_rag(args):
             rag_context = create_rag_context()
         except Exception as e:
             rag_context = ""
+        
+        # Reasoning 설정 확인 (세션 상태에서)
+        enable_thinking = getattr(st.session_state, 'enable_reasoning_display', False)
+        thinking_budget = getattr(st.session_state, 'thinking_budget', 4000)
         
         # RAG 컨텍스트가 있으면 더 풍부한 분석
         analysis_prompt = f"""
@@ -1573,9 +1828,15 @@ CEO로서 이들의 분석을 종합하여 최종 의사결정을 위한 통합 
     for persona_key, analysis in persona_analyses.items():
         if analysis and analysis.get('result'):
             persona_info = PERSONAS[persona_key]
+            # 분석 결과가 딕셔너리인 경우 content만 추출
+            if isinstance(analysis['result'], dict):
+                analysis_content = analysis['result'].get('content', str(analysis['result']))
+            else:
+                analysis_content = analysis['result']
+            
             synthesis_prompt += f"""
 --- {persona_info['emoji']} {persona_info['name']} 분석 ---
-{analysis['result']}
+{analysis_content}
 
 """
     
@@ -1607,7 +1868,29 @@ CEO로서 이들의 분석을 종합하여 최종 의사결정을 위한 통합 
 (조직에 전달할 핵심 메시지)
 """
     
-    return get_ai_response(synthesis_prompt, model_name, CEO_PERSONA['system_prompt'])
+    # Reasoning 설정 확인
+    enable_thinking = getattr(st.session_state, 'enable_reasoning_display', False)
+    thinking_budget = getattr(st.session_state, 'thinking_budget', 4000)
+    
+    # Reasoning 지원 여부 확인
+    is_reasoning_capable = (
+        model_name.startswith('claude-opus-4') or 
+        model_name.startswith('claude-sonnet-4') or 
+        model_name.startswith('claude-3-7') or
+        model_name.startswith('o1') or
+        model_name == 'claude-3-5-sonnet-latest'
+    )
+    
+    if is_reasoning_capable and enable_thinking:
+        return get_ai_response(
+            synthesis_prompt, 
+            model_name, 
+            CEO_PERSONA['system_prompt'],
+            enable_thinking=True,
+            thinking_budget=thinking_budget
+        )
+    else:
+        return get_ai_response(synthesis_prompt, model_name, CEO_PERSONA['system_prompt'])
 
 def synthesize_ceo_analysis_rag(user_query, persona_analyses, model_name="claude-3-7-sonnet-latest"):
     """RAG 컨텍스트를 포함한 CEO 종합 분석"""
@@ -1623,8 +1906,8 @@ def synthesize_ceo_analysis_rag(user_query, persona_analyses, model_name="claude
 {user_query}
 
 """
-
-        # RAG 컨텍스트 추가
+        
+        # RAG 컨텍스트 추가 (있는 경우)
         if rag_context:
             synthesis_prompt += f"""
 【실제 회사 데이터 기반 분석】
@@ -1633,163 +1916,161 @@ def synthesize_ceo_analysis_rag(user_query, persona_analyses, model_name="claude
 위 실제 데이터를 반드시 경영 의사결정에 반영하고, 데이터 기반 인사이트를 도출하여 주주가치 극대화 방안을 제시해주세요.
 
 """
-
-        synthesis_prompt += """
+        
+        synthesis_prompt += f"""
 【각 C-Level 임원진의 전문 분석 결과】
 """
         
         for persona_key, analysis in persona_analyses.items():
             if analysis and analysis.get('result'):
                 persona_info = PERSONAS[persona_key]
+                # 분석 결과가 딕셔너리인 경우 content만 추출
+                if isinstance(analysis['result'], dict):
+                    analysis_content = analysis['result'].get('content', str(analysis['result']))
+                else:
+                    analysis_content = analysis['result']
+                
                 synthesis_prompt += f"""
-==================== {persona_info['emoji']} {persona_info['name']} 전문 분석 ====================
-{analysis['result']}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### {persona_info['emoji']} {persona_info['name']} - {persona_info['role']}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{analysis_content}
 
 """
         
         synthesis_prompt += f"""
-【세계 최고 수준의 CEO 통합 의사결정 보고서 요구사항】
-- 각 C-Level 임원진의 전문 분석을 체계적으로 통합하고 검토
-- {'실제 회사 데이터를 적극 활용한 데이터 기반 의사결정' if rag_context else '업계 최고 수준의 경영 판단 기준 적용'}
-- 전사적 관점에서의 전략적 우선순위 설정과 자원 배분 최적화
-- 이해관계자(주주, 임직원, 고객, 사회)를 고려한 균형 잡힌 경영 방향 제시
-- 단기 실행력과 장기 지속가능성을 모두 고려한 통합 실행 계획
-- 경영 리스크와 기회 요인의 종합적 평가 및 대응 전략
-- 명확하고 결단력 있는 CEO 의사결정과 실행 지시사항
+【CEO 최고 수준 통합 분석 요구사항】
+- 각 임원진의 전문 분석을 CEO 관점에서 전략적으로 통합
+- 경영진 수준의 고도화된 의사결정 로직 적용
+- 이사회와 주주에게 보고할 수준의 완성도 높은 분석
+- 전사적 관점에서의 우선순위와 자원 배분 의사결정
+- 리스크와 기회의 정교한 균형 분석
+- 단기/중기/장기적 관점의 통합적 전략 수립
+- 글로벌 경영 환경을 고려한 전략적 인사이트
+{'- 실제 데이터를 바탕으로 한 정량적 근거 제시' if rag_context else '- 업계 벤치마킹과 글로벌 트렌드 반영'}
+- 구체적이고 실행 가능한 액션 플랜과 담당 조직 명시
+- 성과 지표와 모니터링 체계의 명확한 설계
 
-【최고 수준의 CEO 경영진 보고서 형식 (반드시 준수)】
+【CEO 레벨 최종 의사결정 보고서 형식】
 
-## 👑 CEO 핵심 의사결정 및 경영 방향
-### 최종 경영 결정사항
-(CEO로서의 명확하고 결단력 있는 의사결정과 핵심 추진 방향)
-### 전략적 우선순위 및 자원 배분
-(전사 차원의 우선순위 설정과 인적/재무적 자원 배분 원칙)
+## 🎯 CEO 핵심 의사결정 및 전략 방향
+### 경영진 결정사항
+(CEO로서의 최종 의사결정과 전략적 방향성)
 
-## 📈 데이터 기반 경영 현황 진단
-{'### 실제 데이터에서 도출한 핵심 경영 인사이트' if rag_context else '### 시장 환경 및 경쟁 포지션 분석'}
-{('- 회사 데이터 분석을 통한 주요 발견사항과 경영 시사점' if rag_context else '- 업계 동향과 경쟁 환경 분석을 통한 포지셔닝 전략')}
-### 현재 경영 성과 및 과제 진단
-- 각 부문별 성과 평가와 개선 필요 영역 식별
-- 조직 역량과 경쟁 우위 요소 분석
+### 핵심 성공요인 (Critical Success Factors)
+(이 의사결정의 성공을 위한 핵심 요소들)
 
-## 🎯 임원진 분석 통합 및 전략적 시너지
-### CTO 기술전략과 디지털 전환 방향
-- 기술 투자 우선순위와 디지털 혁신 로드맵
-### CSO 전략기획과 사업 포트폴리오 최적화
-- 핵심 사업 집중 전략과 신규 성장 동력 확보
-### CMO 마케팅전략과 고객가치 창출
-- 브랜드 강화 전략과 고객 경험 혁신 방안
-### CFO 재무전략과 주주가치 극대화
-- 재무 건전성 강화와 수익성 개선 방안
-### CSO 영업전략과 시장 확대
-- 매출 성장 전략과 신시장 진출 방안
-### CIO 정보전략과 데이터 활용 고도화
-- IT 인프라 최적화와 데이터 기반 의사결정 체계 구축
+## 📊 C-Level 임원진 분석 통합 및 시너지
+### 부서간 협업 시너지 창출
+(각 임원진 제안사항의 통합적 활용 방안)
 
-## 🚀 통합 실행 전략 및 로드맵
-### Phase 1: 즉시 실행 과제 (1-3개월)
-- 긴급성과 중요성이 높은 최우선 과제
-- 각 부문별 즉시 실행 지시사항과 책임자 지정
-### Phase 2: 단기 전략 과제 (3-12개월)
-- 성과 창출을 위한 핵심 전략 과제
-- 부문간 협업 프로젝트와 시너지 창출 방안
-### Phase 3: 중장기 혁신 과제 (1-3년)
-- 지속 가능한 성장을 위한 혁신 과제
-- 조직 역량 강화와 미래 경쟁력 확보 방안
+### 전문 영역별 핵심 인사이트 종합
+- **💻 기술 전략** (CTO 분석 핵심)
+- **🎯 사업 전략** (CSO 전략 분석 핵심)  
+- **📢 마케팅 전략** (CMO 분석 핵심)
+- **💰 재무 전략** (CFO 분석 핵심)
+- **🤝 영업 전략** (CSO 영업 분석 핵심)
+- **🔐 정보 전략** (CIO 분석 핵심)
 
-## 💰 투자 우선순위 및 예산 배분 전략
-### 전략적 투자 우선순위
-- 성장 동력 확보를 위한 핵심 투자 영역
-- 투자별 기대 효과와 ROI 분석
-### 예산 배분 및 자원 최적화
-- 부문별 예산 배분 원칙과 성과 연동 체계
-- 비용 최적화와 효율성 개선 방안
+## 🚀 전사 통합 실행 계획 (Corporate Action Plan)
+### Phase 1: 즉시 실행 (1-3개월)
+- 단기 액션 아이템과 Quick Win 전략
+- 담당 임원과 실행 조직
+- 필요 예산과 자원
 
-## ⚖️ 통합 리스크 관리 및 기회 활용 전략
-### 전사 차원의 주요 리스크 요인
-- 각 부문별 리스크를 통합한 전사 리스크 매트릭스
-- 리스크별 대응 우선순위와 완화 전략
-### 전략적 기회 포착 및 활용 방안
-- 시장 기회와 내부 역량을 연계한 성장 기회 식별
-- 기회 활용을 위한 조직 역량 강화 방안
+### Phase 2: 중기 전략 (3-12개월)  
+- 중기 전략적 이니셔티브
+- 부서간 협업 프로젝트
+- 성과 마일스톤
 
-## 📊 통합 성과 관리 및 모니터링 체계
-### 전사 KPI 및 성과 지표 체계
-- 균형성과표(BSC) 기반 통합 성과 관리 체계
-- 부문별 성과 지표와 전사 목표 연계 방안
-### CEO 직속 모니터링 및 보고 체계
-- 월별/분기별 핵심 지표 모니터링 체계
-- 이슈 발생 시 신속 대응을 위한 에스컬레이션 체계
+### Phase 3: 장기 비전 (1-3년)
+- 장기적 경쟁 우위 구축 방안
+- 조직 역량 강화 계획
+- 지속 성장 전략
 
-## 🌟 조직 문화 혁신 및 리더십 전략
-### 고성과 조직 문화 구축
-- 혁신적이고 협력적인 조직 문화 조성 방안
-- 임직원 몰입도 제고와 인재 유지 전략
-### 차세대 리더십 개발
-- 미래 리더 육성과 승계 계획
-- 조직 학습 능력 강화 방안
+## 📈 경영 성과 지표 및 거버넌스 체계
+### KPI 및 성과 측정 체계
+(정량적 성과 지표와 목표치)
 
-## 🌍 이해관계자 커뮤니케이션 및 ESG 경영
-### 주주 및 투자자 관계 관리
-- 주주가치 제고를 위한 커뮤니케이션 전략
-- IR 활동 강화와 투명 경영 실천 방안
-### ESG 경영 및 지속가능성 전략
-- 환경, 사회, 거버넌스 차원의 책임 경영 실천
-- 지속가능한 성장을 위한 ESG 통합 전략
+### 의사결정 거버넌스
+(실행 과정의 의사결정 체계와 보고 라인)
 
-## 🎯 CEO 최종 실행 지시사항
-### 각 C-Level 임원진에 대한 구체적 지시사항
-- 임원별 핵심 미션과 성과 목표 설정
-- 상호 협업 과제와 책임 분담 명확화
-### 전사 차원의 변화 관리 방향
-- 조직 변화 추진 체계와 커뮤니케이션 계획
-- 구성원 참여 유도와 변화 저항 최소화 방안
+### 리스크 관리 체계
+(전사적 리스크 관리와 모니터링 시스템)
 
-{'## 📊 종합 분석 기반 데이터' if rag_context else ''}
-{'### CEO 의사결정에 활용된 RAG 데이터 소스' if rag_context else ''}
-{'''이 CEO 최종 의사결정 보고서는 다음 실제 데이터를 종합 분석하여 작성되었습니다:''' if rag_context else ''}
-{'''
-**🗄️ MySQL 데이터베이스 분석**: 회사의 실시간 운영 데이터와 성과 지표를 기반으로 현황 진단
-**🌐 웹사이트 크롤링 정보**: 시장 동향, 경쟁사 분석, 업계 트렌드를 반영한 전략 수립  
-**📄 업로드 문서 검토**: 기존 계획서, 보고서, 정책 문서를 참조한 연속성 있는 의사결정
+## ⚖️ 리스크 vs 기회 매트릭스 및 완화 전략
+### 전략적 리스크 분석
+- 높은 영향도 리스크와 대응 방안
+- 리스크 발생 시나리오와 비상 계획
 
-위 다양한 데이터 소스를 C-Level 임원진들이 각자의 전문 영역에서 분석한 결과를 CEO 관점에서 통합하여 
-데이터 기반의 객관적이고 실행 가능한 최종 의사결정을 도출했습니다.''' if rag_context else ''}
+### 기회 포착 전략
+- 핵심 기회 요인과 활용 방안
+- 경쟁 우위 창출 기회
 
-## 📚 참고 자료 및 근거 (References)
-### 실제 분석에 활용된 구체적 데이터
-{'''**반드시 다음 형식으로 실제 참고한 구체적 내용을 명시해주세요:**
+## 💰 투자 및 자원 배분 전략
+### 전략적 투자 계획
+- 우선순위별 투자 배분
+- ROI 및 회수 기간 분석
 
-**🗄️ MySQL 데이터베이스 참고 내용**
-- [테이블명]: 분석에 사용된 구체적 데이터 내용과 수치
-- [테이블명]: 의사결정 근거로 활용된 특정 데이터 포인트
-- 예: meeting_records 테이블에서 최근 3개월 회의 빈도 증가 추세 (월 평균 15회 → 23회)
+### 조직 및 인적 자원 계획
+- 핵심 인재 확보 및 육성 계획
+- 조직 구조 최적화 방안
 
-**🌐 웹사이트 참고 내용**  
-- [사이트명/페이지]: 전략 수립에 영향을 준 구체적 정보
-- [URL]: 시장 분석에 활용된 특정 데이터나 트렌드
-- 예: TechCrunch 기사에서 "AI 시장 30% 성장 전망" 정보 활용
+## 🔮 미래 전망 및 지속 가능성
+### 3-5년 장기 비전
+(장기적 시장 변화와 대응 전략)
 
-**📄 문서 참고 내용**
-- [파일명]: 의사결정에 반영된 구체적 내용과 페이지/섹션
-- [문서명]: 전략 연속성을 위해 참조한 기존 계획이나 정책
-- 예: 2024년 사업계획서 p.15 "디지털 전환 투자 확대" 방침 반영
+### 지속 가능한 성장 전략
+(ESG 경영과 지속 성장 동력)
 
-위와 같이 실제로 분석과 의사결정에 활용한 구체적인 데이터 내용을 명시하여 
-보고서의 신뢰성과 추적가능성을 확보해주세요.''' if rag_context else ''}
+## 💡 CEO 메시지 및 조직 커뮤니케이션
+### 전 임직원 대상 CEO 메시지
+(조직 전체에 전달할 핵심 메시지와 비전)
 
-반드시 위 형식을 준수하여 세계 최고 수준의 CEO 경영진 보고서를 작성해주세요.
-모든 의사결정은 구체적이고 실행 가능하며, 주주가치 극대화를 지향해야 합니다."""
+### 이해관계자 커뮤니케이션 전략
+(주주, 고객, 파트너 대상 커뮤니케이션 방안)
+
+{'## 📋 데이터 기반 의사결정 근거' if rag_context else ''}
+{'### 활용된 실제 데이터 소스' if rag_context else ''}
+{'''이 경영진 의사결정은 다음 실제 데이터를 종합적으로 분석하여 수립되었습니다:
+**MySQL 데이터베이스**: 실시간 운영 데이터 및 성과 지표 분석
+**외부 시장 정보**: 최신 시장 동향 및 경쟁 환경 분석  
+**내부 문서**: 기존 전략 계획 및 보고서 검토
+모든 의사결정은 정량적 데이터와 정성적 인사이트를 균형있게 고려하여 수립되었습니다.''' if rag_context else ''}
+
+위의 구조를 반드시 준수하여 각 섹션을 CEO 수준의 전략적 깊이로 작성해주세요.
+모든 제안은 실행 가능하고 측정 가능한 수준으로 구체화하되, 경영진 수준의 고도화된 관점을 유지해주세요."""
         
-        result = get_ai_response(synthesis_prompt, model_name, CEO_PERSONA['system_prompt'])
+        # Reasoning 설정 확인
+        enable_thinking = getattr(st.session_state, 'enable_reasoning_display', False)
+        thinking_budget = getattr(st.session_state, 'thinking_budget', 4000)
         
-        if result is None:
-            return f"AI 응답이 None입니다. API 키나 모델 설정을 확인해주세요."
-        return result
+        # Reasoning 지원 여부 확인
+        is_reasoning_capable = (
+            model_name.startswith('claude-opus-4') or 
+            model_name.startswith('claude-sonnet-4') or 
+            model_name.startswith('claude-3-7') or
+            model_name.startswith('o1') or
+            model_name == 'claude-3-5-sonnet-latest'
+        )
+        
+        if is_reasoning_capable and enable_thinking:
+            ceo_result = get_ai_response(
+                synthesis_prompt, 
+                model_name, 
+                CEO_PERSONA['system_prompt'],
+                enable_thinking=True,
+                thinking_budget=thinking_budget
+            )
+        else:
+            ceo_result = get_ai_response(synthesis_prompt, model_name, CEO_PERSONA['system_prompt'])
+        
+        return ceo_result
+        
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        return f"CEO 종합 분석 중 오류 발생: {str(e)}\n상세: {error_details}"
+        st.error(f"CEO 종합 분석 중 오류 발생: {str(e)}")
+        return None
 
 def run_concurrent_analysis_with_progress_rag(user_query, persona_prompts, persona_status, persona_progress, model_name="claude-3-7-sonnet-latest"):
     """RAG 기능이 포함된 동시 분석 실행"""
@@ -1915,13 +2196,29 @@ available_models = []
 has_anthropic_key = os.environ.get('ANTHROPIC_API_KEY') is not None
 if has_anthropic_key:
     available_models.extend([
-        'claude-3-7-sonnet-latest',
-        'claude-3-5-sonnet-latest',
-        'claude-3-5-haiku-latest',
+        # Claude 4 시리즈 (최신 - 2025)
+        'claude-opus-4-20250514',      # Claude 4 Opus - 최고 성능
+        'claude-sonnet-4-20250514',    # Claude 4 Sonnet - 고성능 reasoning
+        
+        # Claude 3.7 시리즈 (Extended Thinking 지원)
+        'claude-3-7-sonnet-latest',    # Claude 3.7 Sonnet - Extended Thinking
+        
+        # Claude 3.5 시리즈 (기존)
+        'claude-3-5-sonnet-latest',    # Claude 3.5 Sonnet v2
+        'claude-3-5-haiku-latest',     # Claude 3.5 Haiku - 빠른 응답
     ])
 has_openai_key = os.environ.get('OPENAI_API_KEY') is not None
 if has_openai_key:
-    available_models.extend(['gpt-4o', 'gpt-4o-mini'])
+    available_models.extend([
+        # 일반 GPT 모델
+        'gpt-4o',                      # GPT-4 Omni
+        'gpt-4o-mini',                 # GPT-4 Omni Mini
+        
+        # Reasoning 모델 (o1 시리즈)
+        'o1-preview',                  # OpenAI o1-preview (Reasoning)
+        'o1-mini',                     # OpenAI o1-mini (Reasoning)
+        'o1',                          # OpenAI o1 (Full Reasoning)
+    ])
 
 if not available_models:
     st.sidebar.error("API 키가 설정되지 않았습니다.")
@@ -1931,7 +2228,15 @@ selected_model = st.sidebar.selectbox(
     '🧠 AI 모델 선택',
     options=available_models,
     index=available_models.index(st.session_state.selected_model) if st.session_state.selected_model in available_models else 0,
-    help='Claude는 ANTHROPIC_API_KEY, OpenAI는 OPENAI_API_KEY 필요'
+    help="""
+🔹 Claude 4: 최신 모델 (Opus: 최고성능, Sonnet: 고성능 reasoning)
+🔹 Claude 3.7: Extended Thinking 지원 (심층 사고 과정)
+🔹 Claude 3.5: 빠른 성능 (Sonnet: 균형, Haiku: 속도)
+🔹 OpenAI o1: Reasoning 모델 (o1: 완전버전, mini: 경량버전)
+🔹 GPT-4o: 일반 멀티모달 모델 (o: 표준, mini: 경량)
+
+💡 Reasoning 모델은 복잡한 추론과 단계별 사고에 특화되어 있습니다.
+    """
 )
 
 if selected_model != st.session_state.selected_model:
@@ -2124,6 +2429,46 @@ for persona_key, persona_info in PERSONAS.items():
             help=f"{persona_info['perspective']}"
         )
 
+# Reasoning 과정 표시 설정
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧠 Reasoning 설정")
+
+# Reasoning 과정 표시 토글
+enable_reasoning_display = st.sidebar.toggle(
+    "🔍 AI 사고 과정 보기", 
+    value=False,
+    help="Reasoning 지원 모델의 사고 과정을 실시간으로 볼 수 있습니다.",
+    key="reasoning_display_toggle"
+)
+
+if enable_reasoning_display:
+    thinking_budget = st.sidebar.slider(
+        "💭 사고 예산 (토큰)",
+        min_value=1024,
+        max_value=16000,
+        value=6000,
+        step=1024,
+        help="AI가 생각하는 데 사용할 최대 토큰 수입니다. 높을수록 더 깊이 생각하지만 시간이 오래 걸립니다.",
+        key="thinking_budget_slider"
+    )
+    
+    # Reasoning 지원 모델 안내
+    st.sidebar.info("""
+    **🧠 Reasoning 지원 모델:**
+    - Claude 4 Opus/Sonnet (Extended Thinking)
+    - Claude 3.7 Sonnet (Extended Thinking)
+    - Claude 3.5 Sonnet v2
+    - OpenAI o1/o1-preview/o1-mini
+    
+    **💡 복잡한 분석일수록 Reasoning을 켜는 것을 추천합니다!**
+    """)
+else:
+    thinking_budget = 4000  # 기본값
+
+# 세션 상태에 reasoning 설정 저장
+st.session_state.enable_reasoning_display_temp = enable_reasoning_display
+st.session_state.thinking_budget_temp = thinking_budget
+
 # ==================== 메인 인터페이스 ====================
 
 st.markdown('<h1 class="main-title">🏬 Virtual AqaraLife C-Level 멀티에이전트 + RAG</h1>', unsafe_allow_html=True)
@@ -2148,8 +2493,8 @@ else:
         st.info("🔧 Virtual Company 저장용 테이블이 없습니다. 자동으로 생성합니다...")
         if create_virtual_company_tables_if_not_exists():
             st.rerun()
-    elif "Virtual Company 테이블: 4개" not in db_message:
-        # 일부 테이블만 있는 경우
+    elif "완료" not in db_message and "불완전" in db_message:
+        # v2 테이블이 불완전하거나 일부만 있는 경우만 경고
         st.warning("⚠️ Virtual Company 테이블이 불완전합니다. 누락된 테이블을 생성합니다...")
         if create_virtual_company_tables_if_not_exists():
             st.rerun()
@@ -2351,11 +2696,40 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
         # 실행 시간 측정 시작
         analysis_start_time = time.time()
         
-        # 세션 상태 초기화 및 user_query 저장
+        # 세션 상태 초기화 및 설정 저장
         st.session_state.current_analysis = {}
         st.session_state.analysis_complete = False
         st.session_state.last_user_query = user_query  # user_query 저장
         st.session_state.selected_model = selected_model  # 모델명 저장
+        
+        # Reasoning 설정 기본값 설정 (사이드바에서 정의되지 않은 경우 대비)
+        enable_reasoning_display = getattr(st.session_state, 'enable_reasoning_display_temp', False)
+        thinking_budget = getattr(st.session_state, 'thinking_budget_temp', 4000)
+        
+        # 만약 사이드바에서 정의되지 않았다면 기본값 사용
+        if 'enable_reasoning_display_temp' not in st.session_state:
+            enable_reasoning_display = False
+        if 'thinking_budget_temp' not in st.session_state:
+            thinking_budget = 4000
+        
+        # Reasoning 설정을 세션 상태에 저장
+        st.session_state.enable_reasoning_display = enable_reasoning_display
+        st.session_state.thinking_budget = thinking_budget
+        
+        # Reasoning 설정 표시
+        if enable_reasoning_display:
+            is_reasoning_capable = (
+                selected_model.startswith('claude-opus-4') or 
+                selected_model.startswith('claude-sonnet-4') or 
+                selected_model.startswith('claude-3-7') or
+                selected_model.startswith('o1') or
+                selected_model == 'claude-3-5-sonnet-latest'
+            )
+            
+            if is_reasoning_capable:
+                st.info(f"🧠 **Reasoning 모드 활성화**: AI의 사고 과정이 분석 결과와 함께 표시됩니다 (사고 예산: {thinking_budget} 토큰)")
+            else:
+                st.warning(f"⚠️ **{selected_model}**은 Reasoning을 지원하지 않습니다. 일반 분석으로 진행됩니다.")
         
         # 진행 상황 표시
         progress_container = st.container()
@@ -2689,48 +3063,33 @@ if (st.session_state.analysis_complete or st.session_state.get('analysis_saved',
         for i, source_info in enumerate(st.session_state.current_rag_sources):
             with cols[i]:
                 if source_info['type'] == 'mysql':
-                    # HTML 이스케이프 처리
-                    safe_name = str(source_info['name']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_details = str(source_info['details']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_tables = [str(table).replace('<', '&lt;').replace('>', '&gt;') for table in source_info['tables'][:3]]
-                    
                     st.markdown(f"""
                     <div style="background: linear-gradient(145deg, #e3f2fd, #ffffff); border-left: 4px solid #2196f3; border-radius: 8px; padding: 15px; margin: 5px 0;">
-                        <h4 style="margin: 0; color: #1976d2;">🗄️ {safe_name}</h4>
-                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{safe_details}</p>
+                        <h4 style="margin: 0; color: #1976d2;">🗄️ {source_info['name']}</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{source_info['details']}</p>
                         <p style="margin: 5px 0; font-size: 0.8rem; color: #888;">
-                            테이블: {', '.join(safe_tables)}
+                            테이블: {', '.join(source_info['tables'][:3])}
                             {f" 등 {len(source_info['tables'])}개" if len(source_info['tables']) > 3 else ""}
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
                 elif source_info['type'] == 'website':
-                    # HTML 이스케이프 처리
-                    safe_name = str(source_info['name']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_details = str(source_info['details']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_url_title = str(source_info['urls'][0]['title']).replace('<', '&lt;').replace('>', '&gt;') if source_info['urls'] else 'N/A'
-                    
                     st.markdown(f"""
                     <div style="background: linear-gradient(145deg, #e8f5e8, #ffffff); border-left: 4px solid #4caf50; border-radius: 8px; padding: 15px; margin: 5px 0;">
-                        <h4 style="margin: 0; color: #388e3c;">🌐 {safe_name}</h4>
-                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{safe_details}</p>
+                        <h4 style="margin: 0; color: #388e3c;">🌐 {source_info['name']}</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{source_info['details']}</p>
                         <p style="margin: 5px 0; font-size: 0.8rem; color: #888;">
-                            주요 사이트: {safe_url_title}
+                            주요 사이트: {source_info['urls'][0]['title'] if source_info['urls'] else 'N/A'}
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
                 elif source_info['type'] == 'files':
-                    # HTML 이스케이프 처리
-                    safe_name = str(source_info['name']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_details = str(source_info['details']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_files = [str(file).replace('<', '&lt;').replace('>', '&gt;') for file in source_info.get('files', [])[:2]]
-                    
                     st.markdown(f"""
                     <div style="background: linear-gradient(145deg, #fff3e0, #ffffff); border-left: 4px solid #ff9800; border-radius: 8px; padding: 15px; margin: 5px 0;">
-                        <h4 style="margin: 0; color: #f57c00;">📄 {safe_name}</h4>
-                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{safe_details}</p>
+                        <h4 style="margin: 0; color: #f57c00;">📄 {source_info['name']}</h4>
+                        <p style="margin: 5px 0; font-size: 0.9rem; color: #666;">{source_info['details']}</p>
                         <p style="margin: 5px 0; font-size: 0.8rem; color: #888;">
-                            파일: {', '.join(safe_files)}
+                            파일: {', '.join(source_info.get('files', [])[:2])}
                             {f" 등 {len(source_info.get('files', []))}개" if len(source_info.get('files', [])) > 2 else ""}
                         </p>
                     </div>
@@ -2746,7 +3105,27 @@ if (st.session_state.analysis_complete or st.session_state.get('analysis_saved',
     </div>
     """, unsafe_allow_html=True)
     
-    st.markdown(st.session_state.current_analysis['CEO']['result'])
+    # CEO 분석 결과 표시 - Reasoning 과정 지원
+    ceo_analysis_data = st.session_state.current_analysis['CEO']
+    
+    # Reasoning 과정 표시 (CEO 분석 결과가 딕셔너리인 경우)
+    if isinstance(ceo_analysis_data['result'], dict) and ceo_analysis_data['result'].get('has_thinking'):
+        # AI의 사고 과정 먼저 표시
+        display_reasoning_process(
+            ceo_analysis_data['result'].get('thinking', ''),
+            st.session_state.selected_model
+        )
+        st.markdown("---")
+        # 최종 CEO 의사결정 결과 표시
+        st.markdown("### 👑 CEO 최종 의사결정")
+        st.markdown(ceo_analysis_data['result']['content'])
+    else:
+        # 기존 방식 (문자열 결과)
+        if isinstance(ceo_analysis_data['result'], dict):
+            content = ceo_analysis_data['result'].get('content', str(ceo_analysis_data['result']))
+        else:
+            content = ceo_analysis_data['result']
+        st.markdown(content)
     
     # References 섹션 추가 - 실제 참고한 구체적 데이터 표시
     if hasattr(st.session_state, 'current_rag_sources') and st.session_state.current_rag_sources:
@@ -2758,32 +3137,25 @@ if (st.session_state.analysis_complete or st.session_state.get('analysis_saved',
                 st.markdown("### 🗄️ MySQL 데이터베이스 참고 내용")
                 for table_name, df in st.session_state.mysql_data.items():
                     with st.expander(f"📊 {table_name} 테이블 ({len(df):,}행)"):
-                        # HTML 이스케이프를 위해 컬럼명 안전하게 처리
-                        safe_columns = [str(col).replace('<', '&lt;').replace('>', '&gt;') for col in df.columns.tolist()]
-                        st.markdown(f"**컬럼**: {', '.join(safe_columns)}")
+                        st.markdown(f"**컬럼**: {', '.join(df.columns.tolist())}")
                         st.markdown("**샘플 데이터**:")
-                        
-                        # 데이터프레임의 HTML 태그를 안전하게 처리
-                        safe_df = df.head(3).copy()
-                        for col in safe_df.columns:
-                            if safe_df[col].dtype == 'object':  # 문자열 컬럼만 처리
-                                safe_df[col] = safe_df[col].astype(str).str.replace('<', '&lt;').str.replace('>', '&gt;')
-                        
-                        st.dataframe(safe_df, use_container_width=True)
+                        st.dataframe(df.head(3))
                         
             elif source['type'] == 'website' and st.session_state.website_data:
                 st.markdown("### 🌐 웹사이트 크롤링 참고 내용")
                 for i, page_data in enumerate(st.session_state.website_data[:3]):
-                    # HTML 이스케이프 처리
-                    safe_title = str(page_data['title']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_url = str(page_data['url']).replace('<', '&lt;').replace('>', '&gt;')
-                    safe_content = str(page_data['content']).replace('<', '&lt;').replace('>', '&gt;')
-                    
-                    with st.expander(f"🌐 {safe_title}"):
-                        st.markdown(f"**URL**: {safe_url}")
+                    with st.expander(f"🌐 {page_data['title']}"):
+                        st.markdown(f"**URL**: {page_data['url']}")
                         st.markdown(f"**내용 길이**: {len(page_data['content']):,}자")
                         st.markdown("**주요 내용**:")
-                        st.text(safe_content[:500] + "..." if len(safe_content) > 500 else safe_content)
+                        st.text(page_data['content'][:500] + "..." if len(page_data['content']) > 500 else page_data['content'])
+                        
+            elif source['type'] == 'files' and st.session_state.files_data:
+                st.markdown("### 📄 업로드 문서 참고 내용")
+                for file_data in st.session_state.files_data:
+                    with st.expander(f"📄 {file_data['name']} ({file_data['size']:,}자)"):
+                        st.markdown("**주요 내용**:")
+                        st.text(file_data['content'][:500] + "..." if len(file_data['content']) > 500 else file_data['content'])
         
         st.info("💡 위의 구체적인 데이터들이 C-Level 임원진 분석과 CEO 최종 의사결정에 실제로 활용되었습니다.")
     
@@ -2810,7 +3182,25 @@ if (st.session_state.analysis_complete or st.session_state.get('analysis_saved',
                 
                 st.markdown(f"**분석 시간:** {analysis_data['timestamp']}")
                 st.markdown("---")
-                st.markdown(analysis_data['result'])
+                
+                # Reasoning 과정 표시 (분석 결과가 딕셔너리인 경우)
+                if isinstance(analysis_data['result'], dict) and analysis_data['result'].get('has_thinking'):
+                    # AI의 사고 과정 먼저 표시
+                    display_reasoning_process(
+                        analysis_data['result'].get('thinking', ''),
+                        st.session_state.selected_model
+                    )
+                    st.markdown("---")
+                    # 최종 분석 결과 표시
+                    st.markdown("### 📋 최종 분석 결과")
+                    st.markdown(analysis_data['result']['content'])
+                else:
+                    # 기존 방식 (문자열 결과)
+                    if isinstance(analysis_data['result'], dict):
+                        content = analysis_data['result'].get('content', str(analysis_data['result']))
+                    else:
+                        content = analysis_data['result']
+                    st.markdown(content)
 
 # 푸터
 st.markdown("---")
@@ -2821,7 +3211,9 @@ with st.expander("💡 사용법 안내"):
     ### 🏢 C-Level 멀티에이전트 + RAG 시스템 사용법
     
     #### 🚀 기본 사용 단계
-    1. **모델 선택**: 사이드바에서 사용할 AI 모델을 선택하세요 (Claude/ChatGPT)
+    1. **모델 선택**: 사이드바에서 사용할 AI 모델을 선택하세요
+       - 🧠 **Reasoning 모델**: Claude 4 시리즈, Claude 3.7(Extended Thinking), OpenAI o1 시리즈
+       - ⚡ **일반 모델**: Claude 3.5 시리즈, GPT-4o 시리즈
     2. **RAG 데이터 준비**: 분석에 활용할 추가 데이터를 설정하세요
        - 🗄️ **MySQL 데이터베이스**: 회사 데이터베이스 연결 및 테이블 선택
        - 🌐 **웹사이트 크롤링**: 관련 웹사이트의 최신 정보 수집
@@ -2927,6 +3319,32 @@ with st.expander("💡 사용법 안내"):
     **분석 패턴 학습**
     - 성공적인 분석의 패턴(RAG 소스 조합, 프롬프트 설정 등)을 파악하여 재활용하세요
     - 특정 업무 영역에서 효과적인 분석 방법론을 축적해나가세요
+    
+    #### 💡 효과적인 활용 팁
+    
+    **🧠 Reasoning 과정 표시 기능 (새로운 기능!)**
+    
+    **🔍 AI 사고 과정 실시간 확인**
+    - **투명성**: AI가 어떻게 분석하고 결론에 도달했는지 단계별로 확인
+    - **신뢰성**: 분석 논리와 근거를 투명하게 공개하여 결과 신뢰도 증가
+    - **학습 효과**: AI의 사고 과정을 관찰하여 분석 방법론 학습
+    - **검증 가능**: 분석 과정의 각 단계를 검토하여 결과 검증 가능
+    
+    **사용 방법:**
+    1. 사이드바에서 **"🔍 AI 사고 과정 보기"** 토글 활성화
+    2. **사고 예산** 설정 (1,024~16,000 토큰) - 높을수록 더 깊이 생각
+    3. Reasoning 지원 모델 선택 (Claude 4, 3.7, o1 시리즈)
+    4. 분석 실행 시 AI의 사고 과정이 분석 결과와 함께 표시됨
+    
+    **지원 모델:**
+    - 🔥 Claude 4 Opus/Sonnet (Extended Thinking)
+    - 🧠 Claude 3.7 Sonnet (Extended Thinking)
+    - ⚡ Claude 3.5 Sonnet v2
+    - 🤖 OpenAI o1/o1-preview/o1-mini
+    
+    **주제 설정**
+    - 구체적이고 명확한 질문을 입력하세요
+    - 예: "신제품 출시를 위한 종합 전략" → "AI 기반 챗봇 서비스 출시를 위한 마케팅, 기술, 재무 전략"
     """)
 
 st.markdown("""
@@ -3415,30 +3833,13 @@ with history_tab1:
                             st.session_state.selected_analysis_id = analysis['id']
                         
                         # 삭제 버튼
-                        delete_key = f"delete_confirm_{analysis['id']}"
-                        if delete_key in st.session_state and st.session_state[delete_key]:
-                            # 삭제 확인 상태
-                            delete_col1, delete_col2 = st.columns(2)
-                            with delete_col1:
-                                if st.button("✅ 삭제 확인", key=f"confirm_delete_{analysis['id']}", type="primary"):
-                                    if delete_virtual_company_analysis(analysis['id']):
-                                        st.success("✅ 분석 결과가 삭제되었습니다.")
-                                        # 세션 상태 정리
-                                        del st.session_state[delete_key]
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ 삭제 실패")
-                                        del st.session_state[delete_key]
-                            with delete_col2:
-                                if st.button("❌ 취소", key=f"cancel_delete_{analysis['id']}", type="secondary"):
-                                    del st.session_state[delete_key]
+                        if st.button("🗑️ 삭제", key=f"delete_{analysis['id']}", help="이 분석 결과를 영구 삭제합니다"):
+                            if st.confirm(f"정말로 '{analysis['session_title']}' 분석을 삭제하시겠습니까?"):
+                                if delete_virtual_company_analysis(analysis['id']):
+                                    st.success("✅ 분석 결과가 삭제되었습니다.")
                                     st.rerun()
-                            st.warning(f"⚠️ 정말로 '{analysis['session_title']}'를 삭제하시겠습니까?")
-                        else:
-                            # 일반 삭제 버튼
-                            if st.button("🗑️ 삭제", key=f"delete_{analysis['id']}", help="이 분석 결과를 영구 삭제합니다"):
-                                st.session_state[delete_key] = True
-                                st.rerun()
+                                else:
+                                    st.error("❌ 삭제 실패")
         else:
             st.warning("🔍 검색 조건에 맞는 분석 결과가 없습니다.")
     
@@ -3513,30 +3914,14 @@ with history_tab1:
             st.markdown("#### 🗑️ 분석 삭제")
             st.warning("⚠️ 삭제된 분석은 복구할 수 없습니다.")
             
-            detail_delete_key = f"detail_delete_confirm_{st.session_state.selected_analysis_id}"
-            if detail_delete_key in st.session_state and st.session_state[detail_delete_key]:
-                # 삭제 확인 상태
-                detail_delete_col1, detail_delete_col2 = st.columns(2)
-                with detail_delete_col1:
-                    if st.button("✅ 영구 삭제 확인", key="detail_confirm_delete", type="primary"):
-                        if delete_virtual_company_analysis(st.session_state.selected_analysis_id):
-                            st.success("✅ 분석이 삭제되었습니다.")
-                            del st.session_state.selected_analysis_id
-                            del st.session_state[detail_delete_key]
-                            st.rerun()
-                        else:
-                            st.error("❌ 삭제 실패")
-                            del st.session_state[detail_delete_key]
-                with detail_delete_col2:
-                    if st.button("❌ 취소", key="detail_cancel_delete", type="secondary"):
-                        del st.session_state[detail_delete_key]
+            if st.button("🗑️ 이 분석 영구 삭제", type="secondary", help="이 분석을 영구적으로 삭제합니다"):
+                if st.confirm(f"정말로 '{main_data['session_title']}' 분석을 삭제하시겠습니까?"):
+                    if delete_virtual_company_analysis(st.session_state.selected_analysis_id):
+                        st.success("✅ 분석이 삭제되었습니다.")
+                        del st.session_state.selected_analysis_id
                         st.rerun()
-                st.error(f"⚠️ 정말로 '{main_data['session_title']}'를 영구 삭제하시겠습니까?")
-            else:
-                # 일반 삭제 버튼
-                if st.button("🗑️ 이 분석 영구 삭제", type="secondary", help="이 분석을 영구적으로 삭제합니다"):
-                    st.session_state[detail_delete_key] = True
-                    st.rerun()
+                    else:
+                        st.error("❌ 삭제 실패")
         else:
             st.error("❌ 분석 상세 정보를 불러올 수 없습니다.")
 
@@ -3817,3 +4202,38 @@ st.markdown("""
     🗑️ 필요 없는 분석은 언제든 삭제할 수 있습니다
 </div>
 """, unsafe_allow_html=True)
+
+# Reasoning 과정 표시 설정 (사이드바에 추가)
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("### 🧠 Reasoning 설정")
+    
+    # Reasoning 과정 표시 토글
+    enable_reasoning_display = st.toggle(
+        "🔍 AI 사고 과정 보기", 
+        value=False,
+        help="Reasoning 지원 모델의 사고 과정을 실시간으로 볼 수 있습니다."
+    )
+    
+    if enable_reasoning_display:
+        thinking_budget = st.slider(
+            "💭 사고 예산 (토큰)",
+            min_value=1024,
+            max_value=16000,
+            value=6000,
+            step=1024,
+            help="AI가 생각하는 데 사용할 최대 토큰 수입니다. 높을수록 더 깊이 생각하지만 시간이 오래 걸립니다."
+        )
+        
+        # Reasoning 지원 모델 안내
+        st.info("""
+        **🧠 Reasoning 지원 모델:**
+        - Claude 4 Opus/Sonnet (Extended Thinking)
+        - Claude 3.7 Sonnet (Extended Thinking)
+        - Claude 3.5 Sonnet v2
+        - OpenAI o1/o1-preview/o1-mini
+        
+        **💡 복잡한 분석일수록 Reasoning을 켜는 것을 추천합니다!**
+        """)
+    else:
+        thinking_budget = 4000  # 기본값

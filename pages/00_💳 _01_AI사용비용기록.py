@@ -512,7 +512,9 @@ def main():
             # 환율 변환된 데이터로 월별 집계 생성
             df_chart = df.copy()
             df_chart['reg_date'] = pd.to_datetime(df_chart['reg_date'])
-            df_chart['year_month'] = df_chart['reg_date'].dt.strftime('%Y-%m')
+            # 년-월을 더 자연스럽게 표시하고 정렬을 위한 추가 컬럼 생성
+            df_chart['year_month_sort'] = df_chart['reg_date'].dt.strftime('%Y-%m')
+            df_chart['year_month'] = df_chart['reg_date'].dt.year.astype(str) + '년 ' + df_chart['reg_date'].dt.month.astype(str) + '월'
             
             # 각 행에 대해 KRW 변환 금액 계산
             df_chart['krw_amount'] = 0.0
@@ -531,8 +533,10 @@ def main():
                     else:
                         df_chart.loc[idx, 'krw_amount'] = 0  # 변환 실패시 0으로 처리
             
-            # 월별 집계
-            monthly_krw_summary = df_chart.groupby('year_month')['krw_amount'].sum().reset_index()
+            # 월별 집계 (정렬을 위해 sort 컬럼도 함께 그룹화)
+            monthly_krw_summary = df_chart.groupby(['year_month_sort', 'year_month'])['krw_amount'].sum().reset_index()
+            monthly_krw_summary = monthly_krw_summary.sort_values('year_month_sort')  # 시간순 정렬
+            monthly_krw_summary = monthly_krw_summary[['year_month', 'krw_amount']]  # 불필요한 컬럼 제거
             monthly_krw_summary.columns = ['월', 'KRW 변환 금액']
             
             if not monthly_krw_summary.empty:
@@ -562,7 +566,8 @@ def main():
                 
                 # 결제주기별 월별 현황 (KRW 변환 적용)
                 st.subheader("💳 결제주기별 월별 현황 (KRW 변환 적용)")
-                billing_krw_summary = df_chart.groupby(['year_month', 'billing_cycle'])['krw_amount'].sum().reset_index()
+                billing_krw_summary = df_chart.groupby(['year_month_sort', 'year_month', 'billing_cycle'])['krw_amount'].sum().reset_index()
+                billing_krw_summary = billing_krw_summary.sort_values('year_month_sort')  # 시간순 정렬
                 
                 if not billing_krw_summary.empty:
                     # 결제주기별 색상 지정
@@ -601,13 +606,15 @@ def main():
                 
                 # 월별 통계 테이블 (KRW 변환 적용)
                 st.subheader("📋 월별 상세 통계 (KRW 변환 적용)")
-                monthly_stats_krw = df_chart.groupby('year_month').agg({
+                monthly_stats_krw = df_chart.groupby(['year_month_sort', 'year_month']).agg({
                     'krw_amount': ['sum', 'count', 'mean'],
                     'tool_name': 'nunique'
                 }).round(0)
                 
                 monthly_stats_krw.columns = ['총 비용 (₩)', '거래 건수', '평균 비용 (₩)', '사용 툴 수']
                 monthly_stats_krw = monthly_stats_krw.reset_index()
+                monthly_stats_krw = monthly_stats_krw.sort_values('year_month_sort')  # 시간순 정렬
+                monthly_stats_krw = monthly_stats_krw[['year_month', '총 비용 (₩)', '거래 건수', '평균 비용 (₩)', '사용 툴 수']]  # 불필요한 컬럼 제거
                 monthly_stats_krw.columns = ['월', '총 비용 (₩)', '거래 건수', '평균 비용 (₩)', '사용 툴 수']
                 
                 # 숫자 포맷팅

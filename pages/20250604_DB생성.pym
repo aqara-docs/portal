@@ -1609,94 +1609,6 @@ def create_virtual_company_tables():
         print(f"❌ Virtual Company 테이블 생성 중 오류: {str(e)}")
         return False
 
-def create_work_diary_tables():
-    """업무일지 관련 테이블 생성"""
-    try:
-        conn = connect_to_db()
-        if not conn:
-            return False
-        
-        cursor = conn.cursor()
-        
-        # 외래 키 체크 비활성화
-        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-        
-        # 업무일지 메인 테이블
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS work_diary (
-                diary_id INT AUTO_INCREMENT PRIMARY KEY,
-                author VARCHAR(100) NOT NULL DEFAULT '이상현',
-                work_date DATE NOT NULL,
-                po_content TEXT,
-                customs_content TEXT,
-                inventory_content TEXT,
-                partner_content TEXT,
-                other_content TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
-        
-        # 업무일지 파일 첨부 테이블
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS work_diary_files (
-                file_id INT AUTO_INCREMENT PRIMARY KEY,
-                diary_id INT NOT NULL,
-                work_type ENUM('PO', '통관', '재고 관리', '파트너 관리', '기타') NOT NULL,
-                filename VARCHAR(255) NOT NULL,
-                file_type VARCHAR(50) NOT NULL,
-                file_content LONGBLOB NOT NULL,
-                file_size INT,
-                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (diary_id) REFERENCES work_diary(diary_id) ON DELETE CASCADE
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-        """)
-        
-        # 외래 키 체크 다시 활성화
-        cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return True
-        
-    except mysql.connector.Error as err:
-        st.error(f"업무일지 테이블 생성 오류: {err}")
-        return False
-
-def add_todo_list_to_work_diary():
-    """work_diary 테이블에 todo_list 컬럼 추가"""
-    try:
-        conn = connect_to_db()
-        if not conn:
-            return False
-        
-        cursor = conn.cursor()
-        
-        # todo_list 컬럼이 이미 존재하는지 확인
-        cursor.execute("SHOW COLUMNS FROM work_diary LIKE 'todo_list'")
-        column_exists = cursor.fetchone() is not None
-        
-        if not column_exists:
-            # todo_list 컬럼 추가 (JSON 형태로 저장)
-            cursor.execute("""
-                ALTER TABLE work_diary 
-                ADD COLUMN todo_list JSON DEFAULT NULL
-            """)
-            
-            conn.commit()
-            st.success("✅ work_diary 테이블에 todo_list 컬럼이 추가되었습니다!")
-        else:
-            st.info("ℹ️ todo_list 컬럼이 이미 존재합니다.")
-        
-        cursor.close()
-        conn.close()
-        return True
-        
-    except mysql.connector.Error as err:
-        st.error(f"컬럼 추가 오류: {err}")
-        return False
-
 def main():
     
     
@@ -1714,9 +1626,7 @@ def main():
          "프로젝트 리뷰 시스템 테이블 생성",
          "프로젝트 리뷰 테이블에 매출액 컬럼 추가",
          "프로젝트 리뷰 테이블에 가치 지표 컬럼 추가",
-         "Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성",
-         "업무일지 테이블 생성",
-         "업무일지 테이블에 TODO 리스트 컬럼 추가"]
+         "Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성"]
     )
     
     if menu == "테이블 목록":
@@ -2339,113 +2249,6 @@ def main():
                 st.success("Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블이 성공적으로 생성되었습니다.")
             else:
                 st.error("테이블 생성 중 오류가 발생했습니다.")
-
-    elif menu == "업무일지 테이블 생성":
-        st.header("업무일지 테이블 생성")
-        
-        st.markdown("""
-        ### 📝 업무일지 시스템
-        
-        **생성될 테이블:**
-        - **work_diary**: 업무일지 메인 테이블
-          - 작성자, 업무날짜, PO/통관/재고관리/파트너관리/기타 업무 내용
-        - **work_diary_files**: 업무일지 파일 첨부 테이블  
-          - 파일명, 파일타입, 바이너리 데이터, 업무 유형별 분류
-        
-        **지원 파일 형식**: PDF, 마크다운(.md), 텍스트(.txt), JPEG, PNG
-        """)
-        
-        if st.button("📝 업무일지 테이블 생성", type="primary"):
-            if create_work_diary_tables():
-                st.success("✅ 업무일지 관련 테이블이 성공적으로 생성되었습니다!")
-                
-                # 생성된 테이블 구조 표시
-                st.write("### 생성된 테이블 구조:")
-                
-                # work_diary 테이블 구조
-                st.write("#### work_diary 테이블")
-                schema = get_table_schema("work_diary")
-                if schema:
-                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
-                    st.dataframe(schema_df)
-                
-                # work_diary_files 테이블 구조
-                st.write("#### work_diary_files 테이블")
-                schema = get_table_schema("work_diary_files")
-                if schema:
-                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
-                    st.dataframe(schema_df)
-                    
-                st.info("✨ 이제 '나의 업무 다이어리' 페이지에서 업무일지를 작성할 수 있습니다!")
-                
-            else:
-                st.error("❌ 업무일지 테이블 생성에 실패했습니다.")
-
-    elif menu == "업무일지 테이블에 TODO 리스트 컬럼 추가":
-        st.header("📋 업무일지 테이블에 TODO 리스트 컬럼 추가")
-        
-        st.markdown("""
-        ### 📝 TODO 리스트 기능 추가
-        
-        **추가될 컬럼:**
-        - **todo_list** (JSON 타입)
-          - 최대 10개의 TODO 항목을 JSON 배열로 저장
-          - 각 항목은 `{"text": "할일내용", "completed": false}` 형태
-          - 체크박스로 완료 여부 관리
-          - 완료된 항목은 ~~취소선~~으로 표시
-        
-        ### 📋 예시 데이터 구조:
-        ```json
-        [
-          {"text": "PO 발주서 작성", "completed": false},
-          {"text": "통관 서류 검토", "completed": true},
-          {"text": "재고 현황 점검", "completed": false}
-        ]
-        ```
-        
-        ### ✨ 기능 특징:
-        - PO 업무 앞에 TODO 리스트 섹션 추가
-        - 각 항목별 체크박스로 완료/미완료 관리
-        - 완료된 항목은 자동으로 취소선 표시
-        - 기존 데이터는 안전하게 보존
-        """)
-        
-        # 현재 테이블 구조 확인
-        schema = get_table_schema("work_diary")
-        if schema:
-            st.write("### 현재 work_diary 테이블 구조:")
-            schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
-            st.dataframe(schema_df)
-            
-            # todo_list 컬럼 존재 여부 확인
-            has_todo_list = any(row[0] == 'todo_list' for row in schema)
-            if has_todo_list:
-                st.success("✅ todo_list 컬럼이 이미 존재합니다!")
-            else:
-                st.warning("❌ todo_list 컬럼이 없습니다. 추가가 필요합니다.")
-        else:
-            st.error("❌ work_diary 테이블이 존재하지 않습니다. 먼저 '업무일지 테이블 생성'을 실행해주세요.")
-        
-        if st.button("📋 TODO 리스트 컬럼 추가", type="primary"):
-            if add_todo_list_to_work_diary():
-                # 업데이트된 테이블 구조 확인
-                st.write("### 📋 업데이트된 work_diary 테이블 구조:")
-                schema = get_table_schema("work_diary")
-                if schema:
-                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
-                    st.dataframe(schema_df, use_container_width=True)
-                    
-                st.info("""
-                🎉 **완료!** 이제 업무 다이어리에서 TODO 리스트를 사용할 수 있습니다.
-                
-                **다음 단계:**
-                1. '나의 업무 다이어리' 페이지로 이동
-                2. TODO 리스트 섹션에서 할일 입력
-                3. 체크박스로 완료 상태 관리
-                4. 완료된 항목의 취소선 효과 확인
-                """)
-            else:
-                st.error("❌ TODO 리스트 컬럼 추가에 실패했습니다.")
 
 if __name__ == "__main__":
     main() 
