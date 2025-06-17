@@ -101,19 +101,6 @@ def get_materials(material_type):
 def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
     # 각 우화 스타일별 구체적인 지시사항
     fable_instructions = {
-        "하모니아": (
-            "아래 요약 내용을 바탕으로 7명의 위대한 사상가들이 대화하는 3분 분량의 우화를 만들어 주세요. "
-            "다음 각 그룹에서 랜덤하게 1명씩 선택하여 대화를 구성해 주세요:\n"
-            "1. 4대 성인 중 1명 (예수님, 부처님, 공자님, 소크라테스님)\n"
-            "2. 중국 고대 사상가 중 1명 (장자님, 노자님, 맹자님, 순자님, 묵자님, 한비자님, 공손룡님)\n"
-            "3. 동양의 전략가 중 1명 (제갈량님, 장량님, 손무님)\n"
-            "4. 기업 및 인재 경영의 대가 중 1명 (피터 드러커님, 이나모리 가즈오님, 데일 카네기님)\n"
-            "5. 경영전략의 대가 중 1명 (마이클 포터님, 헨리 민츠버그님, 게리 하멜님, 클레이튼 크리스텐슨님)\n"
-            "6. 게임이론의 대가 중 1명 (존 폰노이만님, 존 내쉬님, 토마스 셀링님, 애덤 브랜드버거님)\n"
-            "각자의 관점에서 지혜를 나누는 형식으로 작성해 주세요. "
-            "각 인물의 고유한 철학과 사상을 정확히 반영하고, 서로를 존칭으로 호칭하며, "
-            "마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
         "이솝우화": (
             "아래 요약 내용을 바탕으로 이솝우화 스타일의 1분 30초 분량 대화체 우화를 만들어 주세요. "
             "동물들이 주인공이 되어 생생한 대화를 나누며, 마지막에 명확한 교훈을 제시하는 형식으로 작성해 주세요. "
@@ -194,67 +181,7 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
             "선택한 철학자와 그의 제자들, 또는 다른 사상가들과의 깊이 있는 대화로 구성해 주세요. "
             "해당 철학자의 핵심 사상과 가르침을 대화에 자연스럽게 담아내고, 현대적 적용 방안도 제시해 주세요. "
             "이야기 마지막에는 선택한 철학자의 사상과 관련된 '오늘의 명언'을 한글과 영어로 작성해 주세요."
-        ),
-        "피터 드러커, 이나모리 가즈오, 데일 카네기 (기업 및 인재 경영의 대가들)": (
-            "아래 요약 내용을 바탕으로 피터 드러커, 이나모리 가즈오, 데일 카네기가 대화하는 1분 30초 분량의 우화를 만들어 주세요. "
-            "각 인물의 고유한 경영 철학과 인재 경영, 자기계발, 리더십에 대한 관점을 반영한 생생한 대화로 구성해야 합니다.\n"
-            "- 드러커님: 경영의 본질, 목표 설정, 자기관리, 사회적 책임 강조\n"
-            "- 이나모리 님: 인생관, 인격경영, 사명감, 인간 존중의 경영 강조\n"
-            "- 카네기 님: 인간관계, 동기부여, 긍정적 사고, 실천적 조언 강조\n"
-            "중요: 각 인물을 반드시 '드러커님', '이나모리 님', '카네기 님'으로 호칭해 주세요.\n"
-            "각자의 관점에서 주제에 대해 대화하며, 서로 다른 접근법으로 경영과 인재 성장의 본질을 탐구하는 과정을 보여주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨 (경영전략의 대가들)": (
-            "아래 요약 내용을 바탕으로 마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨이 대화하는 1분 30초 분량의 우화를 만들어 주세요. "
-            "각 인물의 고유한 전략 이론과 혁신, 경쟁, 변화 관리에 대한 관점을 반영한 생생한 대화로 구성해야 합니다.\n"
-            "- 포터님: 경쟁 전략, 산업구조, 차별화와 원가우위\n"
-            "- 민츠버그님: 전략의 형성 과정, 조직문화, 실천적 통찰\n"
-            "- 하멜 님: 혁신, 미래경영, 경영 패러다임 전환\n"
-            "- 크리스텐슨 님: 파괴적 혁신, 기술 변화, 시장 재편\n"
-            "중요: 각 인물을 반드시 '포터님', '민츠버그님', '하멜 님', '크리스텐슨 님'으로 호칭해 주세요.\n"
-            "각자의 관점에서 주제에 대해 대화하며, 서로 다른 전략적 접근법과 혁신의 본질을 탐구하는 과정을 보여주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "존 폰노이만, 존 내쉬, 토마스 셀링, 애덤 브랜드버거 (게임이론의 대가들)": (
-            "아래 요약 내용을 바탕으로 존 폰노이만, 존 내쉬, 토마스 셀링, 애덤 브랜드버거가 대화하는 1분 30초 분량의 우화를 만들어 주세요. "
-            "각 인물의 고유한 게임이론, 협상, 전략적 사고, 협력과 경쟁에 대한 관점을 반영한 생생한 대화로 구성해야 합니다.\n"
-            "- 폰노이만님: 게임이론의 창시자, 수리적 분석, 전략적 합리성\n"
-            "- 내쉬님: 내쉬 균형, 협력과 경쟁의 균형\n"
-            "- 셀링님: 협상 이론, 갈등 해결, 신뢰 구축\n"
-            "- 브랜드버거님: 협력적 게임, 가치 창출, 파트너십\n"
-            "중요: 각 인물을 반드시 '폰노이만님', '내쉬님', '셀링님', '브랜드버거님'으로 호칭해 주세요.\n"
-            "각자의 관점에서 주제에 대해 대화하며, 서로 다른 게임이론적 접근법과 전략적 통찰을 탐구하는 과정을 보여주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "삼국지의 제갈량": (
-            "아래 요약 내용을 바탕으로 삼국지의 제갈량이 등장하는 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "제갈량과 유비, 관우, 장비, 조조, 주유 등 삼국지 등장인물들의 생생한 대화로 구성하고, "
-            "제갈량의 뛰어난 지략과 충의, 인재 경영과 전략적 사고를 반영해 주세요. "
-            "천하삼분지계, 출사표의 정신, 충성과 의리의 가치를 대화를 통해 전달하고, "
-            "현대 비즈니스와 리더십에 적용할 수 있는 지혜를 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "초한지의 장량": (
-            "아래 요약 내용을 바탕으로 초한지의 장량(장자방)이 등장하는 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "장량과 유방(한고조), 소하, 한신, 항우, 범증 등 초한지 등장인물들의 생생한 대화로 구성하고, "
-            "장량의 탁월한 모략과 지략, 은인자중의 지혜, 때를 아는 통찰력을 반영해 주세요. "
-            "사면초가, 배수진, 명장암도 등의 전략적 사고와 인간관계의 묘수를 대화로 표현하고, "
-            "현대의 경영전략과 협상술에 적용할 수 있는 지혜를 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "손자병법의 손무": (
-            "아래 요약 내용을 바탕으로 손자병법의 손무가 등장하는 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "손무와 오자서, 오왕 합려, 손빈 등 손자병법 관련 인물들의 생생한 대화로 구성하고, "
-            "손무의 뛰어난 전략과 지혜, 용병술과 리더십, 승리를 위한 통찰력을 반영해 주세요. "
-            "지피지기(知彼知己), 군형(軍形), 허실(虛實), 기정(奇正) 등 손자병법의 핵심 원리를 대화로 표현하고, "
-            "현대의 경영전략과 리더십에 적용할 수 있는 지혜를 담아주세요. "
-            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
-        ),
-        "주역": (
-            "아래 요약 내용을 바탕으로 주역(易經) 스타일의 1분 30초 분량 대화체 이야기를 만들어 주세요. "
-            "중요: 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다."
-        ),
+        )
     }
     
     fable_instruction = fable_instructions.get(fable_type, fable_instructions["이솝우화"])
@@ -281,28 +208,6 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
 """
         # 각 우화 스타일별 시스템 프롬프트
         system_prompts = {
-            "하모니아": (
-                "당신은 동서양의 위대한 사상가들의 대화를 구성하는 전문가입니다. "
-                "다음 각 그룹에서 랜덤하게 1명씩 선택하여 3분 분량의 심오하고 통찰력 있는 대화를 구성합니다:\n"
-                "1. 4대 성인 중 1명 (예수님, 부처님, 공자님, 소크라테스님)\n"
-                "2. 중국 고대 사상가 중 1명 (장자님, 노자님, 맹자님, 순자님, 묵자님, 한비자님, 공손룡님)\n"
-                "3. 동양의 전략가 중 1명 (제갈량님, 장량님, 손무님)\n"
-                "4. 기업 및 인재 경영의 대가 중 1명 (피터 드러커님, 이나모리 가즈오님, 데일 카네기님)\n"
-                "5. 경영전략의 대가 중 1명 (마이클 포터님, 헨리 민츠버그님, 게리 하멜님, 클레이튼 크리스텐슨님)\n"
-                "6. 게임이론의 대가 중 1명 (존 폰노이만님, 존 내쉬님, 토마스 셀링님, 애덤 브랜드버거님)\n"
-                "각 인물의 고유한 철학과 사상을 정확히 반영하여 존댓말로 대화를 구성하고, "
-                "서로를 반드시 '님'을 붙여 호칭하며(예: '공자님', '드러커님'), "
-                "마지막에 명언을 한글과 영어로 제시합니다. "
-                "대화 시작 시 선택된 7명의 인물을 먼저 소개해 주세요. "
-                "각 인물의 주요 사상과 특징을 반영하여 대화를 구성해 주세요:\n"
-                "- 맹자님: 성선설, 왕도정치\n"
-                "- 순자님: 성악설, 예치주의\n"
-                "- 묵자님: 겸애(兼愛)와 비공(非攻)\n"
-                "- 한비자님: 법가사상, 법치주의\n"
-                "- 공손룡님: 명가(名家), 논리철학\n"
-                "- 장자님: 도가사상, 상대주의 철학\n"
-                "- 노자님: 도가사상, 무위자연"
-            ),
             "이솝우화": "당신은 이솝우화 전문 스토리텔러입니다. 동물들이 주인공인 1분 30초 분량의 생생한 대화체 우화를 만들어 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "탈무드": "당신은 탈무드 지혜 전달자입니다. 랍비와 제자들의 생생한 대화를 통해 1분 30초 분량의 실용적이고 철학적인 교훈을 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "성경이야기": "당신은 성경 비유 이야기 전문가입니다. 사랑, 용서, 겸손의 가치를 담은 1분 30초 분량의 감동적인 대화체 비유를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
@@ -311,11 +216,8 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
             "노자의 도덕경": "당신은 노자 도덕경 전문가입니다. 도(道), 무위(無爲), 음양의 조화와 겸손함을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "삼국지의 제갈량": "당신은 삼국지 전문가입니다. 제갈량의 지략과 충의, 인재경영을 담은 1분 30초 분량의 삼국지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "초한지의 장량": "당신은 초한지 전문가입니다. 장량의 모략과 지략, 은인자중의 지혜를 담은 1분 30초 분량의 초한지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "손자병법의 손무": "당신은 손자병법 전문가입니다. 손무의 전략과 지혜, 용병술과 리더십을 담은 1분 30초 분량의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "주역": "당신은 주역(易經) 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다.",
-            "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자(공자, 맹자, 순자, 노자, 장자, 묵자, 한비자, 관자 등)를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다.",
-            "피터 드러커, 이나모리 가즈오, 데일 카네기 (기업 및 인재 경영의 대가들)": "당신은 피터 드러커, 이나모리 가즈오, 데일 카네기의 경영 철학과 인재 경영, 자기계발, 리더십에 정통한 전문가입니다. 각 인물의 고유한 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '드러커님', '이나모리 님', '카네기 님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다.",
-            "마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨 (경영전략의 대가들)": "당신은 마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨의 전략 이론과 혁신, 경쟁, 변화 관리에 정통한 전문가입니다. 각 인물의 고유한 전략적 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '포터님', '민츠버그님', '하멜 님', '크리스텐슨 님'으로 호칭해 주세요.\n"
+            "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자(공자, 맹자, 순자, 노자, 장자, 묵자, 한비자, 관자 등)를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다."
         }
         
         system_prompt = system_prompts.get(fable_type, system_prompts["이솝우화"])
@@ -357,7 +259,6 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
 """
             # 각 우화 스타일별 시스템 프롬프트
             system_prompts = {
-                "하모니아": "당신은 동서양의 위대한 사상가들의 대화를 구성하는 전문가입니다. 4대 성인 중 예수님, 장자님, 노자님, 제갈량님, 장량님, 피터 드러커님, 존 내쉬님이 참여하는 3분 분량의 심오하고 통찰력 있는 대화를 구성합니다. 각 인물의 고유한 철학과 사상을 정확히 반영하여 존댓말로 대화를 구성하고, 서로를 반드시 '예수님', '장자님', '노자님', '제갈량님', '장량님', '드러커님', '내쉬님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "이솝우화": "당신은 이솝우화 전문 스토리텔러입니다. 동물들이 주인공인 1분 30초 분량의 생생한 대화체 우화를 만들어 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "탈무드": "당신은 탈무드 지혜 전달자입니다. 랍비와 제자들의 생생한 대화를 통해 1분 30초 분량의 실용적이고 철학적인 교훈을 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "성경이야기": "당신은 성경 비유 이야기 전문가입니다. 사랑, 용서, 겸손의 가치를 담은 1분 30초 분량의 감동적인 대화체 비유를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
@@ -366,12 +267,8 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
                 "노자의 도덕경": "당신은 노자 도덕경 전문가입니다. 도(道), 무위(無爲), 음양의 조화와 겸손함을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "삼국지의 제갈량": "당신은 삼국지 전문가입니다. 제갈량의 지략과 충의, 인재경영을 담은 1분 30초 분량의 삼국지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "초한지의 장량": "당신은 초한지 전문가입니다. 장량의 모략과 지략, 은인자중의 지혜를 담은 1분 30초 분량의 초한지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "손자병법의 손무": "당신은 손자병법 전문가입니다. 손무의 전략과 지혜, 용병술과 리더십을 담은 1분 30초 분량의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "주역": "당신은 주역(易經) 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다.",
-                "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자(공자, 맹자, 순자, 노자, 장자, 묵자, 한비자, 관자 등)를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다.",
-                "피터 드러커, 이나모리 가즈오, 데일 카네기 (기업 및 인재 경영의 대가들)": "당신은 피터 드러커, 이나모리 가즈오, 데일 카네기의 경영 철학과 인재 경영, 자기계발, 리더십에 정통한 전문가입니다. 각 인물의 고유한 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '드러커님', '이나모리 님', '카네기 님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨 (경영전략의 대가들)": "당신은 마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨의 전략 이론과 혁신, 경쟁, 변화 관리에 정통한 전문가입니다. 각 인물의 고유한 전략적 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '포터님', '민츠버그님', '하멜 님', '크리스텐슨 님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다.",
-                "존 폰노이만, 존 내쉬, 토마스 셀링, 애덤 브랜드버거 (게임이론의 대가들)": "당신은 존 폰노이만, 존 내쉬, 토마스 셀링, 애덤 브랜드버거의 게임이론, 협상, 전략적 사고, 협력과 경쟁에 정통한 전문가입니다. 각 인물의 고유한 게임이론적 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '폰노이만님', '내쉬님', '셀링님', '브랜드버거님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다."
+                "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자(공자, 맹자, 순자, 노자, 장자, 묵자, 한비자, 관자 등)를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다."
             }
             
             system_prompt = system_prompts.get(fable_type, system_prompts["이솝우화"])
@@ -554,10 +451,7 @@ def text_to_speech_fable(text, fable_type):
             "삼국지의 제갈량": {"voice": "echo", "speed": 0.9},  # 지략가의 차분한 목소리
             "초한지의 장량": {"voice": "alloy", "speed": 0.9},  # 모략가의 신중한 목소리
             "주역": {"voice": "onyx", "speed": 0.8},  # 깊이 있고 신비로운 주역 현자의 목소리
-            "제자백가": {"voice": "echo", "speed": 0.9},  # 철학자들의 깊이 있고 지혜로운 목소리",
-            "피터 드러커, 이나모리 가즈오, 데일 카네기 (기업 및 인재 경영의 대가들)": {"voice": "echo", "speed": 0.9},
-            "마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨 (경영전략의 대가들)": {"voice": "onyx", "speed": 0.9},
-            "존 폰노이만, 존 내쉬, 토마스 셀링, 애덤 브랜드버거 (게임이론의 대가들)": {"voice": "alloy", "speed": 0.9}
+            "제자백가": {"voice": "echo", "speed": 0.9}  # 철학자들의 깊이 있고 지혜로운 목소리
         }
         
         # 기본값 설정
@@ -642,7 +536,7 @@ def get_obsidian_notification_js_scoped():
     <div class="obsidian-alert" style="display: none;">
         <div class="alert-content">
             <div class="large-emoji">🎙️</div>
-            <div class="alert-text">Tiro 녹음기능을 활성화해 주세요!</div>
+            <div class="alert-text">옵시디언 녹음기능을 활성화해 주세요!</div>
         </div>
     </div>
     <script>
@@ -674,25 +568,6 @@ def get_obsidian_notification_js_scoped():
 
 def discussion_order_tab():
     # 캐릭터/상수 (함수 최상단에 위치)
-    protected_keys = ['ai_summary_result', 'tts_audio', 'ai_app_summary_result', 'tts_app_audio', 'ai_fable_result', 'tts_fable_audio']
-    
-    # 타이머가 종료되었을 때 세션 상태 보호
-    if st.session_state.get('order_timer_finished', False):
-        for key in protected_keys:
-            if key in st.session_state and st.session_state[key] is not None:
-                backup_key = f"{key}_backup"
-                protected_key = f"{key}_protected"
-                st.session_state[backup_key] = st.session_state[key]
-                st.session_state[protected_key] = st.session_state[key]
-    
-    st.markdown("""
-    <style>
-    div[data-testid="stVerticalBlock"] > div:has(> div.element-container div[data-testid="stMarkdownContainer"] > div:first-child > div:first-child > p:first-child:empty) {
-        display: none;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
     CHARACTERS = {"현철님": "🧙‍♂️ 지혜의 현자", "창환님": "🚀 미래의 선구자", "성범님": "🎯 통찰의 대가", "상현님": "🎭 질문의 예술가", "성일님": "💡 혁신의 아이콘", "경호님": "🦾 전략의 마에스트로", "재원님": "⚡️ 기술영업의 달인"}
     VALUES = [
         "Success is not the key to happiness. Happiness is the key to success.\n성공이 행복의 열쇠가 아니라, 행복이 성공의 열쇠다.",
@@ -746,12 +621,12 @@ def discussion_order_tab():
         st.markdown(get_toast_notification_js_scoped(), unsafe_allow_html=True)
         st.session_state.order_js_loaded = True
     st.markdown("<div class='order-tab-root'>", unsafe_allow_html=True)
-    # Tiro 녹음기능 알림 (한 번만, 정적)
+    # 옵시디언 녹음기능 알림 (한 번만, 정적)
     if 'order_initial_notice_shown' not in st.session_state:
         st.markdown('''
         <div class="notice-container" style="background: linear-gradient(145deg, #0066cc, #0052a3); color: white; padding: 20px; border-radius: 15px; text-align: center; margin: 20px auto; max-width: 600px; animation: slideIn 0.5s ease-out;">
             <div class="notice-icon" style="font-size: 48px; margin-bottom: 10px; display: inline-block;">🎙️</div>
-            <div class="notice-text" style="font-size: 24px; font-weight: bold; margin: 10px 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">Tiro 녹음기능을 활성화해 주세요!</div>
+            <div class="notice-text" style="font-size: 24px; font-weight: bold; margin: 10px 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">옵시디언 녹음기능을 활성화해 주세요!</div>
             <div class="notice-subtext">
                 <div class="highlight" style="background: rgba(255,255,255,0.2); padding: 5px 10px; border-radius: 5px; display: inline-block; margin: 5px 0;">토론 내용 기록을 위해 꼭 필요합니다</div>
                 <div class="highlight" style="background: rgba(255,255,255,0.2); padding: 5px 10px; border-radius: 5px; display: inline-block; margin: 5px 0;">시작 전 반드시 확인해 주세요</div>
@@ -832,41 +707,28 @@ def discussion_order_tab():
                 const start = {start_time} * 1000;
                 const duration = {duration} * 1000;
                 const audioBase64 = "{audio_base64}";
-                
-                // 세션 상태 보호를 위한 함수
-                function protectSessionState() {{
-                    // 페이지 리로드 없이 상태 업데이트
-                    window.parent.stStreamlitClient.setComponentValue(
-                        'order_timer_finished',
-                        true,
-                        {{ fromUi: true }}
-                    );
-                }}
-
                 function updateTimer() {{
-                    const now = new Date().getTime();
+                    const now = Date.now();
                     const elapsed = now - start;
-                    const remaining = duration - elapsed;
-                    
-                    if (remaining <= 0) {{
-                        document.getElementById('timer').innerHTML = '시간 종료!';
-                        if (audioBase64) {{
-                            const audio = document.getElementById('endAudio');
-                            audio.src = `data:audio/mp3;base64,${{audioBase64}}`;
+                    const remaining = Math.max(0, duration - elapsed);
+                    const sec = Math.floor(remaining / 1000);
+                    const min = Math.floor(sec / 60);
+                    const secDisplay = String(sec % 60).padStart(2, '0');
+                    const minDisplay = String(min).padStart(2, '0');
+                    document.getElementById('timer').innerText = '남은 시간: ' + minDisplay + ':' + secDisplay;
+                    if (remaining > 0) {{
+                        setTimeout(updateTimer, 1000);
+                    }} else {{
+                        document.getElementById('timer').innerText = '타이머 종료!';
+                        // 종료 음성 자동 재생 (src를 동적으로 할당)
+                        const audio = document.getElementById('endAudio');
+                        if (audio && audioBase64) {{
+                            audio.src = 'data:audio/mp3;base64,' + audioBase64;
+                            audio.currentTime = 0;
                             audio.play();
                         }}
-                        // 타이머 종료 시 세션 상태 보호
-                        protectSessionState();
-                        clearInterval(timerInterval);
-                    }} else {{
-                        const minutes = Math.floor(remaining / 60000);
-                        const seconds = Math.floor((remaining % 60000) / 1000);
-                        document.getElementById('timer').innerHTML = 
-                            `${{minutes}}:${{seconds.toString().padStart(2, '0')}}`;
                     }}
                 }}
-
-                const timerInterval = setInterval(updateTimer, 1000);
                 updateTimer();
                 </script>
                 ''', height=80)
@@ -899,23 +761,11 @@ def main():
     
     # 보호된 상태들을 안전하게 초기화 (기존 값이 있으면 유지)
     for key, default_value in protected_states.items():
-        # 백업에서 복원 시도
-        backup_key = f"{key}_backup"
-        protected_key = f"{key}_protected"
-        
         if key not in st.session_state:
-            # 백업이나 보호된 값이 있으면 복원
-            if backup_key in st.session_state and st.session_state[backup_key] is not None:
-                st.session_state[key] = st.session_state[backup_key]
-            elif protected_key in st.session_state and st.session_state[protected_key] is not None:
-                st.session_state[key] = st.session_state[protected_key]
-            else:
-                st.session_state[key] = default_value
-        
-        # 현재 값이 None이 아니면 모든 백업 갱신
+            st.session_state[key] = default_value
+        # 추가 보호: None이 아닌 값이 있다면 백업
         if st.session_state[key] is not None:
-            st.session_state[backup_key] = st.session_state[key]
-            st.session_state[protected_key] = st.session_state[key]
+            st.session_state[f"{key}_backup"] = st.session_state[key]
     
     # 타이머 관련 상태들도 안전하게 초기화
     timer_states = {
@@ -1039,7 +889,6 @@ def main():
         
         subtab1, subtab2, subtab3 = st.tabs(["요약 파일", "적용 파일", "우화"])
         with subtab1:
-            st.markdown("<div class='order-tab-root'>", unsafe_allow_html=True)
             st.subheader("요약 파일 검색/AI 요약/음성 생성")
             summaries = get_materials("summary")
             previous_topic = st.text_input("이전 토론 주제", placeholder="이전 독서 토론의 주제를 입력해주세요", key="prev_topic_tts")
@@ -1065,16 +914,6 @@ def main():
                 if st.session_state['ai_summary_result']:
                     st.markdown("### 비즈니스 실전 적용 핵심")
                     st.markdown(format_bullet_points(st.session_state['ai_summary_result']))
-                    # Tiro 녹음기능 알림 (Streamlit 스타일, 항상 보이게)
-                    st.markdown(
-                        '''
-                        <div style="background: linear-gradient(145deg, #0066cc, #0052a3); color: white; padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; font-size: 1.3rem; font-weight: bold;">
-                            🎙️ Tiro 녹음기능을 활성화해 주세요!<br>
-                            <span style="font-size: 1rem; font-weight: normal;">토론 내용 기록을 위해 꼭 필요합니다.<br>시작 전 반드시 확인해 주세요.</span>
-                        </div>
-                        ''',
-                        unsafe_allow_html=True
-                    )
                 if st.button("음성 생성", key="summary_tts_btn"):
                     with st.spinner("음성을 생성하고 있습니다..."):
                         try:
@@ -1097,12 +936,7 @@ def main():
                             st.error(f"음성 생성 중 오류: {str(e)}")
                 if st.session_state['tts_audio']:
                     st.markdown(st.session_state['tts_audio'], unsafe_allow_html=True)
-                    # Tiro 녹음기능 알림 추가
-                    st.markdown(get_obsidian_notification_js_scoped(), unsafe_allow_html=True)
-                    st.markdown("<script>showObsidianNotification();</script>", unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
             else:
-                st.markdown("</div>", unsafe_allow_html=True)
                 st.info("등록된 요약 파일이 없습니다.")
         with subtab2:
             st.subheader("적용 파일 검색/AI 요약/음성 생성")
@@ -1160,15 +994,8 @@ def main():
                 selected_summary = summaries[selected_idx]
                 
                 # 우화 스타일 선택
-                fable_types = [
-                    "하모니아",  # 새로운 옵션을 첫 번째로 추가
-                    "이솝우화", "탈무드", "성경이야기", "4대 성인 대화(예수님, 부처님, 공자님, 소크라테스님)", 
-                    "장자 이야기", "노자의 도덕경", "삼국지의 제갈량", "초한지의 장량", "주역", "제자백가",
-                    "피터 드러커, 이나모리 가즈오, 데일 카네기 (기업 및 인재 경영의 대가들)",
-                    "마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨 (경영전략의 대가들)",
-                    "존 폰노이만, 존 내쉬, 토마스 셀링, 애덤 브랜드버거 (게임이론의 대가들)"
-                ]
-                selected_fable_type = st.selectbox("우화 스타일 선택", fable_types, key="fable_type_select", index=0)  # index=0으로 하모니아를 기본값으로 설정
+                fable_types = ["이솝우화", "탈무드", "성경이야기", "4대 성인 대화(예수님, 부처님, 공자님, 소크라테스님)", "장자 이야기", "노자의 도덕경", "삼국지의 제갈량", "초한지의 장량", "주역", "제자백가"]
+                selected_fable_type = st.selectbox("우화 스타일 선택", fable_types, key="fable_type_select")
                 
                 # 오프닝 멘트와 다음 토론 주제 입력란
                 col1, col2 = st.columns(2)

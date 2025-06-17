@@ -125,6 +125,18 @@ def get_suppliers():
             cursor.execute("SELECT * FROM suppliers ORDER BY supplier_id")
             suppliers = cursor.fetchall()
         
+        # AQARA가 없으면 추가
+        aqara_exists = any(s['supplier_name'] == 'AQARA' for s in suppliers)
+        if not aqara_exists:
+            cursor.execute(
+                "INSERT INTO suppliers (supplier_name, contact_person, email, phone, address) VALUES (%s, %s, %s, %s, %s)",
+                ("AQARA", "AQARA", "aqara@example.com", "123-456-7898", "AQARA Address")
+            )
+            conn.commit()
+            # 다시 조회
+            cursor.execute("SELECT * FROM suppliers ORDER BY supplier_id")
+            suppliers = cursor.fetchall()
+        
         return suppliers
     except Exception as e:
         conn.rollback()
@@ -2553,6 +2565,7 @@ def main():
 
     elif menu == "재고 이력":
         st.header("📜 재고 입출고 이력")
+        import pandas as pd  # pandas import 추가
         conn = connect_to_db()
         # 기간 필터
         col1, col2 = st.columns(2)
@@ -2609,130 +2622,136 @@ def main():
             st.subheader("🔧 A/S 지원 물량 입고 등록")
             st.info("💡 공급처에서 A/S 발생 시 사용하라고 무상으로 제공된 제품을 등록합니다.")
             
-            with st.form("as_support_form"):
-                # 공급업체 선택
-                suppliers = get_suppliers()
-                selected_supplier = st.selectbox(
-                    "공급업체 선택",
-                    options=suppliers,
-                    format_func=lambda x: x['supplier_name'],
-                    key="as_supplier"
-                )
+            # 공급업체 선택 (form 밖에서)
+            suppliers = get_suppliers()
+            selected_supplier = st.selectbox(
+                "공급업체 선택",
+                options=suppliers,
+                format_func=lambda x: x['supplier_name'],
+                key="as_supplier"
+            )
+            
+            # 선택된 공급업체의 제품 목록 가져오기 (form 밖에서)
+            selected_product = None
+            products = []
+            if selected_supplier:
+                products = get_products(selected_supplier['supplier_id'])
+                if products:
+                    selected_product = st.selectbox(
+                        "제품 선택",
+                        options=products,
+                        format_func=lambda x: f"{x['model_name']} (현재 재고: {x['current_stock']}개)",
+                        key="as_product"
+                    )
+                else:
+                    st.warning("선택한 공급업체에 등록된 제품이 없습니다.")
+            
+            # A/S 지원 입고 form
+            if selected_supplier and selected_product:
+                with st.form("as_support_form"):
+                    # 제품 정보 표시
+                    st.info(f"선택된 제품: {selected_product['model_name']} (공급업체: {selected_supplier['supplier_name']})")
+                    
+                    # 수량 입력
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        quantity = st.number_input(
+                            "A/S 지원 수량",
+                            min_value=1,
+                            value=1,
+                            step=1,
+                            help="공급처에서 제공한 A/S 지원 물량 수량"
+                        )
+                    with col2:
+                        support_date = st.date_input(
+                            "지원 제공일",
+                            value=date.today(),
+                            help="공급처에서 A/S 지원 물량을 제공한 날짜"
+                        )
+                    
+                    # A/S 관련 정보
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        as_case_number = st.text_input(
+                            "A/S 케이스 번호",
+                            placeholder="AS-2024-001",
+                            help="A/S 발생 케이스 번호 (선택사항)"
+                        )
+                        reference_number = st.text_input(
+                            "참조 번호",
+                            value=f"AS_SUPPORT_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                            help="시스템에서 자동 생성된 참조 번호"
+                        )
+                    
+                    with col2:
+                        as_reason = st.text_area(
+                            "A/S 발생 사유",
+                            placeholder="예: 초기 불량, 사용자 오작동 등",
+                            help="A/S가 발생한 원인이나 사유"
+                        )
+                        supplier_contact = st.text_input(
+                            "공급처 담당자",
+                            placeholder="담당자명 또는 연락처",
+                            help="A/S 지원을 제공한 공급처 담당자 정보"
+                        )
+                    
+                    notes = st.text_area(
+                        "추가 비고",
+                        placeholder="기타 특이사항이나 추가 정보",
+                        help="A/S 지원과 관련된 추가 정보"
+                    )
+                    
+                    # 제출 버튼
+                    submitted = st.form_submit_button("A/S 지원 입고 등록", type="primary")
                 
-                # 제품 선택 및 수량 입력
-                selected_product = None
-                quantity = 0
-                
-                if selected_supplier:
-                    products = get_products(selected_supplier['supplier_id'])
-                    if products:
-                        selected_product = st.selectbox(
-                            "제품 선택",
-                            options=products,
-                            format_func=lambda x: f"{x['model_name']} (현재 재고: {x['current_stock']}개)",
-                            key="as_product"
+                # 폼 제출 후 처리
+                if submitted and selected_product and quantity > 0:
+                    try:
+                        # A/S 지원 입고 처리
+                        notes_detail = f"A/S 지원 물량 입고"
+                        if as_case_number:
+                            notes_detail += f" | 케이스번호: {as_case_number}"
+                        if as_reason:
+                            notes_detail += f" | 사유: {as_reason}"
+                        if supplier_contact:
+                            notes_detail += f" | 담당자: {supplier_contact}"
+                        if notes:
+                            notes_detail += f" | 비고: {notes}"
+                        
+                        # 재고 업데이트 (기존 함수 활용)
+                        success = update_stock(
+                            product_id=selected_product['product_id'],
+                            quantity_change=quantity,
+                            change_type='입고',
+                            reference_number=reference_number,
+                            notes=f"[A/S지원] {notes_detail}",
+                            destination=f"공급처: {selected_supplier['supplier_name']}"
                         )
                         
-                        if selected_product:
-                            col1, col2 = st.columns(2)
+                        if success:
+                            st.success(f"✅ A/S 지원 물량 {quantity}개가 성공적으로 입고되었습니다!")
+                            
+                            # 입고 결과 요약 표시
+                            col1, col2, col3 = st.columns(3)
                             with col1:
-                                quantity = st.number_input(
-                                    "A/S 지원 수량",
-                                    min_value=1,
-                                    value=1,
-                                    step=1,
-                                    help="공급처에서 제공한 A/S 지원 물량 수량"
-                                )
+                                st.metric("입고 제품", selected_product['model_name'])
                             with col2:
-                                support_date = st.date_input(
-                                    "지원 제공일",
-                                    value=date.today(),
-                                    help="공급처에서 A/S 지원 물량을 제공한 날짜"
-                                )
-                
-                # A/S 관련 정보
-                col1, col2 = st.columns(2)
-                with col1:
-                    as_case_number = st.text_input(
-                        "A/S 케이스 번호",
-                        placeholder="AS-2024-001",
-                        help="A/S 발생 케이스 번호 (선택사항)"
-                    )
-                    reference_number = st.text_input(
-                        "참조 번호",
-                        value=f"AS_SUPPORT_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                        help="시스템에서 자동 생성된 참조 번호"
-                    )
-                
-                with col2:
-                    as_reason = st.text_area(
-                        "A/S 발생 사유",
-                        placeholder="예: 초기 불량, 사용자 오작동 등",
-                        help="A/S가 발생한 원인이나 사유"
-                    )
-                    supplier_contact = st.text_input(
-                        "공급처 담당자",
-                        placeholder="담당자명 또는 연락처",
-                        help="A/S 지원을 제공한 공급처 담당자 정보"
-                    )
-                
-                notes = st.text_area(
-                    "추가 비고",
-                    placeholder="기타 특이사항이나 추가 정보",
-                    help="A/S 지원과 관련된 추가 정보"
-                )
-                
-                # 제출 버튼
-                submitted = st.form_submit_button("A/S 지원 입고 등록", type="primary")
-            
-            # 폼 제출 후 처리
-            if submitted and selected_product and quantity > 0:
-                try:
-                    # A/S 지원 입고 처리
-                    notes_detail = f"A/S 지원 물량 입고"
-                    if as_case_number:
-                        notes_detail += f" | 케이스번호: {as_case_number}"
-                    if as_reason:
-                        notes_detail += f" | 사유: {as_reason}"
-                    if supplier_contact:
-                        notes_detail += f" | 담당자: {supplier_contact}"
-                    if notes:
-                        notes_detail += f" | 비고: {notes}"
-                    
-                    # 재고 업데이트 (기존 함수 활용)
-                    success = update_stock(
-                        product_id=selected_product['product_id'],
-                        quantity_change=quantity,
-                        change_type='입고',
-                        reference_number=reference_number,
-                        notes=f"[A/S지원] {notes_detail}",
-                        destination=f"공급처: {selected_supplier['supplier_name']}"
-                    )
-                    
-                    if success:
-                        st.success(f"✅ A/S 지원 물량 {quantity}개가 성공적으로 입고되었습니다!")
-                        
-                        # 입고 결과 요약 표시
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("입고 제품", selected_product['model_name'])
-                        with col2:
-                            st.metric("입고 수량", f"{quantity}개")
-                        with col3:
-                            current_stock = get_stock(selected_product['product_id'])['stock']
-                            st.metric("현재 총 재고", f"{current_stock}개")
-                        
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.error("A/S 지원 입고 처리 중 오류가 발생했습니다.")
-                        
-                except Exception as e:
-                    st.error(f"A/S 지원 입고 처리 중 오류가 발생했습니다: {str(e)}")
-            elif submitted and not selected_product:
-                st.error("제품을 선택해주세요.")
-            elif submitted and quantity <= 0:
-                st.error("수량을 1개 이상 입력해주세요.")
+                                st.metric("입고 수량", f"{quantity}개")
+                            with col3:
+                                current_stock = get_stock(selected_product['product_id'])['stock']
+                                st.metric("현재 총 재고", f"{current_stock}개")
+                            
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error("A/S 지원 입고 처리 중 오류가 발생했습니다.")
+                            
+                    except Exception as e:
+                        st.error(f"A/S 지원 입고 처리 중 오류가 발생했습니다: {str(e)}")
+                elif submitted and not selected_product:
+                    st.error("제품을 선택해주세요.")
+                elif submitted and quantity <= 0:
+                    st.error("수량을 1개 이상 입력해주세요.")
         
         elif as_submenu == "A/S 지원 이력":
             st.subheader("📋 A/S 지원 입고 이력")

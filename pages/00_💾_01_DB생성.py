@@ -1697,6 +1697,32 @@ def add_todo_list_to_work_diary():
         st.error(f"컬럼 추가 오류: {err}")
         return False
 
+def create_jarvis_interactions_table():
+    """JARVIS 대화 저장용 테이블 생성"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS jarvis_interactions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id VARCHAR(100),
+                speaker VARCHAR(50),
+                user_input TEXT,
+                jarvis_response LONGTEXT,
+                files_json JSON,
+                audio_blob LONGBLOB,
+                logs_json JSON,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"JARVIS 대화 테이블 생성 오류: {e}")
+        return False
+
 def main():
     
     
@@ -1716,7 +1742,8 @@ def main():
          "프로젝트 리뷰 테이블에 가치 지표 컬럼 추가",
          "Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성",
          "업무일지 테이블 생성",
-         "업무일지 테이블에 TODO 리스트 컬럼 추가"]
+         "업무일지 테이블에 TODO 리스트 컬럼 추가",
+         "JARVIS 대화 저장 테이블 생성"]
     )
     
     if menu == "테이블 목록":
@@ -2446,6 +2473,19 @@ def main():
                 """)
             else:
                 st.error("❌ TODO 리스트 컬럼 추가에 실패했습니다.")
+
+    elif menu == "JARVIS 대화 저장 테이블 생성":
+        st.header("JARVIS 대화 저장 테이블 생성")
+        if st.button("JARVIS 대화 저장 테이블 생성", type="primary"):
+            if create_jarvis_interactions_table():
+                st.success("JARVIS 대화 저장 테이블이 성공적으로 생성되었습니다!")
+                # 생성된 테이블 구조 표시
+                schema = get_table_schema("jarvis_interactions")
+                if schema:
+                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                    st.dataframe(schema_df)
+            else:
+                st.error("테이블 생성 중 오류가 발생했습니다.")
 
 if __name__ == "__main__":
     main() 

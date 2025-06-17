@@ -1,18 +1,4 @@
 {
-  "mcp-server-firecrawl": {
-    "command": "npx",
-    "args": [
-      "-y",
-      "@smithery/cli@latest",
-      "run",
-      "@mendableai/mcp-server-firecrawl",
-      "--key",
-      "40c9efff-242a-46d9-8a5e-920d93026767",
-      "--profile",
-      "fellow-marten-leepHc"
-    ],
-    "transport": "stdio"
-  },
   "desktop-commander": {
     "command": "npx",
     "args": [

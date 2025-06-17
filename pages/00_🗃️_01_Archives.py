@@ -20,21 +20,26 @@ from typing import Dict, List, Any, Optional
 import tempfile
 import PyPDF2
 import docx
+from pptx import Presentation
+import openpyxl
+import pandas as pd
 from langchain_anthropic import ChatAnthropic
 import time
+import math
+from PyPDF2 import PdfReader, PdfWriter
 
 # 환경 변수 로드
 load_dotenv()
 
 # 페이지 설정
 st.set_page_config(
-    page_title="📁 파일 저장소",
+    page_title="📁 ARCHIVES",
     page_icon="📁",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📁 파일 저장소 시스템")
+st.title("📁 ARCHIVES")
 # 인증 기능 (간단한 비밀번호 보호)
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -162,6 +167,24 @@ def parse_uploaded_file(uploaded_file):
             doc = docx.Document(uploaded_file)
             for paragraph in doc.paragraphs:
                 content += paragraph.text + "\n"
+        
+        elif file_extension == 'pptx':
+            prs = Presentation(uploaded_file)
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        content += shape.text + "\n"
+        
+        elif file_extension == 'xlsx':
+            workbook = openpyxl.load_workbook(uploaded_file, data_only=True)
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                content += f"=== {sheet_name} ===\n"
+                for row in sheet.iter_rows(values_only=True):
+                    row_text = '\t'.join([str(cell) if cell is not None else '' for cell in row])
+                    if row_text.strip():
+                        content += row_text + "\n"
+                content += "\n"
                 
         elif file_extension in ['txt', 'md']:
             uploaded_file.seek(0)
@@ -463,23 +486,94 @@ def display_file_preview(file_data, file_type, filename):
                 st.image(
                     file_data['binary_data'],
                     caption=f"🖼️ {filename}",
-                    use_column_width=True
+                    use_container_width=True
                 )
                 return True
         
         elif file_type_lower == 'pdf':
             if file_data.get('binary_data'):
-                pdf_base64 = base64.b64encode(file_data['binary_data']).decode('utf-8')
-                pdf_display = f"""
-                <iframe src="data:application/pdf;base64,{pdf_base64}" 
-                        width="100%" height="600px" type="application/pdf">
-                    <p>PDF를 표시할 수 없습니다. 
-                    <a href="data:application/pdf;base64,{pdf_base64}" target="_blank">
-                    여기를 클릭하여 새 탭에서 열어보세요.</a></p>
-                </iframe>
-                """
-                st.markdown(pdf_display, unsafe_allow_html=True)
-                return True
+                import math
+                from PyPDF2 import PdfReader, PdfWriter
+                import tempfile, os
+
+                total_size = file_data['file_size']
+                # 1MB 초과시 페이징 미리보기 (1페이지씩)
+                if total_size > 1 * 1024 * 1024:
+                    key = f"pdf_preview_page_start_{filename}"
+                    if key not in st.session_state:
+                        st.session_state[key] = 0  # 0-based index
+
+                    # PDF 전체 페이지 수 구하기
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                        tmp_in.write(file_data['binary_data'])
+                        tmp_in_path = tmp_in.name
+                    reader = PdfReader(tmp_in_path)
+                    total_pages = len(reader.pages)
+                    os.unlink(tmp_in_path)
+
+                    page_start = st.session_state[key]
+                    page_end = min(page_start + 1, total_pages)
+
+                    col_prev, col_next = st.columns([1, 1])
+                    with col_prev:
+                        if st.button("⬅️ 이전", disabled=page_start == 0, key=f"prev_{filename}"):
+                            st.session_state[key] = max(0, page_start - 1)
+                            st.rerun()
+                    with col_next:
+                        if st.button("다음 ➡️", disabled=page_end >= total_pages, key=f"next_{filename}"):
+                            st.session_state[key] = min(total_pages - 1, page_start + 1)
+                            st.rerun()
+
+                    # 미리보기 PDF 생성 (1페이지)
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                            tmp_in.write(file_data['binary_data'])
+                            tmp_in_path = tmp_in.name
+                        reader = PdfReader(tmp_in_path)
+                        writer = PdfWriter()
+                        for i in range(page_start, page_end):
+                            writer.add_page(reader.pages[i])
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_out:
+                            writer.write(tmp_out)
+                            tmp_out_path = tmp_out.name
+                        with open(tmp_out_path, "rb") as f:
+                            preview_pdf_bytes = f.read()
+                        os.unlink(tmp_in_path)
+                        os.unlink(tmp_out_path)
+                        st.markdown(f"**페이지 {page_start+1} / {total_pages}**")
+                        pdf_base64 = base64.b64encode(preview_pdf_bytes).decode('utf-8')
+                        pdf_display = f"""
+                        <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                                width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                            <p>PDF를 표시할 수 없습니다. 
+                            <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                            여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                        </iframe>
+                        """
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"PDF 미리보기 생성 중 오류: {e}")
+
+                    st.download_button(
+                        label="💾 전체 PDF 다운로드",
+                        data=file_data['binary_data'],
+                        file_name=filename,
+                        mime="application/pdf"
+                    )
+                    return True
+                else:
+                    st.subheader(f"📄 PDF 미리보기: {filename}")
+                    pdf_base64 = base64.b64encode(file_data['binary_data']).decode('utf-8')
+                    pdf_display = f"""
+                    <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                            width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                        <p>PDF를 표시할 수 없습니다. 
+                        <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                        여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                    </iframe>
+                    """
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                    return True
         
         elif file_type_lower in ['txt', 'md']:
             if file_data.get('binary_data'):
@@ -501,16 +595,286 @@ def display_file_preview(file_data, file_type, filename):
                     st.error(f"텍스트 파일을 읽는 중 오류 발생: {str(e)}")
                     return False
         
+        elif file_type_lower == 'xlsx':
+            return display_excel_preview(file_data, filename)
+        
+        elif file_type_lower == 'pptx':
+            return display_powerpoint_preview(file_data, filename)
+        
+        elif file_type_lower == 'docx':
+            return display_word_preview(file_data, filename)
+        
         return False
         
     except Exception as e:
         st.error(f"파일 미리보기 오류: {str(e)}")
         return False
 
+def display_excel_preview(file_data, filename):
+    """엑셀 파일 미리보기"""
+    try:
+        st.subheader(f"📊 Excel 미리보기: {filename}")
+        
+        if file_data.get('binary_data'):
+            # 바이너리 데이터를 임시 파일로 저장
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+                tmp_file.write(file_data['binary_data'])
+                tmp_file_path = tmp_file.name
+            
+            try:
+                # 엑셀 파일 읽기
+                workbook = openpyxl.load_workbook(tmp_file_path, data_only=True)
+                
+                # 시트 탭 생성
+                sheet_names = workbook.sheetnames
+                if len(sheet_names) > 1:
+                    selected_sheet = st.selectbox("시트 선택", sheet_names, key=f"sheet_select_{filename}")
+                else:
+                    selected_sheet = sheet_names[0]
+                
+                # 선택된 시트 표시
+                sheet = workbook[selected_sheet]
+                
+                # 데이터를 pandas DataFrame으로 변환
+                data = []
+                for row in sheet.iter_rows(values_only=True):
+                    data.append(row)
+                
+                if data:
+                    # 첫 번째 행을 헤더로 사용
+                    df = pd.DataFrame(data[1:], columns=data[0])
+                    
+                    # NaN 값을 빈 문자열로 변경
+                    df = df.fillna('')
+                    
+                    st.write(f"**시트: {selected_sheet}**")
+                    st.write(f"행 수: {len(df)}, 열 수: {len(df.columns)}")
+                    
+                    # 테이블 표시 (최대 100행)
+                    if len(df) > 100:
+                        st.warning("⚠️ 데이터가 많아서 상위 100행만 표시합니다.")
+                        st.dataframe(df.head(100), use_container_width=True)
+                    else:
+                        st.dataframe(df, use_container_width=True)
+                else:
+                    st.info("빈 시트입니다.")
+                
+                workbook.close()
+                return True
+                
+            finally:
+                # 임시 파일 삭제
+                import os
+                if os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+        
+        return False
+    except Exception as e:
+        st.error(f"Excel 미리보기 오류: {str(e)}")
+        return False
+
+def display_powerpoint_preview(file_data, filename):
+    """PowerPoint 파일 미리보기"""
+    try:
+        st.subheader(f"📋 PowerPoint 미리보기: {filename}")
+        
+        if file_data.get('binary_data'):
+            # 바이너리 데이터를 임시 파일로 저장
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_file:
+                tmp_file.write(file_data['binary_data'])
+                tmp_file_path = tmp_file.name
+            
+            try:
+                # PowerPoint 파일 읽기
+                prs = Presentation(tmp_file_path)
+                
+                st.write(f"총 슬라이드 수: {len(prs.slides)}")
+                st.markdown("---")
+                
+                # 모든 슬라이드를 순서대로 표시
+                for i, slide in enumerate(prs.slides, 1):
+                    # 슬라이드 헤더
+                    st.markdown(f"## 📋 슬라이드 {i}")
+                    
+                    slide_content = []
+                    slide_titles = []
+                    
+                    # 슬라이드 내용 추출 (텍스트와 이미지를 위치 순서대로)
+                    slide_elements = []  # 텍스트와 이미지를 순서대로 저장
+                    
+                    # shape의 위치 정보를 기준으로 정렬하여 처리
+                    sorted_shapes = []
+                    for shape in slide.shapes:
+                        try:
+                            # shape의 top 위치를 기준으로 정렬
+                            top_position = shape.top if hasattr(shape, 'top') else 0
+                            sorted_shapes.append((top_position, shape))
+                        except:
+                            sorted_shapes.append((0, shape))
+                    
+                    # 위치 순서대로 정렬
+                    sorted_shapes.sort(key=lambda x: x[0])
+                    
+                    for top_pos, shape in sorted_shapes:
+                        # 텍스트 처리
+                        if hasattr(shape, "text") and shape.text.strip():
+                            is_title = False
+                            try:
+                                # placeholder인지 확인
+                                if hasattr(shape, 'is_placeholder') and shape.is_placeholder:
+                                    if hasattr(shape, 'placeholder_format') and shape.placeholder_format:
+                                        if shape.placeholder_format.type == 1:  # 제목 placeholder
+                                            is_title = True
+                                # 또는 간단한 휴리스틱으로 제목 감지
+                                elif len(shape.text.strip()) < 100 and '\n' not in shape.text.strip():
+                                    is_title = True
+                            except:
+                                pass
+                            
+                            if is_title:
+                                slide_elements.append({
+                                    'type': 'title',
+                                    'content': shape.text,
+                                    'position': top_pos
+                                })
+                            else:
+                                slide_elements.append({
+                                    'type': 'text',
+                                    'content': shape.text,
+                                    'position': top_pos
+                                })
+                        
+                        # 이미지 처리
+                        try:
+                            from pptx.enum.shapes import MSO_SHAPE_TYPE
+                            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                                image = shape.image
+                                image_bytes = image.blob
+                                slide_elements.append({
+                                    'type': 'image',
+                                    'content': {
+                                        'data': image_bytes,
+                                        'filename': getattr(image, 'filename', f'slide_{i}_image_{len([e for e in slide_elements if e["type"] == "image"])+1}')
+                                    },
+                                    'position': top_pos
+                                })
+                        except Exception as e:
+                            pass
+                    
+                    # 슬라이드 요소들을 위치 순서대로 표시
+                    if slide_elements:
+                        for element in slide_elements:
+                            if element['type'] == 'title':
+                                st.markdown(f"### 🎯 {element['content']}")
+                                
+                            elif element['type'] == 'text':
+                                content = element['content']
+                                if content.strip():
+                                    # 줄바꿈을 기준으로 나누어서 표시
+                                    lines = content.split('\n')
+                                    for line in lines:
+                                        if line.strip():
+                                            st.markdown(f"• {line.strip()}")
+                                    st.markdown("")  # 텍스트 블록 사이 여백
+                                    
+                            elif element['type'] == 'image':
+                                img = element['content']
+                                st.image(
+                                    img['data'], 
+                                    caption=f"📷 {img['filename']}", 
+                                    use_container_width=True
+                                )
+                                st.markdown("")  # 이미지 사이 여백
+                    else:
+                        st.info("이 슬라이드에는 내용이 없습니다.")
+                    
+                    # 슬라이드 구분선 (마지막 슬라이드가 아닌 경우)
+                    if i < len(prs.slides):
+                        st.markdown("---")
+                        st.markdown("")  # 여백 추가
+                
+                return True
+                
+            finally:
+                # 임시 파일 삭제
+                import os
+                if os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+        
+        return False
+    except Exception as e:
+        st.error(f"PowerPoint 미리보기 오류: {str(e)}")
+        return False
+
+def display_word_preview(file_data, filename):
+    """Word 문서 미리보기"""
+    try:
+        st.subheader(f"📝 Word 문서 미리보기: {filename}")
+        
+        if file_data.get('binary_data'):
+            # 바이너리 데이터를 임시 파일로 저장
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
+                tmp_file.write(file_data['binary_data'])
+                tmp_file_path = tmp_file.name
+            
+            try:
+                # Word 문서 읽기
+                doc = docx.Document(tmp_file_path)
+                
+                st.write(f"총 단락 수: {len(doc.paragraphs)}")
+                
+                # 문서 내용 표시
+                for i, paragraph in enumerate(doc.paragraphs):
+                    if paragraph.text.strip():
+                        # 스타일에 따라 다른 형식으로 표시
+                        text = paragraph.text.strip()
+                        
+                        # 제목 스타일 감지 (간단한 휴리스틱)
+                        if len(text) < 100 and (text.isupper() or any(keyword in text.lower() for keyword in ['제목', '장', '절', 'chapter', 'section'])):
+                            st.markdown(f"### {text}")
+                        elif paragraph.style.name.startswith('Heading') if hasattr(paragraph, 'style') else False:
+                            st.markdown(f"### {text}")
+                        else:
+                            st.markdown(text)
+                        
+                        st.markdown("---")  # 단락 구분선
+                
+                # 표 내용 표시
+                if doc.tables:
+                    st.subheader("📊 문서 내 표")
+                    for i, table in enumerate(doc.tables, 1):
+                        st.write(f"**표 {i}**")
+                        
+                        # 표 데이터를 DataFrame으로 변환
+                        table_data = []
+                        for row in table.rows:
+                            row_data = [cell.text.strip() for cell in row.cells]
+                            table_data.append(row_data)
+                        
+                        if table_data:
+                            df = pd.DataFrame(table_data)
+                            st.dataframe(df, use_container_width=True)
+                
+                return True
+                
+            finally:
+                # 임시 파일 삭제
+                import os
+                if os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+        
+        return False
+    except Exception as e:
+        st.error(f"Word 문서 미리보기 오류: {str(e)}")
+        return False
+
 def get_file_mime_type(file_type):
     """파일 타입에 따른 MIME 타입 반환"""
     mime_types = {
         'pdf': 'application/pdf',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'txt': 'text/plain',
         'md': 'text/markdown',
         'jpg': 'image/jpeg',
@@ -739,6 +1103,83 @@ def get_all_authors():
         cursor.close()
         conn.close()
 
+def replace_storage_file(file_data_id, new_file_data):
+    """기존 파일을 새 파일로 교체"""
+    conn = connect_to_db()
+    if not conn:
+        return False
+    
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            UPDATE file_storage_files SET
+            filename = %s, file_type = %s, file_content = %s, 
+            file_binary_data = %s, file_size = %s, uploaded_at = CURRENT_TIMESTAMP
+            WHERE file_data_id = %s
+        """, (
+            new_file_data['filename'],
+            new_file_data['file_type'],
+            new_file_data['content'],
+            new_file_data['binary_data'],
+            new_file_data['size'],
+            file_data_id
+        ))
+        
+        conn.commit()
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"파일 교체 오류: {err}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def add_files_to_storage(storage_id, new_files_data):
+    """기존 저장소에 새 파일들 추가"""
+    conn = connect_to_db()
+    if not conn:
+        return False
+    
+    cursor = conn.cursor()
+    
+    try:
+        # 새 파일들 저장
+        for file_data in new_files_data:
+            cursor.execute("""
+                INSERT INTO file_storage_files 
+                (storage_id, filename, file_type, file_content, file_binary_data, file_size)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                storage_id,
+                file_data['filename'],
+                file_data['file_type'],
+                file_data['content'],
+                file_data['binary_data'],
+                file_data['size']
+            ))
+        
+        # 파일 개수 업데이트
+        cursor.execute("""
+            UPDATE file_storage SET 
+            file_count = (SELECT COUNT(*) FROM file_storage_files WHERE storage_id = %s),
+            updated_at = CURRENT_TIMESTAMP
+            WHERE file_id = %s
+        """, (storage_id, storage_id))
+        
+        conn.commit()
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"파일 추가 오류: {err}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
 def main():
     # 테이블 생성 확인
     create_file_storage_tables()
@@ -787,8 +1228,8 @@ def main():
             
             # 파일 업로드
             uploaded_files = st.file_uploader(
-                "📁 파일 선택 (PDF, Markdown, txt, jpeg, png)",
-                type=['pdf', 'md', 'txt', 'jpg', 'jpeg', 'png'],
+                "📁 파일 선택 (PDF, DOCX, PPTX, XLSX, Markdown, txt, jpeg, png)",
+                type=['pdf', 'docx', 'pptx', 'xlsx', 'md', 'txt', 'jpg', 'jpeg', 'png'],
                 accept_multiple_files=True,
                 help="최대 10개 파일까지 업로드 가능합니다."
             )
@@ -886,6 +1327,32 @@ def main():
             st.info("저장된 파일이 없습니다.")
             return
         
+        # 전체 화면 파일 미리보기 (expander 밖에서 표시)
+        if st.session_state.get('preview_file_id'):
+            st.markdown("---")
+            st.markdown("## 🔍 파일 미리보기 (전체 화면)")
+            
+            col_preview_1, col_preview_2 = st.columns([10, 1])
+            with col_preview_2:
+                if st.button("❌ 닫기", key="close_preview"):
+                    del st.session_state.preview_file_id
+                    del st.session_state.preview_filename
+                    del st.session_state.preview_file_type
+                    st.rerun()
+            
+            with col_preview_1:
+                file_data = get_file_binary_data(st.session_state.preview_file_id)
+                if file_data:
+                    display_file_preview(
+                        file_data, 
+                        st.session_state.preview_file_type, 
+                        st.session_state.preview_filename
+                    )
+                else:
+                    st.error("파일 데이터를 불러올 수 없습니다.")
+            
+            st.markdown("---")
+        
         for storage in storages:
             with st.expander(f"📁 {storage['title']} ({storage['author']}) - {storage['created_at'].strftime('%Y-%m-%d %H:%M')}"):
                 col1, col2 = st.columns([3, 1])
@@ -924,31 +1391,83 @@ def main():
                             
                             with col2:
                                 if st.button(f"👁️ 미리보기", key=f"preview_{file_info['file_data_id']}"):
-                                    file_data = get_file_binary_data(file_info['file_data_id'])
-                                    if file_data:
-                                        display_file_preview(file_data, file_data['file_type'], file_data['filename'])
+                                    st.session_state.preview_file_id = file_info['file_data_id']
+                                    st.session_state.preview_filename = file_info['filename']
+                                    st.session_state.preview_file_type = file_info['file_type']
                             
                             with col3:
-                                col3_1, col3_2 = st.columns(2)
-                                with col3_1:
-                                    file_data = get_file_binary_data(file_info['file_data_id'])
-                                    if file_data:
-                                        mime_type = get_file_mime_type(file_data['file_type'])
-                                        st.download_button(
-                                            label="💾",
-                                            data=file_data['binary_data'],
-                                            file_name=file_data['filename'],
-                                            mime=mime_type,
-                                            key=f"download_{file_info['file_data_id']}",
-                                            help="다운로드"
-                                        )
-                                with col3_2:
-                                    if st.button("🗑️", key=f"delete_file_{file_info['file_data_id']}", help="파일 삭제"):
-                                        if delete_storage_file(file_info['file_data_id']):
-                                            st.success("파일이 삭제되었습니다!")
-                                            st.rerun()
+                                # 버튼들을 가로로 배치
+                                file_data = get_file_binary_data(file_info['file_data_id'])
+                                if file_data:
+                                    mime_type = get_file_mime_type(file_data['file_type'])
+                                    st.download_button(
+                                        label="💾 다운로드",
+                                        data=file_data['binary_data'],
+                                        file_name=file_data['filename'],
+                                        mime=mime_type,
+                                        key=f"download_{file_info['file_data_id']}",
+                                        use_container_width=True
+                                    )
+                                
+                                if st.button("🔄 교체", key=f"replace_file_{file_info['file_data_id']}", use_container_width=True):
+                                    st.session_state[f'replace_file_{file_info["file_data_id"]}'] = True
+                                
+                                if st.button("🗑️ 삭제", key=f"delete_file_{file_info['file_data_id']}", use_container_width=True):
+                                    if delete_storage_file(file_info['file_data_id']):
+                                        st.success("파일이 삭제되었습니다!")
+                                        st.rerun()
+                                    else:
+                                        st.error("파일 삭제에 실패했습니다.")
+                            
+                            # 파일 교체 UI
+                            if st.session_state.get(f'replace_file_{file_info["file_data_id"]}'):
+                                st.write("**파일 교체**")
+                                replacement_file = st.file_uploader(
+                                    f"새 파일 선택 (현재: {file_info['filename']})",
+                                    type=['pdf', 'docx', 'pptx', 'xlsx', 'md', 'txt', 'jpg', 'jpeg', 'png'],
+                                    key=f"replace_upload_{file_info['file_data_id']}"
+                                )
+                                
+                                col_rep_1, col_rep_2 = st.columns(2)
+                                with col_rep_1:
+                                    if st.button("✅ 교체 확인", key=f"confirm_replace_{file_info['file_data_id']}"):
+                                        if replacement_file:
+                                            new_file_data = parse_uploaded_file(replacement_file)
+                                            if new_file_data and replace_storage_file(file_info['file_data_id'], new_file_data):
+                                                st.success("파일이 교체되었습니다!")
+                                                del st.session_state[f'replace_file_{file_info["file_data_id"]}']
+                                                st.rerun()
+                                            else:
+                                                st.error("파일 교체에 실패했습니다.")
                                         else:
-                                            st.error("파일 삭제에 실패했습니다.")
+                                            st.error("교체할 파일을 선택해 주세요.")
+                                with col_rep_2:
+                                    if st.button("❌ 취소", key=f"cancel_replace_{file_info['file_data_id']}"):
+                                        del st.session_state[f'replace_file_{file_info["file_data_id"]}']
+                                        st.rerun()
+                    
+                    # 새 파일 추가 기능
+                    st.subheader("➕ 새 파일 추가")
+                    new_files = st.file_uploader(
+                        "새 파일 선택",
+                        type=['pdf', 'docx', 'pptx', 'xlsx', 'md', 'txt', 'jpg', 'jpeg', 'png'],
+                        accept_multiple_files=True,
+                        key=f"add_files_{storage['file_id']}"
+                    )
+                    
+                    if new_files and st.button("➕ 파일 추가", key=f"add_files_btn_{storage['file_id']}"):
+                        with st.spinner("파일을 추가하는 중..."):
+                            new_files_data = []
+                            for new_file in new_files:
+                                file_data = parse_uploaded_file(new_file)
+                                if file_data:
+                                    new_files_data.append(file_data)
+                            
+                            if new_files_data and add_files_to_storage(storage['file_id'], new_files_data):
+                                st.success(f"{len(new_files_data)}개 파일이 추가되었습니다!")
+                                st.rerun()
+                            else:
+                                st.error("파일 추가에 실패했습니다.")
                     
                     # AI 분석 결과 표시
                     analyses = get_ai_analysis(storage['file_id'])
@@ -1085,6 +1604,32 @@ def main():
             st.session_state.search_results = storages
             st.session_state.search_performed = True
         
+        # 전체 화면 파일 미리보기 (고급 검색용)
+        if st.session_state.get('preview_file_id'):
+            st.markdown("---")
+            st.markdown("## 🔍 파일 미리보기 (전체 화면)")
+            
+            col_preview_1, col_preview_2 = st.columns([10, 1])
+            with col_preview_2:
+                if st.button("❌ 닫기", key="close_search_preview"):
+                    del st.session_state.preview_file_id
+                    del st.session_state.preview_filename
+                    del st.session_state.preview_file_type
+                    st.rerun()
+            
+            with col_preview_1:
+                file_data = get_file_binary_data(st.session_state.preview_file_id)
+                if file_data:
+                    display_file_preview(
+                        file_data, 
+                        st.session_state.preview_file_type, 
+                        st.session_state.preview_filename
+                    )
+                else:
+                    st.error("파일 데이터를 불러올 수 없습니다.")
+            
+            st.markdown("---")
+
         # 검색 결과 표시
         if st.session_state.search_performed and st.session_state.search_results is not None:
             storages = st.session_state.search_results
@@ -1106,6 +1651,65 @@ def main():
             if storages:
                 st.success(f"**검색 결과: {len(storages)}개**")
                 
+                # 선택된 저장소 상세 보기
+                if st.session_state.get('selected_storage'):
+                    selected_storage = None
+                    for storage in storages:
+                        if storage['file_id'] == st.session_state.selected_storage:
+                            selected_storage = storage
+                            break
+                    
+                    if selected_storage:
+                        st.markdown("---")
+                        st.markdown(f"## 📂 {selected_storage['title']} 상세 보기")
+                        
+                        col_back, col_title = st.columns([1, 10])
+                        with col_back:
+                            if st.button("← 뒤로", key="back_to_search"):
+                                del st.session_state.selected_storage
+                                st.rerun()
+                        
+                        # 파일 목록 표시
+                        files = get_storage_files(selected_storage['file_id'])
+                        if files:
+                            st.subheader("📄 파일 목록")
+                            for file_info in files:
+                                col1, col2, col3 = st.columns([2, 1, 1])
+                                
+                                with col1:
+                                    st.write(f"**{file_info['filename']}** ({file_info['file_type'].upper()})")
+                                    st.caption(f"크기: {file_info['file_size']:,} bytes")
+                                
+                                with col2:
+                                    if st.button(f"👁️ 미리보기", key=f"search_preview_{file_info['file_data_id']}"):
+                                        st.session_state.preview_file_id = file_info['file_data_id']
+                                        st.session_state.preview_filename = file_info['filename']
+                                        st.session_state.preview_file_type = file_info['file_type']
+                                
+                                with col3:
+                                    file_data = get_file_binary_data(file_info['file_data_id'])
+                                    if file_data:
+                                        mime_type = get_file_mime_type(file_data['file_type'])
+                                        st.download_button(
+                                            label="💾 다운로드",
+                                            data=file_data['binary_data'],
+                                            file_name=file_data['filename'],
+                                            mime=mime_type,
+                                            key=f"search_download_{file_info['file_data_id']}"
+                                        )
+                        
+                        # AI 분석 결과 표시
+                        analyses = get_ai_analysis(selected_storage['file_id'])
+                        if analyses:
+                            st.subheader("🤖 AI 분석 결과")
+                            for analysis in analyses:
+                                st.write(f"**모델:** {analysis['model_name']}")
+                                st.write(f"**분석 시간:** {analysis['created_at'].strftime('%Y-%m-%d %H:%M')}")
+                                st.markdown(analysis['analysis_content'])
+                                st.divider()
+                        
+                        st.markdown("---")
+                
                 for storage in storages:
                     with st.container():
                         col1, col2 = st.columns([4, 1])
@@ -1122,8 +1726,7 @@ def main():
                             with col2_1:
                                 if st.button("📂", key=f"search_view_{storage['file_id']}", help="상세 보기"):
                                     st.session_state.selected_storage = storage['file_id']
-                                    # 검색 결과 유지를 위해 메뉴 변경하지 않음
-                                    st.switch_page("pages/파일 저장소.py")
+                                    st.rerun()
                             with col2_2:
                                 if st.button("✏️", key=f"search_edit_{storage['file_id']}", help="편집"):
                                     st.session_state.edit_storage_id = storage['file_id']
@@ -1281,12 +1884,101 @@ def main():
                 analyses = get_ai_analysis(storage_id)
                 st.metric("AI 분석", len(analyses))
             
-            # 관련 파일 목록 표시
+            # 관련 파일 목록 표시 및 관리
             files = get_storage_files(storage_id)
             if files:
-                st.subheader("📄 포함된 파일")
+                st.subheader("📄 파일 관리")
                 for file_info in files:
-                    st.write(f"• **{file_info['filename']}** ({file_info['file_type'].upper()}) - {file_info['file_size']:,} bytes")
+                    col_file_1, col_file_2 = st.columns([4, 1])
+                    
+                    with col_file_1:
+                        st.write(f"• **{file_info['filename']}** ({file_info['file_type'].upper()}) - {file_info['file_size']:,} bytes")
+                    
+                    with col_file_2:
+                        if st.button("🔄 교체", key=f"edit_replace_{file_info['file_data_id']}", use_container_width=True):
+                            st.session_state[f'edit_replace_file_{file_info["file_data_id"]}'] = True
+                        
+                        if st.button("🗑️ 삭제", key=f"edit_delete_{file_info['file_data_id']}", use_container_width=True):
+                            if delete_storage_file(file_info['file_data_id']):
+                                st.success("파일이 삭제되었습니다!")
+                                st.rerun()
+                            else:
+                                st.error("파일 삭제에 실패했습니다.")
+                    
+                    # 파일 교체 UI
+                    if st.session_state.get(f'edit_replace_file_{file_info["file_data_id"]}'):
+                        st.write("**파일 교체**")
+                        replacement_file = st.file_uploader(
+                            f"새 파일 선택 (현재: {file_info['filename']})",
+                            type=['pdf', 'docx', 'pptx', 'xlsx', 'md', 'txt', 'jpg', 'jpeg', 'png'],
+                            key=f"edit_replace_upload_{file_info['file_data_id']}"
+                        )
+                        
+                        col_rep_1, col_rep_2 = st.columns(2)
+                        with col_rep_1:
+                            if st.button("✅ 교체 확인", key=f"edit_confirm_replace_{file_info['file_data_id']}"):
+                                if replacement_file:
+                                    new_file_data = parse_uploaded_file(replacement_file)
+                                    if new_file_data and replace_storage_file(file_info['file_data_id'], new_file_data):
+                                        st.success("파일이 교체되었습니다!")
+                                        del st.session_state[f'edit_replace_file_{file_info["file_data_id"]}']
+                                        st.rerun()
+                                    else:
+                                        st.error("파일 교체에 실패했습니다.")
+                                else:
+                                    st.error("교체할 파일을 선택해 주세요.")
+                        with col_rep_2:
+                            if st.button("❌ 취소", key=f"edit_cancel_replace_{file_info['file_data_id']}"):
+                                del st.session_state[f'edit_replace_file_{file_info["file_data_id"]}']
+                                st.rerun()
+                
+                # 새 파일 추가
+                st.subheader("➕ 새 파일 추가")
+                new_files = st.file_uploader(
+                    "새 파일 선택",
+                    type=['pdf', 'docx', 'pptx', 'xlsx', 'md', 'txt', 'jpg', 'jpeg', 'png'],
+                    accept_multiple_files=True,
+                    key=f"edit_add_files_{storage_id}"
+                )
+                
+                if new_files and st.button("➕ 파일 추가", key=f"edit_add_files_btn_{storage_id}"):
+                    with st.spinner("파일을 추가하는 중..."):
+                        new_files_data = []
+                        for new_file in new_files:
+                            file_data = parse_uploaded_file(new_file)
+                            if file_data:
+                                new_files_data.append(file_data)
+                        
+                        if new_files_data and add_files_to_storage(storage_id, new_files_data):
+                            st.success(f"{len(new_files_data)}개 파일이 추가되었습니다!")
+                            st.rerun()
+                        else:
+                            st.error("파일 추가에 실패했습니다.")
+            else:
+                st.info("포함된 파일이 없습니다.")
+                
+                # 파일이 없는 경우에도 새 파일 추가 기능 제공
+                st.subheader("➕ 파일 추가")
+                new_files = st.file_uploader(
+                    "파일 선택",
+                    type=['pdf', 'docx', 'pptx', 'xlsx', 'md', 'txt', 'jpg', 'jpeg', 'png'],
+                    accept_multiple_files=True,
+                    key=f"edit_add_files_empty_{storage_id}"
+                )
+                
+                if new_files and st.button("➕ 파일 추가", key=f"edit_add_files_empty_btn_{storage_id}"):
+                    with st.spinner("파일을 추가하는 중..."):
+                        new_files_data = []
+                        for new_file in new_files:
+                            file_data = parse_uploaded_file(new_file)
+                            if file_data:
+                                new_files_data.append(file_data)
+                        
+                        if new_files_data and add_files_to_storage(storage_id, new_files_data):
+                            st.success(f"{len(new_files_data)}개 파일이 추가되었습니다!")
+                            st.rerun()
+                        else:
+                            st.error("파일 추가에 실패했습니다.")
     
     elif menu == "📊 통계":
         st.header("📊 파일 저장소 통계")

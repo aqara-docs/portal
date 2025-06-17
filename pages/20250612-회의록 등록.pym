@@ -715,20 +715,14 @@ def main():
             key="meeting_type_select"
         )
         
-        # 안내 문구 추가
-        st.info("회의 녹음 파일, 텍스트 파일, 또는 아래 텍스트박스 중 하나만 입력해도 AI 요약이 가능합니다. 텍스트박스에 입력된 내용이 있으면 파일보다 우선 사용됩니다.")
-        
-        # 직접 텍스트 입력용 텍스트박스 추가
-        direct_text_input = st.text_area(
-            "직접 회의록 텍스트 입력(선택)",
-            value="",
-            placeholder="여기에 회의 내용을 직접 입력할 수 있습니다. 파일 업로드 대신 사용할 수 있습니다.",
-            height=200,
-            key="direct_text_input_box"
-        )
-        
         # 독서 토론 기본 참고 사항
-        reading_discussion_default = """핵심 논점 및 주요 의견: 각 참가자가 제시한 주요 관점과 핵심 논점을 중심으로 요약해 주세요.\n의견 대립점: 토론 중 발생한 의견 차이나 대립되는 시각을 명확히 정리해 주세요.\n새로운 인사이트: 토론을 통해 도출된 새로운 통찰이나 참신한 관점을 중심으로 요약해 주세요.\n질문과 응답: 토론 중 제기된 중요한 질문과 그에 대한 응답을 요약해 주세요.\n책과 현실의 연결점: 책의 내용이 현실 세계나 참가자들의 경험과 어떻게 연결되었는지 중심으로 요약해 주세요.\n결론 및 합의점: 토론 결과 도출된 결론이나 참가자들이 동의한 핵심 포인트를 요약해 주세요.\n후속 논의 주제: 이번 토론에서 완전히 다루지 못했거나 다음 토론에서 더 깊이 다룰 만한 주제를 정리해 주세요."""
+        reading_discussion_default = """핵심 논점 및 주요 의견: 각 참가자가 제시한 주요 관점과 핵심 논점을 중심으로 요약해 주세요.
+의견 대립점: 토론 중 발생한 의견 차이나 대립되는 시각을 명확히 정리해 주세요.
+새로운 인사이트: 토론을 통해 도출된 새로운 통찰이나 참신한 관점을 중심으로 요약해 주세요.
+질문과 응답: 토론 중 제기된 중요한 질문과 그에 대한 응답을 요약해 주세요.
+책과 현실의 연결점: 책의 내용이 현실 세계나 참가자들의 경험과 어떻게 연결되었는지 중심으로 요약해 주세요.
+결론 및 합의점: 토론 결과 도출된 결론이나 참가자들이 동의한 핵심 포인트를 요약해 주세요.
+후속 논의 주제: 이번 토론에서 완전히 다루지 못했거나 다음 토론에서 더 깊이 다룰 만한 주제를 정리해 주세요."""
         
         # 미팅 형태에 따른 참고 사항 기본값 설정
         if 'previous_meeting_type' not in st.session_state:
@@ -754,48 +748,45 @@ def main():
         # 파일 업로드 - 음성 및 텍스트 파일 지원
         uploaded_file = st.file_uploader("회의 녹음 파일 또는 텍스트 파일 선택 (M4A, WAV, TXT, MD)", type=['m4a', 'wav', 'txt', 'md'])
         
-        # 파일 크기 및 확장자 변수 초기화
-        file_size = None
-        file_extension = None
         if uploaded_file is not None:
+            # 파일 크기 표시
             file_size = uploaded_file.size / (1024 * 1024)  # MB로 변환
-            file_extension = uploaded_file.name.split('.')[-1].lower()
             st.write(f"📊 파일 크기: {file_size:.2f} MB")
-        
-        # AI 분석 상태를 위한 placeholder
-        analysis_status = st.empty()
-        
-        # 분석 함수 정의
-        def start_analysis():
-            st.session_state.analysis_started = True
-        
-        # 분석 버튼
-        if not st.session_state.analysis_complete:
-            st.button("AI 분석 시작", on_click=start_analysis, use_container_width=True)
-        
-        # 분석 시작 상태 확인
-        if 'analysis_started' not in st.session_state:
-            st.session_state.analysis_started = False
-        
-        if st.session_state.analysis_started and not st.session_state.analysis_complete:
-            if title and participants:
-                # 즉시 분석 시작 메시지 표시
-                analysis_status.info("🤖 AI 분석이 시작되었습니다...")
-                try:
-                    text = None
-                    temp_path = None
-                    # 1순위: 직접 입력 텍스트박스
-                    if direct_text_input.strip():
-                        text = direct_text_input.strip()
-                    # 2순위: 파일 업로드
-                    elif uploaded_file is not None:
+            
+            # 파일 확장자 확인
+            file_extension = uploaded_file.name.split('.')[-1].lower()
+            
+            # AI 분석 상태를 위한 placeholder
+            analysis_status = st.empty()
+            
+            # 분석 함수 정의
+            def start_analysis():
+                st.session_state.analysis_started = True
+            
+            # 분석 버튼
+            if not st.session_state.analysis_complete:
+                st.button("AI 분석 시작", on_click=start_analysis, use_container_width=True)
+            
+            # 분석 시작 상태 확인
+            if 'analysis_started' not in st.session_state:
+                st.session_state.analysis_started = False
+            
+            if st.session_state.analysis_started and not st.session_state.analysis_complete:
+                if title and participants:
+                    # 즉시 분석 시작 메시지 표시
+                    analysis_status.info("🤖 AI 분석이 시작되었습니다...")
+                    
+                    try:
+                        # 파일 형식에 따른 처리
                         if file_extension in ['m4a', 'wav']:
                             # 음성 파일 처리
                             with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as tmp_file:
                                 tmp_file.write(uploaded_file.getvalue())
                                 temp_path = tmp_file.name
+                            
                             with st.spinner(f"{file_extension.upper()} 파일을 텍스트로 변환 중..."):
                                 text = transcribe_large_audio(temp_path)
+                                
                             # 임시 파일 삭제
                             if os.path.exists(temp_path):
                                 os.unlink(temp_path)
@@ -803,115 +794,114 @@ def main():
                             # 텍스트 파일 처리
                             with st.spinner("텍스트 파일 처리 중..."):
                                 text = process_text_file(uploaded_file.getvalue())
-                    else:
-                        analysis_status.error("❗ 회의록 텍스트를 직접 입력하거나 파일을 업로드해 주세요.")
+                        
+                        if text:
+                            with st.spinner("텍스트 분석 중..."):
+                                # 참고 사항을 summarize_text 함수에 전달
+                                summary, action_items = summarize_text(text, model_choice, reference_notes)
+                                
+                                if summary:
+                                    # 분석 결과를 세션 상태에 저장
+                                    st.session_state.summary_text = summary
+                                    st.session_state.full_transcript = text
+                                    st.session_state.action_items_list = action_items.copy() if action_items else []
+                                    st.session_state.analysis_complete = True
+                                    st.session_state.analysis_started = False  # 분석 완료 후 초기화
+                                    
+                                    # 페이지 새로고침
+                                    st.rerun()
+                    except Exception as e:
+                        st.error(f"파일 처리 중 오류가 발생했습니다: {str(e)}")
                         st.session_state.analysis_started = False
-                        return
-                    if text:
-                        with st.spinner("텍스트 분석 중..."):
-                            # 참고 사항을 summarize_text 함수에 전달
-                            summary, action_items = summarize_text(text, model_choice, reference_notes)
-                            if summary:
-                                # 분석 결과를 세션 상태에 저장
-                                st.session_state.summary_text = summary
-                                st.session_state.full_transcript = text
-                                st.session_state.action_items_list = action_items.copy() if action_items else []
-                                st.session_state.analysis_complete = True
-                                st.session_state.analysis_started = False  # 분석 완료 후 초기화
-                                # 페이지 새로고침
-                                st.rerun()
-                except Exception as e:
-                    st.error(f"파일 처리 중 오류가 발생했습니다: {str(e)}")
+                else:
+                    analysis_status.error("❗ 회의 제목과 참석자 정보가 필요합니다.")
                     st.session_state.analysis_started = False
-            else:
-                analysis_status.error("❗ 회의 제목과 참석자 정보가 필요합니다.")
-                st.session_state.analysis_started = False
-        
-        # 분석 완료 후 결과 표시
-        if st.session_state.analysis_complete:
-            st.success("✅ 분석이 완료되었습니다. 결과를 검토해주세요.")
             
-            # 결과 표시
-            st.subheader("📝 회의록")
-            st.write(st.session_state.summary_text)
-            
-            # Action Items 편집 및 표시
-            st.subheader("✅ Action Items")
-            
-            # 현재 Action Items 표시
-            action_items_text = st.text_area(
-                "Action Items (각 항목을 새 줄에 입력하세요)",
-                value="\n".join(st.session_state.action_items_list),
-                height=200,
-                key="action_items_editor"
-            )
-            
-            # 텍스트 영역에서 Action Items 파싱 및 세션 상태에 저장
-            st.session_state.action_items_list = [item.strip() for item in action_items_text.split('\n') if item.strip()]
-            
-            # 저장 버튼
-            st.button("회의록 저장", on_click=save_meeting_record_callback, use_container_width=True, type="primary")
-            
-            # 저장 성공 메시지 표시
-            if 'save_success' in st.session_state and st.session_state.save_success:
-                st.success("✅ 회의록이 성공적으로 저장되었습니다.")
+            # 분석 완료 후 결과 표시
+            if st.session_state.analysis_complete:
+                st.success("✅ 분석이 완료되었습니다. 결과를 검토해주세요.")
                 
-                # 다운로드 옵션
-                st.markdown("### 📥 다운로드")
-                col1, col2 = st.columns(2)
+                # 결과 표시
+                st.subheader("📝 회의록")
+                st.write(st.session_state.summary_text)
                 
-                with col1:
-                    # 텍스트 파일 다운로드
-                    text_content = "\n".join([
-                        f"회의록: {title}",
-                        f"날짜: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                        f"참석자: {participants}",
-                        "",
-                        "=== 회의 요약 ===",
-                        st.session_state.summary_text,
-                        "",
-                        "=== Action Items ===",
-                        "\n".join([f"• {item}" for item in st.session_state.action_items_list]),
-                        "",
-                        "=== 전체 내용 ===",
-                        st.session_state.full_transcript
-                    ])
+                # Action Items 편집 및 표시
+                st.subheader("✅ Action Items")
+                
+                # 현재 Action Items 표시
+                action_items_text = st.text_area(
+                    "Action Items (각 항목을 새 줄에 입력하세요)",
+                    value="\n".join(st.session_state.action_items_list),
+                    height=200,
+                    key="action_items_editor"
+                )
+                
+                # 텍스트 영역에서 Action Items 파싱 및 세션 상태에 저장
+                st.session_state.action_items_list = [item.strip() for item in action_items_text.split('\n') if item.strip()]
+                
+                # 저장 버튼
+                st.button("회의록 저장", on_click=save_meeting_record_callback, use_container_width=True, type="primary")
+                
+                # 저장 성공 메시지 표시
+                if 'save_success' in st.session_state and st.session_state.save_success:
+                    st.success("✅ 회의록이 성공적으로 저장되었습니다.")
                     
-                    st.markdown(
-                        create_download_link(
-                            text_content, 
-                            f"회의록_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                            "📄 텍스트 파일 다운로드"
-                        ),
-                        unsafe_allow_html=True
-                    )
-                
-                with col2:
-                    # 마크다운 파일 다운로드
-                    try:
-                        markdown_content = generate_markdown(
-                            title,
-                            datetime.now().strftime('%Y-%m-%d %H:%M'),
-                            participants.split(','),
+                    # 다운로드 옵션
+                    st.markdown("### 📥 다운로드")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # 텍스트 파일 다운로드
+                        text_content = "\n".join([
+                            f"회의록: {title}",
+                            f"날짜: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                            f"참석자: {participants}",
+                            "",
+                            "=== 회의 요약 ===",
                             st.session_state.summary_text,
-                            st.session_state.action_items_list,
+                            "",
+                            "=== Action Items ===",
+                            "\n".join([f"• {item}" for item in st.session_state.action_items_list]),
+                            "",
+                            "=== 전체 내용 ===",
                             st.session_state.full_transcript
-                        )
+                        ])
                         
                         st.markdown(
                             create_download_link(
-                                markdown_content, 
-                                f"회의록_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                                "📝 마크다운 파일 다운로드"
+                                text_content, 
+                                f"회의록_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                                "📄 텍스트 파일 다운로드"
                             ),
                             unsafe_allow_html=True
                         )
-                    except Exception as e:
-                        st.error(f"마크다운 생성 중 오류가 발생했습니다: {str(e)}")
-            
-            # 저장 실패 메시지 표시
-            elif 'save_success' in st.session_state and not st.session_state.save_success:
-                st.error("❌ 회의록 저장에 실패했습니다.")
+                    
+                    with col2:
+                        # 마크다운 파일 다운로드
+                        try:
+                            markdown_content = generate_markdown(
+                                title,
+                                datetime.now().strftime('%Y-%m-%d %H:%M'),
+                                participants.split(','),
+                                st.session_state.summary_text,
+                                st.session_state.action_items_list,
+                                st.session_state.full_transcript
+                            )
+                            
+                            st.markdown(
+                                create_download_link(
+                                    markdown_content, 
+                                    f"회의록_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                                    "📝 마크다운 파일 다운로드"
+                                ),
+                                unsafe_allow_html=True
+                            )
+                        except Exception as e:
+                            st.error(f"마크다운 생성 중 오류가 발생했습니다: {str(e)}")
+                
+                # 저장 실패 메시지 표시
+                elif 'save_success' in st.session_state and not st.session_state.save_success:
+                    st.error("❌ 회의록 저장에 실패했습니다.")
     
     with tab2:
         st.header("회의록 검색")

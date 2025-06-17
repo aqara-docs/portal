@@ -745,47 +745,6 @@ if 'files_data' not in st.session_state:
 
 # ==================== RAG 유틸리티 함수들 ====================
 
-def get_table_schema(table_name):
-    connection = connect_to_db()
-    cursor = connection.cursor()
-    cursor.execute(f"DESCRIBE {table_name}")
-    schema = cursor.fetchall()
-    connection.close()
-    schema_str = f"테이블명: {table_name}\n" + "\n".join([f"{col[0]} {col[1]}" for col in schema])
-    return schema_str
-
-def generate_sql_query(user_question, table_schema, model_name):
-    prompt = f"""
-다음은 MySQL 테이블의 스키마입니다:
-{table_schema}
-
-사용자 질문: "{user_question}"
-
-위 스키마의 첫 줄에 명시된 테이블명을 사용해서 MySQL SELECT 쿼리를 한 줄로 생성해줘. (LIMIT 1000 추가)
-절대로 'table_name'과 같은 일반적인 이름을 사용하지 말고, 스키마 첫 줄에 있는 실제 테이블명을 사용해야 합니다.
-쿼리만 출력해줘.
-"""
-    sql_query = get_ai_response(prompt, model_name)
-    return sql_query.strip().split('\n')[0]
-
-def run_sql_query(sql_query):
-    connection = connect_to_db()
-    df = pd.read_sql(sql_query, connection)
-    connection.close()
-    return df
-
-def analyze_sql_result(user_question, sql_query, df, model_name):
-    prompt = f"""
-사용자 질문: "{user_question}"
-사용된 SQL 쿼리: {sql_query}
-쿼리 결과 데이터(상위 20행):
-{df.head(20).to_markdown(index=False)}
-
-위 표의 데이터를 반드시 근거로 삼아, 실제로 인용한 row의 id(또는 주요 필드)와 함께 분석 및 인사이트를 제공해줘.
-분석 마지막에 반드시 '## 참고 데이터' 섹션을 추가해서, 인용한 row의 id/주요 필드와 내용을 명시적으로 표기해줘.
-"""
-    return get_ai_response(prompt, model_name)
-
 def validate_file(file):
     """파일 유효성 검사"""
     errors = []
@@ -1251,10 +1210,11 @@ def create_rag_context():
             mysql_tables.append(table_name)
             total_mysql_rows += len(df)
             
-            # 샘플 데이터 (상위 2행만)
+            # 샘플 데이터 (상위 3행)
             if len(df) > 0:
                 mysql_context += "- 샘플 데이터:\n"
-                mysql_context += df.head(2).to_string(index=False)[:1000] + "...\n"  # 최대 1000자로 제한
+                mysql_context += df.head(3).to_string(index=False)
+                mysql_context += "\n"
         
         context_parts.append(mysql_context)
         rag_sources_used.append({
@@ -1269,10 +1229,10 @@ def create_rag_context():
         website_context = "=== 웹사이트 크롤링 정보 ===\n"
         website_urls = []
         
-        for i, page_data in enumerate(st.session_state.website_data[:2]):  # 상위 2개 페이지만
+        for i, page_data in enumerate(st.session_state.website_data[:3]):  # 상위 3개 페이지만
             website_context += f"\n[페이지 {i+1}] {page_data['title']}\n"
             website_context += f"URL: {page_data['url']}\n"
-            website_context += f"내용 미리보기: {page_data['content'][:300]}...\n"  # 300자로 제한
+            website_context += f"내용 미리보기: {page_data['content'][:500]}...\n"
             website_urls.append({
                 'title': page_data['title'],
                 'url': page_data['url']
@@ -1292,10 +1252,10 @@ def create_rag_context():
         file_list = []
         total_file_size = 0
         
-        for file_data in st.session_state.files_data[:3]:  # 상위 3개 파일만
+        for file_data in st.session_state.files_data:
             files_context += f"\n[문서] {file_data['name']}\n"
             files_context += f"크기: {file_data['size']:,}자\n"
-            files_context += f"내용 미리보기: {file_data['content'][:300]}...\n"  # 300자로 제한
+            files_context += f"내용 미리보기: {file_data['content'][:500]}...\n"
             
             file_list.append(file_data['name'])
             total_file_size += file_data['size']
@@ -1309,10 +1269,6 @@ def create_rag_context():
         })
     
     context_text = "\n\n".join(context_parts)
-    
-    # 컨텍스트 크기 제한 (약 50,000자)
-    if len(context_text) > 50000:
-        context_text = context_text[:47000] + "\n...(이하 생략)..."
     
     # 세션 상태에 RAG 소스 정보 저장 (분석 결과에서 참조하기 위해)
     st.session_state.current_rag_sources = rag_sources_used
@@ -1487,7 +1443,7 @@ def analyze_persona_concurrent_rag(args):
 【실제 데이터 기반 분석】
 {rag_context}
 
-위 실제 데이터를 반드시 활용하여 구체적이고 정량적인 분석을 제공해줘.
+위 실제 데이터를 반드시 활용하여 구체적이고 정량적인 분석을 제공해주세요.
 
 """
 
@@ -2382,69 +2338,47 @@ user_query = st.text_area(
 )
 
 # 분석 버튼 (테스트용 최소한 버전)
-if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_container_width=True, key="main_analysis_start"):
+if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_container_width=True):
     if not user_query.strip():
         st.warning("분석할 주제를 입력해주세요.")
     else:
-        # 고급 MySQL RAG 분기
-        if 'mysql' in st.session_state.rag_sources and st.session_state.use_advanced_mysql_rag:
-            selected_tables = list(st.session_state.mysql_data.keys())
-            if not selected_tables:
-                st.error("MySQL 테이블이 선택되지 않았습니다.")
-            else:
-                table_name = selected_tables[0]  # 여러 개면 첫 번째만 사용, 확장 가능
-                schema = get_table_schema(table_name)
-                sql_query = generate_sql_query(user_query, schema, selected_model)
-                if not sql_query.strip().lower().startswith("select"):
-                    st.error(f"LLM이 생성한 쿼리가 SELECT가 아닙니다.\n쿼리: {sql_query}")
-                else:
-                    st.info(f"🔍 LLM이 생성한 SQL 쿼리:\n```sql\n{sql_query}\n```")
-                    try:
-                        df = run_sql_query(sql_query)
-                        st.dataframe(df.head(20), use_container_width=True)
-                        analysis = analyze_sql_result(user_query, sql_query, df, selected_model)
-                        st.markdown("### 📊 쿼리 결과 기반 분석")
-                        st.markdown(analysis)
-                        # 참고 row 표 자동 표시
-                        st.markdown('### 참고 데이터 (분석에 실제 사용된 row)')
-                        st.dataframe(df.head(20), use_container_width=True)
-                    except Exception as e:
-                        st.error(f"SQL 실행 오류: {e}")
-                st.markdown("---")
-                st.info("고급 RAG 모드 결과입니다. 아래는 기존 전체 분석 플로우입니다.")
-        # 기존 전체 분석 플로우(동시 페르소나 분석 등) 반드시 실행!
-        # 아래 기존 분석 코드가 항상 실행되도록 보장
-        # (기존 동시 페르소나 분석, CEO 종합 분석, 자동 저장 등 전체 플로우)
-        # ... 기존 전체 분석 코드 시작 ...
         # 실행 시간 측정 시작
         analysis_start_time = time.time()
+        
         # 세션 상태 초기화 및 user_query 저장
         st.session_state.current_analysis = {}
         st.session_state.analysis_complete = False
         st.session_state.last_user_query = user_query  # user_query 저장
         st.session_state.selected_model = selected_model  # 모델명 저장
+        
         # 진행 상황 표시
         progress_container = st.container()
+        
         with progress_container:
             # RAG 데이터 활용 상태 표시
             rag_status_container = st.container()
             with rag_status_container:
                 if st.session_state.rag_sources:
                     st.success(f"🔍 **RAG 데이터 활용 분석**: {len(st.session_state.rag_sources)}개의 데이터 소스가 분석에 포함됩니다!")
+                    
                     # 각 RAG 소스별 상세 정보
                     rag_details = []
                     if 'mysql' in st.session_state.rag_sources and st.session_state.mysql_data:
                         total_mysql_rows = sum(len(df) for df in st.session_state.mysql_data.values())
                         rag_details.append(f"🗄️ MySQL: {len(st.session_state.mysql_data)}개 테이블 ({total_mysql_rows:,}행)")
+                    
                     if 'website' in st.session_state.rag_sources and st.session_state.website_data:
                         rag_details.append(f"🌐 웹사이트: {len(st.session_state.website_data)}개 페이지")
+                    
                     if 'files' in st.session_state.rag_sources and st.session_state.files_data:
                         total_chars = sum(f['size'] for f in st.session_state.files_data)
                         rag_details.append(f"📄 파일: {len(st.session_state.files_data)}개 문서 ({total_chars:,}자)")
+                    
                     if rag_details:
                         st.info(" | ".join(rag_details))
                 else:
                     st.warning("⚠️ **기본 분석 모드**: RAG 데이터가 없어 일반적인 전문 지식을 바탕으로 분석합니다.")
+            
             st.markdown("""
             <div class="progress-section">
                 <h2>🚀 C-Level 임원진 동시 분석 시작!</h2>
@@ -2453,11 +2387,13 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                 </p>
             </div>
             """, unsafe_allow_html=True)
+            
             # 모든 페르소나에 대해 "분석 시작" 상태 표시
             persona_status = {}
             persona_progress = {}
             for persona_key, persona_info in PERSONAS.items():
                 persona_status[persona_key] = st.empty()
+                
                 # 첫 번째 단계로 초기 상태 표시
                 first_stage = PERSONA_ANALYSIS_STAGES[persona_key][0]
                 persona_status[persona_key].markdown(f"""
@@ -2466,34 +2402,42 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                     <span style="font-size: 0.9rem;">{first_stage['message']} (0%)</span>
                 </div>
                 """, unsafe_allow_html=True)
+                
                 # 진행률 바 추가
                 persona_progress[persona_key] = st.progress(0)
                 st.markdown(f"<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
+            
             # 동시 분석 실행
             with st.spinner("🔥 모든 C-Level 임원진이 동시에 분석 중입니다..."):
                 # 실제 동시 분석 수행
                 analysis_results = run_concurrent_analysis_with_progress_rag(user_query, persona_prompts, persona_status, persona_progress, selected_model)
+                
                 # 결과를 세션에 저장
                 for persona_key, result_data in analysis_results.items():
                     st.session_state.current_analysis[persona_key] = result_data
+                
                 # 분석 결과 표시 (expander로)
                 st.markdown("### 📋 상세 분석 결과")
                 for persona_key, result_data in analysis_results.items():
                     persona_info = PERSONAS[persona_key]
+                    
                     if result_data['success']:
                         with st.expander(f"📋 {persona_info['emoji']} {persona_info['name']} 상세 분석 결과", expanded=True):
                             st.markdown(result_data['result'])
                     else:
                         with st.expander(f"❌ {persona_info['emoji']} {persona_info['name']} 오류 상세", expanded=True):
                             st.error(f"분석 중 오류 발생: {result_data['result']}")
+            
             # 성공한 분석만 CEO 종합 분석에 사용
             successful_analyses = {
                 k: v for k, v in st.session_state.current_analysis.items() 
                 if v.get('success', False)
             }
+            
             if successful_analyses:
                 # CEO 종합 분석
                 st.markdown("---")
+                
                 # RAG 상태에 따른 CEO 분석 메시지
                 if st.session_state.rag_sources:
                     st.markdown("""
@@ -2513,11 +2457,14 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
+                
                 with st.spinner("CEO 최종 종합 분석 중..."):
                     ceo_synthesis = synthesize_ceo_analysis_rag(user_query, successful_analyses, selected_model)
+                    
                     # 실행 시간 계산
                     analysis_end_time = time.time()
                     execution_time = int(analysis_end_time - analysis_start_time)
+                    
                     if ceo_synthesis:
                         st.session_state.current_analysis['CEO'] = {
                             'result': ceo_synthesis,
@@ -2525,17 +2472,21 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                             'timestamp': datetime.now().isoformat()
                         }
                         st.session_state.analysis_complete = True
+                        
                         # 🎯 자동 저장 시스템 (저장 버튼 없이 바로 저장)
                         st.markdown("---")
                         st.markdown("### 💾 분석 결과 자동 저장 중...")
+                        
                         # RAG 소스 정보 준비
                         rag_sources_info = []
                         if hasattr(st.session_state, 'current_rag_sources'):
                             rag_sources_info = st.session_state.current_rag_sources
+                        
                         # 자동 세션 제목 생성
                         auto_session_title = f"AI 멀티에이전트 분석 - {datetime.now().strftime('%Y%m%d_%H%M')}"
                         auto_tags = "자동저장, AI분석, C-Level"
                         auto_notes = f"분석 주제: {user_query[:100]}{'...' if len(user_query) > 100 else ''}"
+                        
                         # 자동 저장 실행
                         with st.spinner("📊 분석 결과를 자동으로 저장하고 있습니다..."):
                             analysis_id = save_virtual_company_analysis_new(
@@ -2549,10 +2500,12 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                                 tags=auto_tags,
                                 notes=auto_notes
                             )
+                        
                         # 자동 저장 결과 처리
                         if analysis_id:
                             st.success(f"🎉 분석 완료! 자동으로 저장되었습니다 (ID: {analysis_id})")
                             st.info("💡 저장된 분석은 아래 '분석 히스토리 관리'에서 확인하거나 제목/태그를 수정할 수 있습니다.")
+                            
                             # 세션 상태에 저장 정보 기록
                             st.session_state.saved_analysis_id = analysis_id
                             st.session_state.analysis_saved = True
@@ -2564,11 +2517,14 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                     else:
                         # CEO 종합 분석이 실패한 경우에도 저장 옵션 제공
                         st.error("❌ CEO 종합 분석에 실패했지만, 개별 임원진 분석 결과는 저장할 수 있습니다.")
+                        
                         # 데이터베이스에 저장 옵션 표시 (부분 저장)
                         st.markdown("---")
                         st.markdown("### 💾 분석 결과 저장 (부분 완료)")
                         st.warning("⚠️ CEO 종합 분석은 실패했지만, 성공한 개별 임원진 분석 결과를 저장할 수 있습니다.")
+                        
                         save_col1, save_col2 = st.columns([3, 1])
+                        
                         with save_col1:
                             session_title = st.text_input(
                                 "🏷️ 분석 세션 제목", 
@@ -2576,12 +2532,14 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                                 help="이 분석 세션을 구분할 수 있는 제목을 입력하세요",
                                 key="session_title_input_partial"
                             )
+                            
                             tags = st.text_input(
                                 "🏷️ 태그", 
                                 placeholder="예: 전략분석, AI, 신사업, 마케팅전략, 부분완료 (쉼표로 구분)",
                                 help="나중에 검색할 때 사용할 태그들을 입력하세요",
                                 key="tags_input_partial"
                             )
+                            
                             notes = st.text_area(
                                 "📝 메모", 
                                 placeholder="CEO 종합 분석 실패로 부분 저장. 추가 메모를 입력하세요...",
@@ -2589,6 +2547,7 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                                 help="이 분석의 배경이나 특별한 사항을 기록해두세요",
                                 key="notes_input_partial"
                             )
+                        
                         with save_col2:
                             st.markdown("**📊 분석 정보**")
                             st.markdown(f"**실행 시간**: {execution_time}초")
@@ -2596,6 +2555,7 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                             st.markdown(f"**RAG 소스**: {len(st.session_state.rag_sources)}개")
                             st.markdown(f"**AI 모델**: {selected_model}")
                             st.markdown("**상태**: ⚠️ 부분 완료")
+                        
                         # 부분 저장 버튼
                         if st.button("💾 개별 분석 결과만 저장 (부분 저장)", type="secondary", use_container_width=True, key="save_partial_analysis_button"):
                             # 저장 전 상태를 session_state에 백업
@@ -2609,11 +2569,14 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                                 'tags': tags.strip() if tags.strip() else None,
                                 'notes': notes.strip() if notes.strip() else None
                             }
+                            
                             # RAG 소스 정보 준비
                             rag_sources_info = []
                             if hasattr(st.session_state, 'current_rag_sources'):
                                 rag_sources_info = st.session_state.current_rag_sources
+                            
                             st.session_state.save_backup['rag_sources'] = rag_sources_info
+                            
                             # 분석 결과 저장 (부분 저장)
                             with st.spinner("부분 분석 결과를 데이터베이스에 저장 중..."):
                                 analysis_id = save_virtual_company_analysis(
@@ -2627,11 +2590,13 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                                     tags=tags.strip() if tags.strip() else None,
                                     notes=notes.strip() if notes.strip() else None
                                 )
+                            
                             # 저장 결과를 session_state에 저장 (프로젝트 리뷰 방식)
                             if analysis_id:
                                 st.success(f"✅ 부분 분석 결과가 성공적으로 저장되었습니다! (ID: {analysis_id})")
                                 st.warning("⚠️ CEO 종합 분석이 실패하여 개별 임원진 분석만 저장되었습니다.")
                                 st.info("💡 저장된 분석 결과는 아래 '분석 히스토리 관리' 섹션에서 확인할 수 있습니다.")
+                                
                                 # 세션 상태에 저장된 분석 정보 저장 (리셋 방지)
                                 st.session_state.saved_analysis_id = analysis_id
                                 st.session_state.analysis_saved = True
@@ -2639,6 +2604,7 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                                 st.session_state.partial_save = True
                             else:
                                 st.error("❌ 부분 분석 결과 저장에 실패했습니다. 데이터베이스 연결을 확인해주세요.")
+                        
                         # 디버깅 정보 표시
                         with st.expander("🔍 디버깅 정보", expanded=False):
                             st.write("**분석 상태 정보:**")
@@ -2646,49 +2612,60 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                             st.write(f"- ceo_synthesis 상태: {'성공' if ceo_synthesis else '실패'}")
                             st.write(f"- session_state.analysis_complete: {st.session_state.get('analysis_complete', False)}")
                             st.write(f"- session_state.current_analysis 키들: {list(st.session_state.current_analysis.keys())}")
+                            
                             if ceo_synthesis:
                                 st.write(f"- CEO 분석 길이: {len(ceo_synthesis)}자")
                             else:
                                 st.write("- CEO 분석: None 또는 빈 문자열")
-            # 저장 완료 상태 표시 (세션 상태 기반)
-            if st.session_state.get('analysis_saved', False) and 'saved_analysis_id' in st.session_state:
-                st.markdown("---")
-                st.markdown("### ✅ 저장 완료")
-                if st.session_state.get('partial_save', False):
-                    st.info(f"📊 **부분 저장 ID**: {st.session_state.saved_analysis_id}")
-                    st.warning("⚠️ CEO 종합 분석이 실패하여 개별 임원진 분석만 저장되었습니다.")
-                else:
-                    st.info(f"📊 **저장 ID**: {st.session_state.saved_analysis_id}")
-                st.info(f"⏰ **저장 시간**: {st.session_state.get('save_timestamp', 'Unknown')}")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    # 저장된 분석으로 자동 이동하는 버튼
-                    if st.button("📋 저장된 분석 결과 바로 보기", key="view_saved_analysis_final"):
-                        st.session_state.selected_analysis_id = st.session_state.saved_analysis_id
-                        st.session_state.show_history_tab = True
-                with col2:
-                    # 새 분석 시작 버튼
-                    if st.button("🆕 새로운 분석 시작", key="new_analysis_final"):
-                        # 분석 관련 session_state 초기화
-                        keys_to_remove = [
-                            'current_analysis', 'analysis_complete', 'analysis_saved', 
-                            'saved_analysis_id', 'save_timestamp', 'partial_save', 'save_backup'
-                        ]
-                        for key in keys_to_remove:
-                            if key in st.session_state:
-                                del st.session_state[key]
-                with col3:
-                    # 저장 상태 메시지 제거 버튼
-                    if st.button("❌ 저장 완료 메시지 닫기", key="close_save_complete_message"):
-                        # 저장 완료 관련 상태만 제거 (분석 결과는 유지)
-                        keys_to_remove = ['analysis_saved', 'saved_analysis_id', 'save_timestamp', 'partial_save']
-                        for key in keys_to_remove:
-                            if key in st.session_state:
-                                del st.session_state[key]
+                
+                # 저장 완료 상태 표시 (세션 상태 기반)
+                if st.session_state.get('analysis_saved', False) and 'saved_analysis_id' in st.session_state:
+                    st.markdown("---")
+                    st.markdown("### ✅ 저장 완료")
+                    
+                    if st.session_state.get('partial_save', False):
+                        st.info(f"📊 **부분 저장 ID**: {st.session_state.saved_analysis_id}")
+                        st.warning("⚠️ CEO 종합 분석이 실패하여 개별 임원진 분석만 저장되었습니다.")
+                    else:
+                        st.info(f"📊 **저장 ID**: {st.session_state.saved_analysis_id}")
+                    
+                    st.info(f"⏰ **저장 시간**: {st.session_state.get('save_timestamp', 'Unknown')}")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        # 저장된 분석으로 자동 이동하는 버튼
+                        if st.button("📋 저장된 분석 결과 바로 보기", key="view_saved_analysis_final"):
+                            st.session_state.selected_analysis_id = st.session_state.saved_analysis_id
+                            st.session_state.show_history_tab = True
+                    
+                    with col2:
+                        # 새 분석 시작 버튼
+                        if st.button("🆕 새로운 분석 시작", key="new_analysis_final"):
+                            # 분석 관련 session_state 초기화
+                            keys_to_remove = [
+                                'current_analysis', 'analysis_complete', 'analysis_saved', 
+                                'saved_analysis_id', 'save_timestamp', 'partial_save', 'save_backup'
+                            ]
+                            for key in keys_to_remove:
+                                if key in st.session_state:
+                                    del st.session_state[key]
+                    
+                    with col3:
+                        # 저장 상태 메시지 제거 버튼
+                        if st.button("❌ 저장 완료 메시지 닫기", key="close_save_complete_message"):
+                            # 저장 완료 관련 상태만 제거 (분석 결과는 유지)
+                            keys_to_remove = ['analysis_saved', 'saved_analysis_id', 'save_timestamp', 'partial_save']
+                            for key in keys_to_remove:
+                                if key in st.session_state:
+                                    del st.session_state[key]
+            
             else:
                 st.error("❌ 모든 임원진 분석이 실패했습니다. 다시 시도해주세요.")
+        
         # 진행 상황 표시 제거
         progress_container.empty()
+        
         if st.session_state.analysis_complete:
             st.balloons()
             st.success("🎉 동시 분석이 모두 완료되었습니다!")
@@ -3834,49 +3811,3 @@ st.markdown("""
     🗑️ 필요 없는 분석은 언제든 삭제할 수 있습니다
 </div>
 """, unsafe_allow_html=True)
-
-# 1. 고급 RAG 옵션 체크박스 추가 (사이드바 MySQL 설정 내 적절한 위치에 삽입)
-with st.sidebar.expander("🗄️ MySQL 데이터베이스", expanded=True):
-    # ... 기존 코드 ...
-    use_advanced_mysql_rag = st.checkbox(
-        "🧠 고급 RAG: LLM이 SQL 쿼리 생성/실행",
-        value=st.session_state.get('use_advanced_mysql_rag', False),
-        help="LLM이 자연어 질문을 SQL로 변환, DB에서 쿼리 실행 후 결과로 분석합니다.",
-        key="use_advanced_mysql_rag"
-    )
-    # st.session_state.use_advanced_mysql_rag = use_advanced_mysql_rag  # 이 줄을 삭제!
-    # ... 기존 코드 ...
-
-# 2. 고급 MySQL RAG 파이프라인 함수 추가 (파일 내 적절한 위치에 삽입)
-
-
-# 3. 분석 버튼 클릭 시 고급 RAG 분기 추가 (분석 버튼 클릭 핸들러 내)
-if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_container_width=True):
-    if not user_query.strip():
-        st.warning("분석할 주제를 입력해주세요.")
-    else:
-        # 고급 MySQL RAG 분기
-        if 'mysql' in st.session_state.rag_sources and st.session_state.use_advanced_mysql_rag:
-            selected_tables = list(st.session_state.mysql_data.keys())
-            if not selected_tables:
-                st.error("MySQL 테이블이 선택되지 않았습니다.")
-            else:
-                table_name = selected_tables[0]  # 여러 개면 첫 번째만 사용, 확장 가능
-                schema = get_table_schema(table_name)
-                sql_query = generate_sql_query(user_query, schema, selected_model)
-                if not sql_query.strip().lower().startswith("select"):
-                    st.error(f"LLM이 생성한 쿼리가 SELECT가 아닙니다.\n쿼리: {sql_query}")
-                else:
-                    st.info(f"🔍 LLM이 생성한 SQL 쿼리:\n```sql\n{sql_query}\n```")
-                    try:
-                        df = run_sql_query(sql_query)
-                        st.dataframe(df.head(20), use_container_width=True)
-                        analysis = analyze_sql_result(user_query, sql_query, df, selected_model)
-                        st.markdown("### 📊 쿼리 결과 기반 분석")
-                        st.markdown(analysis)
-                    except Exception as e:
-                        st.error(f"SQL 실행 오류: {e}")
-                st.markdown("---")
-                st.info("고급 RAG 모드 결과입니다. 아래는 기존 전체 분석 플로우입니다.")
-        # ... 기존 전체 분석 플로우(동시 페르소나 분석 등) 이어서 실행 ...
-        

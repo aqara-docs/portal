@@ -753,21 +753,90 @@ def display_file_preview(file_data, file_type, filename):
                 st.info("이미지 데이터를 찾을 수 없습니다.")
                 return False
         
-        # PDF 파일 미리보기 (iframe 사용)
+        # PDF 파일 미리보기 (1MB 초과시 1페이지씩)
         elif file_type_lower == 'pdf':
             if file_data.get('binary_data'):
-                # PDF를 base64로 인코딩하여 iframe에 표시
-                pdf_base64 = base64.b64encode(file_data['binary_data']).decode('utf-8')
-                pdf_display = f"""
-                <iframe src="data:application/pdf;base64,{pdf_base64}" 
-                        width="100%" height="600px" type="application/pdf">
-                    <p>PDF를 표시할 수 없습니다. 
-                    <a href="data:application/pdf;base64,{pdf_base64}" target="_blank">
-                    여기를 클릭하여 새 탭에서 열어보세요.</a></p>
-                </iframe>
-                """
-                st.markdown(pdf_display, unsafe_allow_html=True)
-                return True
+                import math
+                from PyPDF2 import PdfReader, PdfWriter
+                import tempfile, os
+
+                total_size = file_data['file_size'] if 'file_size' in file_data else len(file_data['binary_data'])
+                if total_size > 1 * 1024 * 1024:
+                    key = f"pdf_preview_page_start_{filename}"
+                    if key not in st.session_state:
+                        st.session_state[key] = 0  # 0-based index
+
+                    # PDF 전체 페이지 수 구하기
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                        tmp_in.write(file_data['binary_data'])
+                        tmp_in_path = tmp_in.name
+                    reader = PdfReader(tmp_in_path)
+                    total_pages = len(reader.pages)
+                    os.unlink(tmp_in_path)
+
+                    page_start = st.session_state[key]
+                    page_end = min(page_start + 1, total_pages)
+
+                    col_prev, col_next = st.columns([1, 1])
+                    with col_prev:
+                        if st.button("⬅️ 이전", disabled=page_start == 0, key=f"prev_{filename}"):
+                            st.session_state[key] = max(0, page_start - 1)
+                            st.rerun()
+                    with col_next:
+                        if st.button("다음 ➡️", disabled=page_end >= total_pages, key=f"next_{filename}"):
+                            st.session_state[key] = min(total_pages - 1, page_start + 1)
+                            st.rerun()
+
+                    # 미리보기 PDF 생성 (1페이지)
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                            tmp_in.write(file_data['binary_data'])
+                            tmp_in_path = tmp_in.name
+                        reader = PdfReader(tmp_in_path)
+                        writer = PdfWriter()
+                        for i in range(page_start, page_end):
+                            writer.add_page(reader.pages[i])
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_out:
+                            writer.write(tmp_out)
+                            tmp_out_path = tmp_out.name
+                        with open(tmp_out_path, "rb") as f:
+                            preview_pdf_bytes = f.read()
+                        os.unlink(tmp_in_path)
+                        os.unlink(tmp_out_path)
+                        st.markdown(f"**페이지 {page_start+1} / {total_pages}**")
+                        pdf_base64 = base64.b64encode(preview_pdf_bytes).decode('utf-8')
+                        pdf_display = f"""
+                        <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                                width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                            <p>PDF를 표시할 수 없습니다. 
+                            <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                            여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                        </iframe>
+                        """
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"PDF 미리보기 생성 중 오류: {e}")
+
+                    st.download_button(
+                        label="💾 전체 PDF 다운로드",
+                        data=file_data['binary_data'],
+                        file_name=filename,
+                        mime="application/pdf"
+                    )
+                    return True
+                else:
+                    # PDF를 base64로 인코딩하여 iframe에 표시 (전체 미리보기)
+                    pdf_base64 = base64.b64encode(file_data['binary_data']).decode('utf-8')
+                    pdf_display = f"""
+                    <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                            width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                        <p>PDF를 표시할 수 없습니다. 
+                        <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                        여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                    </iframe>
+                    """
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                    return True
             else:
                 st.info("PDF 데이터를 찾을 수 없습니다.")
                 return False
