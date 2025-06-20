@@ -1462,8 +1462,9 @@ def analyze_with_persona_simple(user_query, persona_key, persona_info, custom_pr
     
     return get_ai_response(analysis_prompt, model_name, persona_info['system_prompt'])
 
-def analyze_with_persona_rag(user_query, persona_key, persona_info, custom_prompt="", model_name="claude-3-7-sonnet-latest"):
-    """RAG 기능이 포함된 페르소나 분석 수행"""
+def analyze_persona_concurrent_rag(args):
+    """RAG 기능이 포함된 ThreadPoolExecutor 래퍼 함수"""
+    user_query, persona_key, persona_info, custom_prompt, model_name = args
     try:
         # RAG 컨텍스트 안전하게 생성
         try:
@@ -1471,18 +1472,9 @@ def analyze_with_persona_rag(user_query, persona_key, persona_info, custom_promp
         except Exception as e:
             rag_context = ""
         
-        # 기본 프롬프트 구성
-        # RAG 컨텍스트 요약 (긴 경우)
-        if len(rag_context) > 2000:  # 임계값 설정
-            try:
-                summarize_prompt = f"""다음 데이터의 핵심 내용을 500단어 이내로 요약해주세요:
-                {rag_context}"""
-                rag_context = get_ai_response(summarize_prompt, model_name)
-            except Exception as e:
-                st.warning(f"RAG 컨텍스트 요약 중 오류 발생: {str(e)}")
-
+        # RAG 컨텍스트가 있으면 더 풍부한 분석
         analysis_prompt = f"""
-다음 주제/질문에 대해 {persona_info['role']} 관점에서 전문적 분석을 수행해주세요:
+다음 주제/질문에 대해 {persona_info['role']} 관점에서 최고 수준의 전문적 분석을 수행해주세요:
 
 【분석 대상】
 {user_query}
@@ -1492,10 +1484,10 @@ def analyze_with_persona_rag(user_query, persona_key, persona_info, custom_promp
         # RAG 컨텍스트 추가 (있는 경우)
         if rag_context:
             analysis_prompt += f"""
-【실제 데이터】
+【실제 데이터 기반 분석】
 {rag_context}
 
-이 데이터를 반드시 활용하여 분석해주세요.
+위 실제 데이터를 반드시 활용하여 구체적이고 정량적인 분석을 제공해줘.
 
 """
 
@@ -1512,46 +1504,90 @@ def analyze_with_persona_rag(user_query, persona_key, persona_info, custom_promp
 {'- 제공된 실제 데이터를 반드시 분석에 활용하고 인사이트 도출' if rag_context else '- 업계 최신 동향과 글로벌 베스트 프랙티스 적용'}
 
 """
-
+        
         # 커스텀 프롬프트가 있다면 추가
         if custom_prompt and custom_prompt.strip():
             analysis_prompt += f"""
 【특별 요청사항】
 {custom_prompt.strip()}
-{'실제 데이터를 기반으로 분석해주세요.' if rag_context else ''}
 
 """
         
-        # 커스텀 프롬프트가 있다면 추가 (RAG 컨텍스트 이후에 추가)
-        analysis_prompt += """
-【응답 형식】
-## 핵심 분석
-(2-3줄로 핵심 포인트 요약)
+        analysis_prompt += f"""
+【최고 수준의 리포트 형식 (반드시 준수)】
 
-## 상세 분석
-(전문 분야 관점에서 상세한 분석)
+## 🎯 핵심 요약 및 결론
+(3-4줄로 핵심 포인트와 최종 권고사항을 간결하게 요약)
 
-## 실행 제안
-(구체적이고 실행 가능한 액션 아이템들)
+## 📊 현황 분석 및 진단
+(현재 상황에 대한 정량적 분석과 문제점/기회 요인 진단)
+{'### 데이터 기반 핵심 인사이트' if rag_context else '### 업계 동향 및 환경 분석'}
+{('- 제공된 데이터에서 발견한 주요 패턴과 인사이트' if rag_context else '- 최신 업계 동향과 시장 환경 분석')}
 
-## 다른 부서 협업 방안
-(다른 C-level과의 협업이 필요한 부분)
+## 🔍 전문 분야 심화 분석
+(전문 영역별 상세 분석과 기술적/전략적 검토)
+### 핵심 이슈 및 과제
+- 주요 이슈별 우선순위와 영향도 분석
+### 경쟁 환경 및 포지셔닝
+- 경쟁사 대비 우위/열위 요소 분석
 
-## 리스크 및 고려사항
-(주의해야 할 점들)
-"""
+## 💡 전략적 권고사항 및 솔루션
+### 단기 실행 방안 (3-6개월)
+- 구체적 액션 아이템과 담당 부서
+- 예상 비용과 리소스 요구사항
+### 중장기 전략 (6개월-2년)
+- 전략적 로드맵과 단계별 목표
 
-        return get_ai_response(analysis_prompt, model_name, persona_info['system_prompt'])
+## 📈 실행 계획 및 성과 지표
+### 상세 실행 로드맵
+- 단계별 마일스톤과 타임라인
+- 각 단계별 성공 기준과 체크포인트
+### KPI 및 성과 측정
+- 정량적 성과 지표와 목표치
+- 모니터링 방법과 보고 체계
 
-    except Exception as e:
-        st.error(f"❌ {persona_key} 분석 중 오류 발생: {str(e)}")
-        return None
+## 🤝 부서간 협업 전략
+### 다른 C-Level과의 협업 방안
+- 구체적 협업 내용과 역할 분담
+- 협업 일정과 커뮤니케이션 계획
+### 조직 내 실행 체계
+- 실행 조직 구성과 책임 할당
 
-def analyze_persona_concurrent_rag(args):
-    """RAG 기능이 포함된 ThreadPoolExecutor 래퍼 함수"""
-    user_query, persona_key, persona_info, custom_prompt, model_name = args
-    try:
-        result = analyze_with_persona_rag(user_query, persona_key, persona_info, custom_prompt, model_name)
+## ⚠️ 리스크 관리 및 대응 전략
+### 주요 리스크 요인
+- 리스크별 발생 확률과 임팩트 분석
+- 리스크 매트릭스와 우선순위
+### 대응 및 완화 전략
+- 리스크별 대응 방안과 비상 계획
+- 조기 경보 시스템과 대응 체계
+
+## 💰 투자 및 자원 계획
+### 예산 및 투자 계획
+- 단계별 예산 소요와 투자 우선순위
+- ROI 및 회수 기간 예측
+### 인력 및 자원 요구사항
+- 필요 인력과 스킬셋
+- 외부 자원 활용 방안
+
+## 🔮 미래 전망 및 시사점
+### 장기적 영향 및 기회
+- 3-5년 후 예상되는 변화와 기회
+### 지속적 모니터링 포인트
+- 지속적으로 관찰해야 할 핵심 지표
+
+{'## 📋 분석 참고 데이터 소스' if rag_context else ''}
+{'### 활용된 RAG 데이터' if rag_context else ''}
+{'''이 분석은 다음 실제 데이터를 참고하여 수행되었습니다:
+**MySQL 데이터베이스**: 실시간 운영 데이터 분석
+**웹사이트 정보**: 최신 시장 동향 및 경쟁사 정보  
+**업로드 문서**: 기존 보고서 및 계획서 참조
+분석의 정확성과 현실성을 높이기 위해 위 데이터들을 종합적으로 활용했습니다.''' if rag_context else ''}
+
+반드시 위 형식을 준수하여 각 섹션을 상세하고 구체적으로 작성해주세요. 
+모든 제안은 실행 가능하고 측정 가능한 수준으로 구체화해주세요."""
+        
+        result = get_ai_response(analysis_prompt, model_name, persona_info['system_prompt'])
+        
         if result is None:
             return persona_key, f"AI 응답이 None입니다. API 키나 모델 설정을 확인해주세요.", False
         return persona_key, result, True
@@ -3843,3 +3879,4 @@ if st.button("🚀 C-Level 임원진 분석 시작", type="primary", use_contain
                 st.markdown("---")
                 st.info("고급 RAG 모드 결과입니다. 아래는 기존 전체 분석 플로우입니다.")
         # ... 기존 전체 분석 플로우(동시 페르소나 분석 등) 이어서 실행 ...
+        

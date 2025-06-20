@@ -1472,17 +1472,8 @@ def analyze_with_persona_rag(user_query, persona_key, persona_info, custom_promp
             rag_context = ""
         
         # 기본 프롬프트 구성
-        # RAG 컨텍스트 요약 (긴 경우)
-        if len(rag_context) > 2000:  # 임계값 설정
-            try:
-                summarize_prompt = f"""다음 데이터의 핵심 내용을 500단어 이내로 요약해주세요:
-                {rag_context}"""
-                rag_context = get_ai_response(summarize_prompt, model_name)
-            except Exception as e:
-                st.warning(f"RAG 컨텍스트 요약 중 오류 발생: {str(e)}")
-
         analysis_prompt = f"""
-다음 주제/질문에 대해 {persona_info['role']} 관점에서 전문적 분석을 수행해주세요:
+다음 주제/질문에 대해 {persona_info['role']} 관점에서 최고 수준의 전문적 분석을 수행해주세요:
 
 【분석 대상】
 {user_query}
@@ -1492,10 +1483,11 @@ def analyze_with_persona_rag(user_query, persona_key, persona_info, custom_promp
         # RAG 컨텍스트 추가 (있는 경우)
         if rag_context:
             analysis_prompt += f"""
-【실제 데이터】
+【실제 데이터 기반 분석】
 {rag_context}
 
-이 데이터를 반드시 활용하여 분석해주세요.
+위 실제 데이터를 반드시 활용하여 구체적이고 정량적인 분석을 제공해주세요.
+데이터를 무시하지 말고 반드시 참고하여 분석에 활용해주세요.
 
 """
 
@@ -1512,17 +1504,15 @@ def analyze_with_persona_rag(user_query, persona_key, persona_info, custom_promp
 {'- 제공된 실제 데이터를 반드시 분석에 활용하고 인사이트 도출' if rag_context else '- 업계 최신 동향과 글로벌 베스트 프랙티스 적용'}
 
 """
-
+        
         # 커스텀 프롬프트가 있다면 추가
         if custom_prompt and custom_prompt.strip():
             analysis_prompt += f"""
 【특별 요청사항】
 {custom_prompt.strip()}
-{'실제 데이터를 기반으로 분석해주세요.' if rag_context else ''}
 
 """
-        
-        # 커스텀 프롬프트가 있다면 추가 (RAG 컨텍스트 이후에 추가)
+
         analysis_prompt += """
 【응답 형식】
 ## 핵심 분석

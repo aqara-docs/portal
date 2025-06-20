@@ -1,0 +1,438 @@
+import streamlit as st
+from openai import OpenAI
+import time
+from datetime import datetime
+import os
+from typing import List, Dict
+import uuid
+from dotenv import load_dotenv
+import pandas as pd
+import json
+
+load_dotenv()
+
+# 페이지 설정
+st.set_page_config(
+    page_title="Virtual Meeting Simple - AI 가상 회의",
+    page_icon="🎭",
+    layout="wide"
+)
+
+class Persona:
+    def __init__(self, name: str, role: str, personality: str, expertise: str, is_moderator: bool = False):
+        self.id = str(uuid.uuid4())
+        self.name = name
+        self.role = role
+        self.personality = personality
+        self.expertise = expertise
+        self.is_moderator = is_moderator
+        self.prompt = self._generate_prompt()
+    
+    def _generate_prompt(self) -> str:
+        if self.is_moderator:
+            return f"""당신은 {self.name}입니다. 전문적인 회의 사회자로서 토론을 이끌어가세요.
+            - 참가자들의 의견을 조율하고 정리합니다
+            - 주제에서 벗어나지 않도록 안내합니다
+            - 건설적인 토론 분위기를 조성합니다
+            말하는 스타일: 정중하고 명확하며 간결합니다."""
+        
+        return f"""당신은 {self.name}입니다.
+        역할: {self.role}
+        전문분야: {self.expertise}
+        성격: {self.personality}
+        
+        회의에서 당신의 전문성을 바탕으로 건설적인 의견을 제시하세요.
+        2-3문장으로 간결하게 답변하세요."""
+
+class Message:
+    def __init__(self, persona_name: str, content: str, is_human: bool = False):
+        self.timestamp = datetime.now()
+        self.persona_name = persona_name
+        self.content = content
+        self.is_human = is_human
+
+class VirtualMeeting:
+    def __init__(self):
+        self.personas: List[Persona] = []
+        self.messages: List[Message] = []
+        self.topic = ""
+        self.is_active = False
+        self.current_speaker_index = 0
+        self.round_count = 0
+        self.max_rounds = 5
+        self.file_content = ""
+    
+    def add_persona(self, persona: Persona) -> bool:
+        if len(self.personas) < 10:
+            self.personas.append(persona)
+            return True
+        return False
+    
+    def get_moderator(self) -> Persona:
+        for p in self.personas:
+            if p.is_moderator:
+                return p
+        return None
+    
+    def get_non_moderator_personas(self) -> List[Persona]:
+        return [p for p in self.personas if not p.is_moderator]
+    
+    def add_message(self, persona_name: str, content: str, is_human: bool = False):
+        message = Message(persona_name, content, is_human)
+        self.messages.append(message)
+    
+    def get_next_speaker(self) -> Persona:
+        non_mods = self.get_non_moderator_personas()
+        if not non_mods:
+            return None
+        return non_mods[self.current_speaker_index % len(non_mods)]
+    
+    def advance_speaker(self):
+        non_mods = self.get_non_moderator_personas()
+        if non_mods:
+            self.current_speaker_index += 1
+            if self.current_speaker_index % len(non_mods) == 0:
+                self.round_count += 1
+
+def initialize_session():
+    if 'meeting' not in st.session_state:
+        st.session_state.meeting = VirtualMeeting()
+        
+        # 기본 사회자 추가
+        moderator = Persona(
+            name="사회자 김진행",
+            role="회의 사회자",
+            personality="차분하고 공정한 성격",
+            expertise="회의 진행, 토론 조율",
+            is_moderator=True
+        )
+        st.session_state.meeting.add_persona(moderator)
+
+def extract_text_from_uploaded_file(uploaded_file) -> str:
+    try:
+        if uploaded_file.type == "text/plain":
+            return str(uploaded_file.read(), "utf-8")
+        elif uploaded_file.type == "text/csv":
+            df = pd.read_csv(uploaded_file)
+            return df.to_string()
+        else:
+            return "이 파일 형식은 지원되지 않습니다."
+    except Exception as e:
+        return f"파일 읽기 오류: {str(e)}"
+
+def generate_ai_response(persona: Persona, conversation_history: str, topic: str, file_context: str) -> str:
+    try:
+        # OpenAI API 키 검증
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+            raise ValueError("OpenAI API 키가 올바르지 않습니다. .env 파일에서 OPENAI_API_KEY를 확인해주세요.")
+        
+        client = OpenAI(api_key=openai_key)
+        
+        context_prompt = f"""
+        {persona.prompt}
+        
+        회의 주제: {topic}
+        
+        참고 자료: {file_context[:1000] if file_context else "없음"}
+        
+        지금까지의 대화:
+        {conversation_history}
+        
+        위 내용을 바탕으로 당신의 전문성에 맞는 의견을 2-3문장으로 제시하세요.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": context_prompt},
+                {"role": "user", "content": "회의에 참여하여 의견을 말씀해주세요."}
+            ],
+            max_tokens=200,
+            temperature=0.7
+        )
+        
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[응답 생성 오류: {str(e)}]"
+
+def format_conversation_history(messages: List[Message], last_n: int = 8) -> str:
+    recent = messages[-last_n:] if len(messages) > last_n else messages
+    history = ""
+    for msg in recent:
+        history += f"{msg.persona_name}: {msg.content}\n"
+    return history
+
+def main():
+    st.title("🎭 Virtual Meeting Simple - AI 가상 회의")
+    
+    initialize_session()
+    meeting = st.session_state.meeting
+    
+    # 상단 설정 영역
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        meeting.topic = st.text_input(
+            "📋 회의 주제",
+            value=meeting.topic,
+            placeholder="예: 신제품 마케팅 전략 회의"
+        )
+    
+    with col2:
+        meeting.max_rounds = st.number_input("최대 라운드", min_value=3, max_value=15, value=meeting.max_rounds)
+    
+    with col3:
+        if not meeting.is_active:
+            if st.button("🚀 회의 시작", type="primary"):
+                if meeting.topic and len(meeting.personas) > 1:
+                    meeting.is_active = True
+                    meeting.round_count = 0
+                    meeting.current_speaker_index = 0
+                    # 사회자 인사말
+                    moderator = meeting.get_moderator()
+                    if moderator:
+                        meeting.add_message(
+                            moderator.name, 
+                            f"안녕하세요. '{meeting.topic}'에 대해 논의하겠습니다. 활발한 참여 부탁드립니다."
+                        )
+                    st.success("회의가 시작되었습니다!")
+                    st.rerun()
+                else:
+                    st.error("주제 입력과 최소 2명의 참가자가 필요합니다.")
+        else:
+            if st.button("⏹️ 회의 종료"):
+                meeting.is_active = False
+                st.success("회의가 종료되었습니다.")
+                st.rerun()
+    
+    st.divider()
+    
+    # 메인 탭들
+    tab1, tab2, tab3, tab4 = st.tabs(["👥 참가자 관리", "💬 실시간 회의", "📊 현황", "📝 회의록"])
+    
+    with tab1:
+        st.subheader("👥 참가자 관리")
+        
+        # 프리셋 참가자들
+        preset_personas = [
+            {"name": "CEO 박성공", "role": "최고경영자", "personality": "비전 제시, 리더십", "expertise": "경영 전략, 의사결정"},
+            {"name": "CTO 이기술", "role": "기술책임자", "personality": "논리적, 분석적", "expertise": "기술 개발, 혁신"},
+            {"name": "CMO 김마케팅", "role": "마케팅책임자", "personality": "창의적, 소통 중시", "expertise": "마케팅, 브랜딩"},
+            {"name": "CFO 정재무", "role": "재무책임자", "personality": "신중, 정확성 중시", "expertise": "재무 분석, 예산 관리"},
+        ]
+        
+        st.write("**프리셋 참가자 추가:**")
+        selected_preset = st.selectbox(
+            "선택하세요:",
+            options=range(len(preset_personas)),
+            format_func=lambda x: f"{preset_personas[x]['name']} ({preset_personas[x]['role']})",
+            index=None,
+            placeholder="프리셋 선택..."
+        )
+        
+        if selected_preset is not None:
+            if st.button("➕ 프리셋 추가"):
+                preset = preset_personas[selected_preset]
+                new_persona = Persona(
+                    name=preset['name'],
+                    role=preset['role'],
+                    personality=preset['personality'],
+                    expertise=preset['expertise']
+                )
+                if meeting.add_persona(new_persona):
+                    st.success(f"{preset['name']} 추가완료!")
+                    st.rerun()
+                else:
+                    st.error("최대 10명까지만 추가 가능합니다.")
+        
+        st.divider()
+        
+        # 커스텀 참가자 추가
+        st.write("**커스텀 참가자 추가:**")
+        with st.form("add_custom_persona"):
+            col1, col2 = st.columns(2)
+            with col1:
+                name = st.text_input("이름", placeholder="예: 김전문")
+                role = st.text_input("역할", placeholder="예: 데이터 분석가")
+            with col2:
+                personality = st.text_input("성격", placeholder="예: 논리적, 데이터 중심")
+                expertise = st.text_input("전문분야", placeholder="예: 데이터 분석, 통계")
+            
+            if st.form_submit_button("참가자 추가"):
+                if name and role:
+                    new_persona = Persona(name, role, personality, expertise)
+                    if meeting.add_persona(new_persona):
+                        st.success(f"{name} 추가 완료!")
+                        st.rerun()
+                    else:
+                        st.error("최대 10명까지만 추가 가능합니다.")
+                else:
+                    st.error("이름과 역할은 필수입니다.")
+        
+        # 현재 참가자 목록
+        st.subheader("현재 참가자 목록")
+        for i, persona in enumerate(meeting.personas):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                icon = "🎯" if persona.is_moderator else "🎭"
+                st.write(f"{icon} **{persona.name}** ({persona.role})")
+                st.caption(f"전문분야: {persona.expertise} | 성격: {persona.personality}")
+            with col2:
+                if not persona.is_moderator:
+                    if st.button("🗑️", key=f"delete_{i}", help="삭제"):
+                        meeting.personas.remove(persona)
+                        st.success("삭제되었습니다.")
+                        st.rerun()
+    
+    with tab2:
+        st.subheader("💬 실시간 회의")
+        
+        if not meeting.is_active:
+            st.info("회의를 시작하려면 상단의 '회의 시작' 버튼을 클릭하세요.")
+        else:
+            # 진행 상황
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("🔄 현재 라운드", f"{meeting.round_count + 1}")
+            with col2:
+                st.metric("🎤 다음 발언자", meeting.get_next_speaker().name if meeting.get_next_speaker() else "없음")
+            with col3:
+                st.metric("💬 총 메시지", len(meeting.messages))
+            with col4:
+                remaining_rounds = meeting.max_rounds - meeting.round_count
+                st.metric("⏳ 남은 라운드", max(0, remaining_rounds))
+            
+            # 사회자 개입
+            moderator = meeting.get_moderator()
+            if moderator:
+                st.subheader("🎯 사회자 개입")
+                with st.form("moderator_input"):
+                    human_input = st.text_area(
+                        f"{moderator.name}로서 발언:",
+                        placeholder="예: 지금까지의 의견을 정리하면...",
+                        height=80
+                    )
+                    if st.form_submit_button("💬 발언"):
+                        if human_input:
+                            meeting.add_message(moderator.name, human_input, is_human=True)
+                            st.success("발언이 추가되었습니다!")
+                            st.rerun()
+            
+            # 대화 진행
+            st.subheader("🗣️ 대화 진행")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("➡️ 다음 발언", type="primary"):
+                    if meeting.round_count < meeting.max_rounds:
+                        current_speaker = meeting.get_next_speaker()
+                        if current_speaker:
+                            with st.spinner("AI가 생각 중..."):
+                                conversation_history = format_conversation_history(meeting.messages)
+                                response = generate_ai_response(
+                                    current_speaker,
+                                    conversation_history,
+                                    meeting.topic,
+                                    meeting.file_content
+                                )
+                                meeting.add_message(current_speaker.name, response)
+                                meeting.advance_speaker()
+                                st.rerun()
+                    else:
+                        st.info("회의가 종료되었습니다.")
+            
+            with col2:
+                if st.button("⏭️ 라운드 스킵"):
+                    meeting.round_count += 1
+                    st.info("라운드를 스킵했습니다.")
+                    st.rerun()
+        
+        # 대화 내용 표시
+        if meeting.messages:
+            st.subheader("💭 대화 내용")
+            for message in meeting.messages:
+                with st.chat_message("human" if message.is_human else "assistant"):
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"**{message.persona_name}**")
+                        st.write(message.content)
+                    with col2:
+                        st.caption(message.timestamp.strftime("%H:%M:%S"))
+                        if message.is_human:
+                            st.caption("👤 인간")
+    
+    with tab3:
+        st.subheader("📊 회의 현황")
+        
+        if meeting.messages:
+            # 발언 통계
+            speaker_counts = {}
+            for msg in meeting.messages:
+                speaker_counts[msg.persona_name] = speaker_counts.get(msg.persona_name, 0) + 1
+            
+            if speaker_counts:
+                df = pd.DataFrame(list(speaker_counts.items()), columns=['발언자', '발언수'])
+                st.bar_chart(df.set_index('발언자'))
+            
+            # 최근 활동
+            st.subheader("🕐 최근 활동")
+            recent_messages = meeting.messages[-5:]
+            for msg in reversed(recent_messages):
+                st.write(f"**{msg.timestamp.strftime('%H:%M:%S')}** - {msg.persona_name}: {msg.content[:50]}...")
+        else:
+            st.info("아직 메시지가 없습니다.")
+    
+    with tab4:
+        st.subheader("📝 회의록")
+        
+        # 파일 업로드
+        uploaded_files = st.file_uploader(
+            "참고 자료 업로드 (선택사항)",
+            type=['txt', 'csv'],
+            accept_multiple_files=True
+        )
+        
+        if uploaded_files:
+            if st.button("📄 파일 처리"):
+                combined_content = ""
+                for file in uploaded_files:
+                    content = extract_text_from_uploaded_file(file)
+                    combined_content += f"\n--- {file.name} ---\n{content}\n"
+                
+                meeting.file_content = combined_content
+                st.success(f"{len(uploaded_files)}개 파일이 처리되었습니다!")
+        
+        if meeting.messages:
+            # 회의록 생성
+            meeting_log = f"""# 회의록
+
+## 회의 정보
+- **주제**: {meeting.topic}
+- **참가자**: {', '.join([p.name for p in meeting.personas])}
+- **총 라운드**: {meeting.round_count}
+- **총 메시지**: {len(meeting.messages)}
+
+## 대화 내용
+
+"""
+            for msg in meeting.messages:
+                meeting_log += f"**{msg.timestamp.strftime('%H:%M:%S')} - {msg.persona_name}**\n"
+                meeting_log += f"{msg.content}\n\n"
+            
+            # 다운로드
+            st.download_button(
+                "📥 회의록 다운로드",
+                data=meeting_log,
+                file_name=f"meeting_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown"
+            )
+            
+            # 미리보기
+            st.markdown("### 회의록 미리보기")
+            st.markdown(meeting_log)
+        else:
+            st.info("아직 회의록이 없습니다.")
+
+if __name__ == "__main__":
+    main() 
