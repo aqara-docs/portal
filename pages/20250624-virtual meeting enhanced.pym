@@ -1,0 +1,2870 @@
+import streamlit as st
+from openai import OpenAI
+import anthropic
+import time
+import threading
+from datetime import datetime, timedelta
+import json
+import os
+from typing import List, Dict, Any
+import uuid
+from dotenv import load_dotenv
+import pandas as pd
+from io import StringIO
+import PyPDF2
+import docx
+import tempfile
+from dataclasses import dataclass
+import asyncio
+import queue
+import random
+import mysql.connector
+
+load_dotenv()
+
+# 페이지 설정
+st.set_page_config(
+    page_title="Virtual Meeting Enhanced - AI 가상 회의",
+    page_icon="👥💻",
+    layout="wide"
+)
+st.title("👥💻 Virtual Meeting Enhanced - AI 가상 회의")
+
+# 인증 기능 (간단한 비밀번호 보호)
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('환경변수(ADMIN_PASSWORD)가 설정되어 있지 않습니다. .env 파일을 확인하세요.')
+    st.stop()
+if not st.session_state.authenticated:
+    password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    if password == admin_pw:
+        st.session_state.authenticated = True
+        st.rerun()
+    else:
+        if password:
+            st.error("관리자 권한이 필요합니다")
+        st.stop()
+        
+@dataclass
+class Persona:
+    id: str
+    name: str
+    role: str
+    prompt: str
+    personality: str
+    expertise: str
+    speaking_style: str
+    is_moderator: bool = False
+    
+    def __post_init__(self):
+        if not self.prompt:
+            self.prompt = self.generate_default_prompt()
+    
+    def generate_default_prompt(self) -> str:
+        return f"""당신은 {self.name}입니다. 
+        역할: {self.role}
+        전문 분야: {self.expertise}
+        성격: {self.personality}
+        말하는 스타일: {self.speaking_style}
+        
+        회의에서 당신의 전문성을 바탕으로 건설적인 의견을 제시하세요.
+        다른 참가자들의 의견을 경청하고 존중하며, 토론을 발전시키는 방향으로 참여하세요."""
+
+@dataclass
+class Message:
+    timestamp: datetime
+    persona_id: str
+    persona_name: str
+    content: str
+    is_human_input: bool = False
+    is_moderator: bool = False
+
+class VirtualMeeting:
+    def __init__(self):
+        self.personas: List[Persona] = []
+        self.messages: List[Message] = []
+        self.meeting_topic = ""
+        self.meeting_duration = 30  # 분
+        self.start_time = None
+        self.is_active = False
+        self.uploaded_files_content = ""
+        self.current_speaker_index = 0
+        self.conversation_round = 0
+        self.max_rounds = 10
+        self.auto_mode = False
+        self.speaking_speed = 3  # 초
+        self.last_message_time = None
+        self.round_summaries: Dict[int, str] = {}  # 라운드별 요약 저장
+        self.key_insights: List[str] = []  # 주요 인사이트 저장
+        self.file_analysis: Dict[str, Any] = {}  # 업로드된 파일 분석 결과
+        self.file_keywords: List[str] = []  # 파일에서 추출된 키워드
+        self.typing_speed: float = 0.1  # 타이핑 효과 속도 (초)
+        self.last_moderator_intervention: datetime = None  # 마지막 사회자 개입 시간
+        
+        # 🎯 창의적 대화 체인 시스템
+        self.conversation_chain = []  # 대화의 논리적 흐름 추적
+        self.discussion_focus = ""  # 현재 논의 초점
+        self.pending_questions = []  # 해결되지 않은 질문들
+        self.agreements = []  # 합의된 사항들
+        self.disagreements = []  # 이견이 있는 사항들
+        self.manual_round_control = True  # 완전 수동 라운드 제어
+        self.turn_counter = 0  # 발언 순서 카운터 (라운드와 분리)
+        
+        # 🔧 새로운 회의 제어 속성들
+        self.original_max_rounds = 10  # 사용자가 설정한 원본 최대 라운드
+        self.extension_granted = False  # 1라운드 연장 허가 여부
+        self.consecutive_repetitions = 0  # 연속 반복 횟수
+        self.last_meaningful_content = []  # 의미있는 최근 발언들
+        
+    def add_persona(self, persona: Persona) -> bool:
+        if len(self.personas) < 10:
+            self.personas.append(persona)
+            return True
+        return False
+    
+    def remove_persona(self, persona_id: str):
+        self.personas = [p for p in self.personas if p.id != persona_id]
+    
+    def get_moderator(self) -> Persona:
+        for persona in self.personas:
+            if persona.is_moderator:
+                return persona
+        return None
+    
+    def get_non_moderator_personas(self) -> List[Persona]:
+        return [p for p in self.personas if not p.is_moderator]
+    
+    def add_message(self, persona_id: str, content: str, is_human_input: bool = False) -> Message:
+        persona = next((p for p in self.personas if p.id == persona_id), None)
+        if persona:
+            message = Message(
+                timestamp=datetime.now(),
+                persona_id=persona_id,
+                persona_name=persona.name,
+                content=content,
+                is_human_input=is_human_input,
+                is_moderator=persona.is_moderator
+            )
+            self.messages.append(message)
+            self.last_message_time = datetime.now()
+            return message
+        return None
+    
+    def get_next_speaker(self) -> Persona:
+        non_moderator_personas = self.get_non_moderator_personas()
+        if not non_moderator_personas:
+            return None
+        
+        current_persona = non_moderator_personas[self.current_speaker_index % len(non_moderator_personas)]
+        return current_persona
+    
+    def advance_speaker(self):
+        """🎯 발언자 순서 진행 및 라운드 자동 관리 (설정값은 고정)"""
+        non_moderator_personas = self.get_non_moderator_personas()
+        if non_moderator_personas:
+            self.current_speaker_index += 1
+            self.turn_counter += 1
+            
+            # ✅ 모든 참가자가 발언을 완료하면 라운드 자동 증가 (원래대로 복원)
+            if self.current_speaker_index % len(non_moderator_personas) == 0:
+                self.conversation_round += 1
+                # 새 라운드 시작 시 대화 체인 상태 초기화
+                self.discussion_focus = ""
+                self.pending_questions = []
+                self.consecutive_repetitions = 0
+    
+    def advance_round(self):
+        """🎯 라운드 수동 증가 - 사용자만 호출 가능"""
+        self.conversation_round += 1
+        # 새 라운드 시작 시 대화 체인 상태 초기화
+        self.discussion_focus = ""
+        self.pending_questions = []
+        self.consecutive_repetitions = 0
+    
+    def is_time_to_speak(self) -> bool:
+        if not self.last_message_time:
+            return True
+        # total_seconds()를 사용하여 정확한 시간 계산
+        time_diff = (datetime.now() - self.last_message_time).total_seconds()
+        return time_diff >= self.speaking_speed
+    
+    def should_continue(self) -> bool:
+        if not self.is_active:
+            return False
+        
+        # 🎯 사용자 설정 최대 라운드 도달 시 처리
+        if self.conversation_round >= self.original_max_rounds:
+            if not self.extension_granted and not self._is_conclusion_reached():
+                # 마무리가 안 되었으면 1라운드 연장 허가
+                self.extension_granted = True
+                self.max_rounds = self.original_max_rounds + 1
+                # 사용자에게 알림 (한 번만)
+                st.info(f"🔔 설정된 {self.original_max_rounds}라운드가 완료되었으나 회의가 마무리되지 않아 1라운드 연장합니다.")
+            elif self.conversation_round >= self.max_rounds:
+                # 연장된 라운드도 초과하면 강제 종료
+                self.is_active = False
+                st.warning(f"⏰ {self.max_rounds}라운드 완료로 회의를 종료합니다.")
+                return False
+                
+        # 🎯 반복 대화 감지로 조기 종료
+        if self._detect_repetitive_conversation():
+            self.is_active = False
+            st.warning("🔄 반복적인 대화가 감지되어 회의를 조기 종료합니다.")
+            return False
+            
+        # 시간 제한 체크
+        if self.start_time:
+            elapsed_time = (datetime.now() - self.start_time).total_seconds()
+            if elapsed_time > (self.meeting_duration * 60):
+                self.is_active = False
+                return False
+        
+        return True
+    
+    def _detect_repetitive_conversation(self) -> bool:
+        """🔄 반복적인 대화 감지 - 강화된 알고리즘"""
+        if len(self.messages) < 8:  # 최소 메시지 수
+            return False
+        
+        recent_messages = [msg for msg in self.messages[-8:] 
+                          if not msg.is_moderator and not msg.is_human_input]
+        
+        if len(recent_messages) < 4:
+            return False
+        
+        # 1. 키워드 반복 감지
+        repetitive_keywords = ['결론', '마무리', '정리', '감사', '함께', '최상의 결과', '진행하기로']
+        keyword_counts = {}
+        
+        for msg in recent_messages[-6:]:  # 최근 6개 메시지
+            content_lower = msg.content.lower()
+            for keyword in repetitive_keywords:
+                if keyword in content_lower:
+                    keyword_counts[keyword] = keyword_counts.get(keyword, 0) + 1
+        
+        # 같은 키워드가 4번 이상 반복되면 반복으로 판단
+        if any(count >= 4 for count in keyword_counts.values()):
+            self.consecutive_repetitions += 1
+            return True
+        
+        # 2. 문장 유사도 검사 (더 엄격하게)
+        def calculate_similarity(text1: str, text2: str) -> float:
+            words1 = set(text1.lower().split())
+            words2 = set(text2.lower().split())
+            if len(words1) == 0 or len(words2) == 0:
+                return 0.0
+            intersection = len(words1.intersection(words2))
+            union = len(words1.union(words2))
+            return intersection / union if union > 0 else 0.0
+        
+        # 최근 4개 메시지 간 유사도 검사
+        similarities = []
+        for i in range(len(recent_messages) - 1):
+            for j in range(i + 1, len(recent_messages)):
+                sim = calculate_similarity(recent_messages[i].content, recent_messages[j].content)
+                similarities.append(sim)
+        
+        # 평균 유사도가 60% 이상이면 반복
+        if similarities and sum(similarities) / len(similarities) > 0.6:
+            self.consecutive_repetitions += 1
+            return True
+        
+        # 3. 짧은 메시지 반복 (50자 이하)
+        short_messages = [msg.content for msg in recent_messages[-4:] if len(msg.content) <= 50]
+        if len(short_messages) >= 3:  # 최근 4개 중 3개가 짧은 메시지
+            self.consecutive_repetitions += 1
+            return True
+        
+        # 연속 반복이 2회 이상이면 반복으로 판단
+        return self.consecutive_repetitions >= 2
+    
+    def _is_conclusion_reached(self) -> bool:
+        """결론이 충분히 도출되었는지 확인 - 더 정확한 판단"""
+        if len(self.messages) < 6:  # 최소 메시지 수
+            return False
+        
+        # 최근 메시지들에서 결론 패턴 확인
+        recent_messages = self.messages[-8:]
+        conclusion_keywords = ['결론', '마무리', '정리하면', '최종적으로', '따라서', '실행하기로', '합의']
+        action_keywords = ['진행', '실행', '추진', '계획', '다음 단계', '액션']
+        
+        conclusion_count = 0
+        action_count = 0
+        
+        for msg in recent_messages:
+            if not msg.is_moderator and not msg.is_human_input:
+                content_lower = msg.content.lower()
+                
+                conclusion_matches = sum(1 for keyword in conclusion_keywords if keyword in content_lower)
+                action_matches = sum(1 for keyword in action_keywords if keyword in content_lower)
+                
+                if conclusion_matches >= 2:  # 결론 키워드 2개 이상
+                    conclusion_count += 1
+                if action_matches >= 1:  # 액션 키워드 1개 이상
+                    action_count += 1
+        
+        # 최근 8개 메시지 중 4개 이상이 결론 내용이고, 2개 이상이 액션 내용이면 회의 종료
+        return conclusion_count >= 4 and action_count >= 2
+    
+    def get_time_until_next_speak(self) -> float:
+        """다음 발언까지 남은 시간 (초) 계산"""
+        if not self.last_message_time:
+            return 0.0
+        elapsed = (datetime.now() - self.last_message_time).total_seconds()
+        remaining = max(0.0, self.speaking_speed - elapsed)
+        return remaining
+        
+    def generate_round_summary(self, round_number: int) -> str:
+        """특정 라운드의 요약 생성"""
+        if round_number in self.round_summaries:
+            return self.round_summaries[round_number]
+        
+        # 해당 라운드의 메시지들 추출
+        round_messages = []
+        non_moderator_count = len(self.get_non_moderator_personas())
+        
+        if non_moderator_count == 0:
+            return ""
+        
+        # 라운드별 메시지 범위 계산 (근사치)
+        start_index = (round_number - 1) * non_moderator_count
+        end_index = round_number * non_moderator_count
+        
+        for i, msg in enumerate(self.messages):
+            if not msg.is_moderator and not msg.is_human_input:
+                msg_round = (i // non_moderator_count) + 1
+                if msg_round == round_number:
+                    round_messages.append(msg)
+        
+        if not round_messages:
+            return ""
+        
+        # 요약 생성
+        summary_parts = []
+        for msg in round_messages:
+            persona = next((p for p in self.personas if p.id == msg.persona_id), None)
+            if persona:
+                summary_parts.append(f"{persona.role} {persona.name}: {msg.content[:80]}{'...' if len(msg.content) > 80 else ''}")
+        
+        summary = f"라운드 {round_number} 요약:\n" + "\n".join(summary_parts)
+        self.round_summaries[round_number] = summary
+        return summary
+    
+    def extract_key_insights(self) -> List[str]:
+        """회의에서 핵심 인사이트 추출"""
+        insights = []
+        
+        # 긴 메시지들에서 인사이트 추출 (100자 이상)
+        for msg in self.messages:
+            if len(msg.content) > 100 and not msg.is_moderator:
+                persona = next((p for p in self.personas if p.id == msg.persona_id), None)
+                if persona:
+                    insight = f"[{persona.role}] {msg.content[:150]}{'...' if len(msg.content) > 150 else ''}"
+                    insights.append(insight)
+        
+        self.key_insights = insights[-10:]  # 최근 10개만 유지
+        return self.key_insights
+    
+    def analyze_conversation_flow(self) -> Dict[str, Any]:
+        """🎯 대화 흐름 분석 - 창의적 대화 체인 시스템"""
+        if len(self.messages) < 2:
+            return {"status": "insufficient_data"}
+        
+        recent_messages = self.messages[-5:]  # 최근 5개 메시지
+        
+        # 1. 논의 초점 추출
+        topics = []
+        for msg in recent_messages:
+            if not msg.is_moderator:
+                # 핵심 키워드 추출 (간단한 방식)
+                words = msg.content.split()
+                important_words = [w for w in words if len(w) > 3 and w not in ['것입니다', '있습니다', '해야', '통해']]
+                topics.extend(important_words[:3])  # 메시지당 최대 3개 키워드
+        
+        # 가장 자주 언급된 토픽을 현재 초점으로 설정
+        if topics:
+            from collections import Counter
+            most_common = Counter(topics).most_common(1)
+            self.discussion_focus = most_common[0][0] if most_common else ""
+        
+        # 2. 질문과 답변 매칭
+        questions = []
+        for msg in recent_messages:
+            if '?' in msg.content or '어떻게' in msg.content or '왜' in msg.content:
+                questions.append({
+                    'speaker': msg.persona_name,
+                    'question': msg.content,
+                    'answered': False
+                })
+        
+        # 3. 합의/이견 분석
+        agreement_keywords = ['동의', '찬성', '맞습니다', '좋은', '적절', '정확']
+        disagreement_keywords = ['하지만', '그러나', '반대', '문제', '우려', '다른']
+        
+        for msg in recent_messages:
+            content_lower = msg.content.lower()
+            if any(keyword in content_lower for keyword in agreement_keywords):
+                self.agreements.append(f"{msg.persona_name}: {msg.content[:50]}...")
+            elif any(keyword in content_lower for keyword in disagreement_keywords):
+                self.disagreements.append(f"{msg.persona_name}: {msg.content[:50]}...")
+        
+        # 최근 3개만 유지
+        self.agreements = self.agreements[-3:]
+        self.disagreements = self.disagreements[-3:]
+        
+        return {
+            "status": "analyzed",
+            "focus": self.discussion_focus,
+            "questions": questions,
+            "agreements": len(self.agreements),
+            "disagreements": len(self.disagreements)
+        }
+    
+    def get_conversation_direction(self) -> str:
+        """🎯 다음 대화 방향 제시"""
+        analysis = self.analyze_conversation_flow()
+        
+        if analysis["status"] == "insufficient_data":
+            return "회의 주제에 대한 첫 번째 의견을 제시해주세요."
+        
+        directions = []
+        
+        # 해결되지 않은 질문이 있으면 우선 처리
+        if self.pending_questions:
+            directions.append(f"미해결 질문: {self.pending_questions[-1]}")
+        
+        # 이견이 많으면 합의점 찾기
+        if len(self.disagreements) > len(self.agreements):
+            directions.append("서로 다른 의견들 사이의 공통점을 찾아보세요.")
+        
+        # 현재 초점이 있으면 심화 논의
+        if self.discussion_focus:
+            directions.append(f"'{self.discussion_focus}'에 대해 더 구체적으로 논의해주세요.")
+        
+        # 기본 방향
+        if not directions:
+            directions.append("이전 발언자의 의견에 대한 구체적인 반응이나 보완 의견을 제시해주세요.")
+        
+        return " | ".join(directions)
+
+    def analyze_uploaded_files(self) -> Dict[str, Any]:
+        """업로드된 파일 내용을 분석하여 키워드와 요약 추출"""
+        if not self.uploaded_files_content or self.file_analysis:
+            return self.file_analysis
+        
+        try:
+            # 간단한 키워드 추출 (공백과 줄바꿈으로 단어 분리)
+            words = self.uploaded_files_content.replace('\n', ' ').split()
+            # 길이가 3자 이상인 단어들만 추출 (한국어/영어 혼합 고려)
+            meaningful_words = [word.strip('.,!?:;"()[]{}') for word in words 
+                              if len(word.strip('.,!?:;"()[]{}')) >= 3]
+            
+            # 빈도 계산 (간단한 방식)
+            word_count = {}
+            for word in meaningful_words:
+                word_lower = word.lower()
+                word_count[word_lower] = word_count.get(word_lower, 0) + 1
+            
+            # 상위 키워드 추출 (빈도 기준)
+            sorted_words = sorted(word_count.items(), key=lambda x: x[1], reverse=True)
+            self.file_keywords = [word for word, count in sorted_words[:20] if count > 1]
+            
+            # 파일 요약 (첫 부분과 마지막 부분)
+            content_length = len(self.uploaded_files_content)
+            if content_length > 1000:
+                summary = (self.uploaded_files_content[:500] + 
+                          "\n...[중간 내용 생략]...\n" + 
+                          self.uploaded_files_content[-300:])
+            else:
+                summary = self.uploaded_files_content
+            
+            self.file_analysis = {
+                'keywords': self.file_keywords,
+                'summary': summary,
+                'total_length': content_length,
+                'word_count': len(meaningful_words),
+                'sections': self._extract_file_sections()
+            }
+            
+        except Exception as e:
+            self.file_analysis = {
+                'error': f"파일 분석 오류: {str(e)}",
+                'keywords': [],
+                'summary': self.uploaded_files_content[:500] + "..." if len(self.uploaded_files_content) > 500 else self.uploaded_files_content
+            }
+        
+        return self.file_analysis
+    
+    def _extract_file_sections(self) -> List[Dict[str, str]]:
+        """파일에서 섹션별로 내용 분리"""
+        sections = []
+        if not self.uploaded_files_content:
+            return sections
+        
+        # 파일명으로 구분된 섹션들 추출
+        file_parts = self.uploaded_files_content.split('---')
+        for i, part in enumerate(file_parts):
+            if part.strip():
+                lines = part.strip().split('\n')
+                if len(lines) > 1:
+                    # 첫 줄이 파일명인 경우
+                    title = lines[0].strip() if len(lines[0].strip()) < 100 else f"섹션 {i+1}"
+                    content = '\n'.join(lines[1:]).strip()
+                    if content:
+                        sections.append({
+                            'title': title,
+                            'content': content[:800] + "..." if len(content) > 800 else content
+                        })
+        
+        return sections
+    
+    def get_relevant_file_content(self, query_keywords: List[str]) -> str:
+        """쿼리 키워드와 관련된 파일 내용 추출 (간단한 RAG)"""
+        if not self.uploaded_files_content:
+            return ""
+        
+        analysis = self.analyze_uploaded_files()
+        
+        # 키워드 매칭을 통한 관련 섹션 추출
+        relevant_sections = []
+        
+        for section in analysis.get('sections', []):
+            content_lower = section['content'].lower()
+            # 쿼리 키워드 중 하나라도 포함된 섹션 추출
+            for keyword in query_keywords:
+                if keyword.lower() in content_lower:
+                    relevant_sections.append(section)
+                    break
+        
+        if relevant_sections:
+            result = "=== 관련 참고 자료 ===\n"
+            for section in relevant_sections[:3]:  # 최대 3개 섹션만
+                result += f"\n📄 {section['title']}\n{section['content']}\n"
+            return result
+        else:
+            # 관련 섹션이 없으면 전체 요약 반환
+            return f"=== 참고 자료 요약 ===\n{analysis.get('summary', '')}"
+
+def initialize_session_state():
+    """세션 상태 초기화"""
+    if 'virtual_meeting' not in st.session_state:
+        st.session_state.virtual_meeting = VirtualMeeting()
+    
+    # 🎯 기존 meeting 객체를 대화 체인 시스템으로 업그레이드
+    meeting = st.session_state.virtual_meeting
+    
+    # 새로운 대화 체인 시스템 속성이 없으면 추가
+    if not hasattr(meeting, 'conversation_chain'):
+        meeting.conversation_chain = []
+        meeting.discussion_focus = ""
+        meeting.pending_questions = []
+        meeting.agreements = []
+        meeting.disagreements = []
+        meeting.manual_round_control = True
+        meeting.turn_counter = len([msg for msg in meeting.messages if not msg.is_moderator and not msg.is_human_input])
+    
+    # 🔧 새로운 회의 제어 속성이 없으면 추가
+    if not hasattr(meeting, 'original_max_rounds'):
+        meeting.original_max_rounds = meeting.max_rounds
+    if not hasattr(meeting, 'extension_granted'):
+        meeting.extension_granted = False
+    if not hasattr(meeting, 'consecutive_repetitions'):
+        meeting.consecutive_repetitions = 0
+    if not hasattr(meeting, 'last_meaningful_content'):
+        meeting.last_meaningful_content = []
+    
+    # 기존 meeting 객체가 새로운 메소드를 가지고 있지 않으면 새로 생성
+    if not hasattr(meeting, '_is_conclusion_reached'):
+        # 기존 데이터 백업
+        old_meeting = meeting
+        new_meeting = VirtualMeeting()
+        
+        # 중요한 데이터 복사
+        if hasattr(old_meeting, 'personas'):
+            new_meeting.personas = old_meeting.personas
+        if hasattr(old_meeting, 'messages'):
+            new_meeting.messages = old_meeting.messages
+        if hasattr(old_meeting, 'meeting_topic'):
+            new_meeting.meeting_topic = old_meeting.meeting_topic
+        if hasattr(old_meeting, 'conversation_round'):
+            new_meeting.conversation_round = old_meeting.conversation_round
+        if hasattr(old_meeting, 'max_rounds'):
+            new_meeting.max_rounds = old_meeting.max_rounds
+        if hasattr(old_meeting, 'is_active'):
+            new_meeting.is_active = old_meeting.is_active
+        if hasattr(old_meeting, 'start_time'):
+            new_meeting.start_time = old_meeting.start_time
+        if hasattr(old_meeting, 'uploaded_files_content'):
+            new_meeting.uploaded_files_content = old_meeting.uploaded_files_content
+        if hasattr(old_meeting, 'auto_mode'):
+            new_meeting.auto_mode = old_meeting.auto_mode
+        if hasattr(old_meeting, 'speaking_speed'):
+            new_meeting.speaking_speed = old_meeting.speaking_speed
+        if hasattr(old_meeting, 'typing_speed'):
+            new_meeting.typing_speed = old_meeting.typing_speed
+        
+        # 🎯 대화 체인 시스템 속성도 복사
+        if hasattr(old_meeting, 'conversation_chain'):
+            new_meeting.conversation_chain = old_meeting.conversation_chain
+            new_meeting.discussion_focus = old_meeting.discussion_focus
+            new_meeting.pending_questions = old_meeting.pending_questions
+            new_meeting.agreements = old_meeting.agreements
+            new_meeting.disagreements = old_meeting.disagreements
+            new_meeting.manual_round_control = old_meeting.manual_round_control
+            new_meeting.turn_counter = old_meeting.turn_counter
+        
+        # 🔧 새로운 회의 제어 속성 복사
+        if hasattr(old_meeting, 'original_max_rounds'):
+            new_meeting.original_max_rounds = old_meeting.original_max_rounds
+        else:
+            new_meeting.original_max_rounds = new_meeting.max_rounds
+            
+        if hasattr(old_meeting, 'extension_granted'):
+            new_meeting.extension_granted = old_meeting.extension_granted
+        if hasattr(old_meeting, 'consecutive_repetitions'):
+            new_meeting.consecutive_repetitions = old_meeting.consecutive_repetitions
+        if hasattr(old_meeting, 'last_meaningful_content'):
+            new_meeting.last_meaningful_content = old_meeting.last_meaningful_content
+        
+        st.session_state.virtual_meeting = new_meeting
+    
+    # AI 모델 선택 초기화
+    if 'selected_ai_model' not in st.session_state:
+        st.session_state.selected_ai_model = 'gpt-4o-mini'
+        
+        # 기본 사회자 페르소나 생성
+        moderator = Persona(
+            id="moderator_001",
+            name="사회자 김진행",
+            role="회의 사회자",
+            prompt="""당신은 전문적인 회의 사회자입니다. 
+            회의의 흐름을 원활하게 이끌고, 참가자들의 의견을 적절히 조율하며, 
+            주제에서 벗어나지 않도록 안내하는 역할을 합니다.
+            간결하고 명확하게 말하며, 모든 참가자가 발언할 기회를 갖도록 합니다.
+            
+            회의 진행 시 다음과 같은 역할을 수행합니다:
+            - 회의 시작 시 참가자 소개 및 주제 안내
+            - 발언 순서 조정 및 시간 관리
+            - 토론이 격화되거나 주제에서 벗어날 때 중재
+            - 중간 정리 및 결론 도출
+            
+            말하는 스타일: 정중하고 명확하며 간결하게, 때로는 유머를 섞어 분위기를 부드럽게 만듭니다.""",
+            personality="차분하고 공정하며 전문적, 적절한 유머 감각",
+            expertise="회의 진행, 토론 조율, 의견 정리, 갈등 중재",
+            speaking_style="정중하고 명확하며 간결한 말투, 때로는 친근한 농담",
+            is_moderator=True
+        )
+        st.session_state.virtual_meeting.add_persona(moderator)
+    
+    # 자동 모드 관련 세션 상태 추가
+    if 'auto_mode_last_run' not in st.session_state:
+        st.session_state.auto_mode_last_run = datetime.now()
+    
+    if 'auto_mode_running' not in st.session_state:
+        st.session_state.auto_mode_running = False
+    
+    # 기본 페르소나들 추가 (예시)
+    if len(st.session_state.virtual_meeting.personas) == 1:  # 사회자만 있는 경우
+        sample_personas = [
+            Persona(
+                id="ceo_001",
+                name="CEO 박성공",
+                role="최고경영자",
+                prompt="",
+                personality="비전을 제시하고 리더십을 발휘하는 성격",
+                expertise="전략 경영, 의사결정, 리더십",
+                speaking_style="확신에 차고 카리스마 있는 말투"
+            ),
+            Persona(
+                id="cto_001", 
+                name="CTO 이기술",
+                role="최고기술책임자",
+                prompt="",
+                personality="논리적이고 분석적인 성격",
+                expertise="기술 전략, 개발, 혁신",
+                speaking_style="데이터와 근거를 바탕으로 한 차분한 말투"
+            ),
+            Persona(
+                id="cmo_001",
+                name="CMO 김마케팅",
+                role="최고마케팅책임자", 
+                prompt="",
+                personality="창의적이고 소통을 중시하는 성격",
+                expertise="마케팅 전략, 브랜딩, 고객 분석",
+                speaking_style="열정적이고 창의적인 아이디어를 제시하는 말투"
+            )
+        ]
+        
+        for persona in sample_personas:
+            st.session_state.virtual_meeting.add_persona(persona)
+
+def connect_to_db():
+    """데이터베이스 연결"""
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv('SQL_HOST'),
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4',
+            collation='utf8mb4_unicode_ci'
+        )
+        return conn
+    except mysql.connector.Error as err:
+        st.error(f"데이터베이스 연결 오류: {err}")
+        return None
+
+def save_meeting_record(meeting: 'VirtualMeeting', meeting_log: str, summary: str) -> bool:
+    """회의록을 데이터베이스에 저장"""
+    try:
+        conn = connect_to_db()
+        if not conn:
+            return False
+        
+        cursor = conn.cursor()
+        
+        # 참가자 목록 생성
+        participants = ", ".join([p.name + "(" + p.role + ")" for p in meeting.personas])
+        
+        # 사용된 AI 모델 정보 추가
+        ai_model_used = st.session_state.get('selected_ai_model', 'gpt-4o-mini')
+        
+        # 회의록 저장 (action_items 필드에 AI 모델 정보 임시 저장)
+        cursor.execute("""
+            INSERT INTO meeting_records 
+            (title, date, participants, full_text, summary, action_items, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (
+            meeting.meeting_topic,
+            meeting.start_time if meeting.start_time else datetime.now(),
+            participants,
+            meeting_log,
+            summary,
+            f"AI 모델: {ai_model_used}",  # action_items 필드에 AI 모델 정보 저장
+            datetime.now()
+        ))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"회의록 저장 오류: {err}")
+        return False
+
+def get_saved_meeting_records() -> List[Dict]:
+    """저장된 회의록 목록 조회"""
+    try:
+        conn = connect_to_db()
+        if not conn:
+            return []
+        
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT meeting_id, title, date, participants, created_at
+            FROM meeting_records
+            ORDER BY date DESC, created_at DESC
+        """)
+        
+        records = []
+        for row in cursor.fetchall():
+            records.append({
+                'meeting_id': row[0],
+                'title': row[1],
+                'date': row[2],
+                'participants': row[3],
+                'created_at': row[4]
+            })
+        
+        cursor.close()
+        conn.close()
+        return records
+        
+    except mysql.connector.Error as err:
+        st.error(f"회의록 조회 오류: {err}")
+        return []
+
+def get_meeting_record_detail(meeting_id: int) -> Dict:
+    """특정 회의록 상세 조회"""
+    try:
+        conn = connect_to_db()
+        if not conn:
+            return {}
+        
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT meeting_id, title, date, participants, full_text, summary, action_items, created_at
+            FROM meeting_records
+            WHERE meeting_id = %s
+        """, (meeting_id,))
+        
+        row = cursor.fetchone()
+        if row:
+            record = {
+                'meeting_id': row[0],
+                'title': row[1],
+                'date': row[2],
+                'participants': row[3],
+                'full_text': row[4],
+                'summary': row[5],
+                'action_items': row[6],
+                'created_at': row[7]
+            }
+        else:
+            record = {}
+        
+        cursor.close()
+        conn.close()
+        return record
+        
+    except mysql.connector.Error as err:
+        st.error(f"회의록 상세 조회 오류: {err}")
+        return {}
+
+def delete_meeting_record(meeting_id: int) -> bool:
+    """회의록 삭제"""
+    try:
+        conn = connect_to_db()
+        if not conn:
+            return False
+        
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM meeting_records WHERE meeting_id = %s", (meeting_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"회의록 삭제 오류: {err}")
+        return False
+
+def generate_meeting_summary(meeting_log: str, model_name: str = "gpt-4o-mini") -> str:
+    """AI를 사용하여 회의록 요약 생성"""
+    try:
+        # 모델에 따른 클라이언트 설정
+        if model_name.startswith('claude'):
+            # Anthropic Claude 모델
+            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_key or anthropic_key.strip() == '' or anthropic_key == 'NA':
+                return "AI 요약을 생성할 수 없습니다. Anthropic API 키를 확인해주세요."
+            
+            client = anthropic.Anthropic(api_key=anthropic_key)
+        else:
+            # OpenAI 모델
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+                return "AI 요약을 생성할 수 없습니다. OpenAI API 키를 확인해주세요."
+            
+            client = OpenAI(api_key=openai_key)
+        
+        system_prompt = """당신은 회의록 요약 전문가입니다. 주어진 회의 내용을 바탕으로 다음 형식으로 요약해주세요:
+
+## 📋 회의 요약
+
+### 🎯 주요 논의 사항
+- 핵심 논의 포인트들을 3-5개 정도로 정리
+
+### 💡 주요 의견 및 제안
+- 참가자별 주요 의견과 제안사항
+
+### ✅ 결론 및 합의사항
+- 회의를 통해 도출된 결론이나 합의된 내용
+
+### 📝 향후 액션 아이템
+- 후속 조치가 필요한 사항들
+
+### 🔍 추가 검토 필요 사항
+- 추후 논의가 필요한 이슈들
+
+간결하고 명확하게 작성하되, 중요한 내용은 빠뜨리지 말고 포함해주세요."""
+
+        user_message = f"다음 회의 내용을 요약해주세요:\n\n{meeting_log}"
+        
+        if model_name.startswith('claude'):
+            # Claude API 호출
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=1000,
+                temperature=0.3,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_message}
+                ]
+            )
+            return response.content[0].text.strip()
+        else:
+            # OpenAI API 호출
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=1000,
+                temperature=0.3
+            )
+            return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        return f"요약 생성 중 오류가 발생했습니다: {str(e)}"
+
+def extract_text_from_file(uploaded_file) -> str:
+    """업로드된 파일에서 텍스트 추출"""
+    try:
+        file_type = uploaded_file.type
+        content = ""
+        
+        if file_type == "text/plain":
+            content = str(uploaded_file.read(), "utf-8")
+        elif file_type == "application/pdf":
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            for page in pdf_reader.pages:
+                content += page.extract_text()
+        elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            doc = docx.Document(uploaded_file)
+            for paragraph in doc.paragraphs:
+                content += paragraph.text + "\n"
+        elif file_type == "text/csv":
+            df = pd.read_csv(uploaded_file)
+            content = df.to_string()
+        else:
+            content = "지원하지 않는 파일 형식입니다."
+            
+        return content
+    except Exception as e:
+        return f"파일 읽기 오류: {str(e)}"
+
+def generate_ai_response(persona: Persona, conversation_history: str, meeting_topic: str, file_content: str, round_number: int, enhanced_context: str = "", model_name: str = "gpt-4o-mini", total_rounds: int = 10, is_final_round: bool = False, final_round_context: str = "", conversation_direction: str = "") -> str:
+    """AI 응답 생성 - 라운드별 맥락 유지 강화"""
+    try:
+        # 모델에 따른 클라이언트 설정
+        if model_name.startswith('claude'):
+            # Anthropic Claude 모델
+            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_key or anthropic_key.strip() == '' or anthropic_key == 'NA':
+                raise ValueError("Anthropic API 키가 올바르지 않습니다. .env 파일에서 ANTHROPIC_API_KEY를 확인해주세요.")
+            
+            client = anthropic.Anthropic(api_key=anthropic_key)
+        else:
+            # OpenAI 모델
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+                raise ValueError("OpenAI API 키가 올바르지 않습니다. .env 파일에서 OPENAI_API_KEY를 확인해주세요.")
+            
+            client = OpenAI(api_key=openai_key)
+        
+        # 라운드에 따른 맥락 조정 (동적 단계 계산)
+        round_context = ""
+        round_percentage = round_number / total_rounds
+        
+        # 🎯 마지막 라운드 자동 감지
+        is_final_round = (round_number >= total_rounds)
+        
+        if is_final_round:
+            # 마지막 라운드에서는 모든 참가자가 최종 결론을 제시
+            round_context = f"""🏁 마지막 라운드입니다 ({round_number}/{total_rounds}라운드). 
+            
+            이제 회의 전체를 종합하여 당신의 최종 결론을 제시할 차례입니다:
+            - 전체 토론에서 나온 핵심 논점들을 정리하세요
+            - 당신의 전문 분야 관점에서 최종 의견을 명확히 제시하세요  
+            - 구체적인 실행 방안이나 다음 단계를 제안하세요
+            - 다른 참가자들의 의견에 대한 동의/보완점을 언급하세요
+            
+            {final_round_context}"""
+        elif round_number == 1:
+            round_context = "이번이 첫 번째 발언입니다. 자신을 한 문장으로 간단히 소개한 후 주제에 대한 의견을 제시하세요."
+        elif round_percentage <= 0.2:  # 초기 20%
+            round_context = f"회의 초기 단계입니다 ({round_number}/{total_rounds}라운드). 문제 정의와 현황 파악에 집중하여 의견을 제시하세요. 자기소개나 인사말은 하지 마세요."
+        elif round_percentage <= 0.4:  # 20-40%
+            round_context = f"문제 탐색 단계입니다 ({round_number}/{total_rounds}라운드). 다양한 관점에서 문제를 분석하고 여러 해결책을 제시해보세요. 인사말은 생략하세요."
+        elif round_percentage <= 0.6:  # 40-60%
+            round_context = f"해결책 검토 단계입니다 ({round_number}/{total_rounds}라운드). 제시된 해결책들을 비교 분석하고 장단점을 논의하세요. 인사말은 생략하세요."
+        elif round_percentage <= 0.8:  # 60-80%
+            round_context = f"합의 도출 단계입니다 ({round_number}/{total_rounds}라운드). 최적의 해결책을 선택하고 구체적인 실행 방안을 논의하세요. 인사말은 생략하세요."
+        else:  # 80-100%
+            round_context = f"결론 정리 단계입니다 ({round_number}/{total_rounds}라운드). 전체 논의를 종합하여 최종 결론과 향후 액션 플랜을 제시하세요. 인사말은 생략하세요."
+        
+        # 반복 방지를 위한 추가 지침
+        repetition_warning = ""
+        if is_final_round:
+            repetition_warning = """
+        
+        ⚠️ 마지막 라운드 중요 지침:
+        - 이번이 당신의 마지막 발언 기회입니다
+        - 회의 전체를 아우르는 종합적인 결론을 제시하세요
+        - 당신의 전문성을 바탕으로 한 구체적인 제안을 포함하세요
+        - 다른 참가자들과의 합의점을 찾아 언급하세요
+        - 향후 실행해야 할 구체적인 액션 아이템을 제안하세요
+        """
+        elif round_percentage > 0.8:  # 마무리 단계에서
+            repetition_warning = """
+        
+        ⚠️ 중요 - 반복 방지:
+        - 이미 결론이 충분히 논의되었다면 새로운 관점이나 구체적인 실행 방안을 제시하세요
+        - 동일한 내용을 반복하지 말고, 이전 발언과 차별화된 의견을 제시하세요
+        - 만약 더 이상 새로운 의견이 없다면 간단히 동의 의사만 표현하세요
+        - '감사합니다', '함께 최상의 결과를' 같은 마무리 표현을 과도하게 사용하지 마세요
+        """
+
+        # 🎯 창의적 대화 체인 시스템 프롬프트
+        conversation_guidance = ""
+        if conversation_direction:
+            conversation_guidance = f"\n🎯 대화 방향 가이드: {conversation_direction}\n"
+        
+        system_prompt = f"""당신은 {persona.name}({persona.role})입니다.
+        전문분야: {persona.expertise}
+        말투: {persona.speaking_style}
+        
+        === 🎯 대화 체인 시스템 ===
+        다음 지침을 엄격히 따라주세요:
+
+        1. 바로 직전 발언자의 의견에 구체적으로 반응하세요 (동의/반박/보완)
+        2. 같은 내용을 반복하지 말고, 새로운 관점이나 구체적 사례를 제시하세요
+        3. 추상적인 표현보다는 실질적이고 구체적인 내용으로 발언하세요
+        4. 다른 참가자들과 연결되는 대화를 만들어주세요
+        5. 자신만의 독특한 전문성을 바탕으로 차별화된 의견을 제시하세요
+
+        {conversation_guidance}
+        
+        {round_context}
+        
+        핵심 지침:
+        - 150-250자 내외로 간결하게
+        - 이전 발언자의 내용을 구체적으로 언급하며 시작
+        - 자신만의 독특한 관점이나 전문성 기반 의견 제시
+        - 다음 발언자가 반응할 수 있는 구체적 포인트 제공
+        - 의미없는 반복이나 일반적인 표현 금지
+        {repetition_warning}
+        """
+        
+        # 개선된 맥락 사용 (enhanced_context가 있으면 우선 사용)
+        context_to_use = enhanced_context if enhanced_context else conversation_history
+        
+        user_message = f"맥락:\n{context_to_use}\n\n주제: {meeting_topic}\n라운드 {round_number}에서 발언하세요."
+        
+        if model_name.startswith('claude'):
+            # Claude API 호출
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=300,
+                temperature=0.8,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_message}
+                ]
+            )
+            return response.content[0].text.strip()
+        else:
+            # OpenAI API 호출
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=300,
+                temperature=0.8
+            )
+            return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[AI 응답 생성 오류: {str(e)}]"
+
+def format_conversation_history(messages: List[Message], last_n: int = 15) -> str:
+    """대화 히스토리 포맷팅 - 기본 버전 (하위 호환성 유지)"""
+    recent_messages = messages[-last_n:] if len(messages) > last_n else messages
+    history = ""
+    for msg in recent_messages:
+        history += f"{msg.persona_name}: {msg.content}\n"
+    return history
+
+def get_round_based_context(messages: List[Message], current_round: int, max_context_length: int = 2000) -> str:
+    """라운드 기반 맥락 생성 - 전체 회의 맥락 유지"""
+    if not messages:
+        return ""
+    
+    # 라운드별 메시지 그룹화
+    rounds_data = {}
+    moderator_messages = []
+    current_round_msgs = []
+    
+    for msg in messages:
+        if msg.is_moderator:
+            moderator_messages.append(msg)
+        else:
+            # 비사회자 메시지로 라운드 추정 (간단한 방식)
+            estimated_round = len([m for m in messages[:messages.index(msg)+1] 
+                                 if not m.is_moderator and not m.is_human_input]) // len([p for p in messages[0:1] if messages]) + 1
+            
+            if estimated_round not in rounds_data:
+                rounds_data[estimated_round] = []
+            rounds_data[estimated_round].append(msg)
+    
+    # 맥락 구성 전략
+    context_parts = []
+    
+    # 1. 사회자 오프닝 (항상 포함)
+    if moderator_messages:
+        context_parts.append(f"[회의 시작] {moderator_messages[0].persona_name}: {moderator_messages[0].content}")
+    
+    # 2. 이전 라운드 요약 (라운드 2 이상일 때)
+    if current_round > 1:
+        previous_rounds_summary = []
+        for round_num in sorted(rounds_data.keys()):
+            if round_num < current_round:
+                round_messages = rounds_data[round_num]
+                if round_messages:
+                    # 각 라운드의 핵심 포인트만 요약
+                    key_points = []
+                    for msg in round_messages:
+                        # 메시지 길이가 긴 경우 요약
+                        content = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+                        key_points.append(f"{msg.persona_name}: {content}")
+                    
+                    previous_rounds_summary.append(f"\n[라운드 {round_num}]\n" + "\n".join(key_points))
+        
+        if previous_rounds_summary:
+            context_parts.append("=== 이전 라운드 요약 ===")
+            context_parts.extend(previous_rounds_summary)
+    
+    # 3. 최근 메시지들 (항상 포함 - 직접적 맥락)
+    recent_messages = messages[-8:]  # 최근 8개 메시지
+    if recent_messages:
+        context_parts.append("\n=== 최근 대화 ===")
+        for msg in recent_messages:
+            context_parts.append(f"{msg.persona_name}: {msg.content}")
+    
+    # 4. 현재 라운드 진행 상황
+    context_parts.append(f"\n=== 현재 상황 ===")
+    context_parts.append(f"현재 라운드: {current_round}")
+    
+    # 전체 맥락 조합
+    full_context = "\n".join(context_parts)
+    
+    # 토큰 길이 제한 (대략적으로 문자 수로 제한)
+    if len(full_context) > max_context_length:
+        # 길이가 초과되면 이전 라운드 요약 부분을 더 압축
+        essential_parts = []
+        
+        # 필수 요소: 오프닝 + 최근 대화 + 현재 상황
+        if moderator_messages:
+            essential_parts.append(f"[회의 시작] {moderator_messages[0].persona_name}: {moderator_messages[0].content}")
+        
+        essential_parts.append("\n=== 최근 대화 ===")
+        for msg in recent_messages:
+            essential_parts.append(f"{msg.persona_name}: {msg.content}")
+        
+        essential_parts.append(f"\n=== 현재 상황 ===")
+        essential_parts.append(f"현재 라운드: {current_round}")
+        
+        # 남은 공간에 이전 라운드 핵심만 추가
+        essential_context = "\n".join(essential_parts)
+        remaining_space = max_context_length - len(essential_context)
+        
+        if remaining_space > 200 and current_round > 1:
+            # 가장 최근 1-2 라운드만 간략하게 추가
+            recent_rounds = []
+            for round_num in sorted(rounds_data.keys(), reverse=True):
+                if round_num < current_round and len(recent_rounds) < 2:
+                    round_messages = rounds_data[round_num][:3]  # 라운드당 최대 3개 메시지만
+                    if round_messages:
+                        round_summary = f"[라운드 {round_num}] " + "; ".join([f"{msg.persona_name}: {msg.content[:50]}..." for msg in round_messages])
+                        if len(round_summary) < remaining_space:
+                            recent_rounds.append(round_summary)
+                            remaining_space -= len(round_summary)
+            
+            if recent_rounds:
+                essential_parts.insert(-2, "\n=== 주요 라운드 요약 ===")
+                essential_parts.insert(-2, "\n".join(reversed(recent_rounds)))
+        
+        full_context = "\n".join(essential_parts)
+    
+    return full_context
+
+def get_comprehensive_meeting_context(meeting: 'VirtualMeeting') -> str:
+    """회의 전체 맥락을 종합적으로 생성 - 과거 맥락 이해 개선"""
+    context_parts = []
+    
+    # 1. 회의 기본 정보
+    context_parts.append(f"=== 회의 정보 ===")
+    context_parts.append(f"주제: {meeting.meeting_topic}")
+    context_parts.append(f"현재 라운드: {meeting.conversation_round + 1}/{meeting.max_rounds}")
+    
+    # 2. 현재 단계 정보
+    round_percentage = (meeting.conversation_round + 1) / meeting.max_rounds
+    if round_percentage <= 0.2:
+        stage = "문제 정의 및 현황 파악 단계"
+    elif round_percentage <= 0.4:
+        stage = "문제 탐색 및 해결책 제시 단계"
+    elif round_percentage <= 0.6:
+        stage = "해결책 비교 및 분석 단계"
+    elif round_percentage <= 0.8:
+        stage = "합의점 도출 및 구체화 단계"
+    else:
+        stage = "최종 결론 및 실행 방안 정리 단계"
+    context_parts.append(f"토론 단계: {stage}")
+    
+    # 3. 라운드별 핵심 요약 (최근 2-3라운드)
+    if meeting.conversation_round > 0:
+        context_parts.append(f"\n=== 이전 라운드 핵심 내용 ===")
+        start_round = max(1, meeting.conversation_round - 1)  # 최근 2라운드
+        
+        for round_num in range(start_round, meeting.conversation_round + 1):
+            round_messages = []
+            # 해당 라운드의 메시지들 찾기
+            non_moderator_count = len(meeting.get_non_moderator_personas())
+            if non_moderator_count > 0:
+                for i, msg in enumerate(meeting.messages):
+                    if not msg.is_moderator and not msg.is_human_input:
+                        msg_round = (i // non_moderator_count) + 1
+                        if msg_round == round_num:
+                            # 메시지를 적당히 요약 (첫 두 문장)
+                            sentences = msg.content.split('.')[:2]
+                            summary = '.'.join(sentences).strip()
+                            if len(summary) > 100:
+                                summary = summary[:100] + "..."
+                            round_messages.append(f"{msg.persona_name}: {summary}")
+            
+            if round_messages:
+                context_parts.append(f"[라운드 {round_num}]")
+                context_parts.extend(round_messages[:4])  # 최대 4개 발언만
+    
+    # 4. 최근 대화 (더 상세하게)
+    context_parts.append(f"\n=== 최근 대화 ===")
+    recent_messages = meeting.messages[-8:]  # 최근 8개로 확장
+    for msg in recent_messages:
+        # 메시지를 적절히 요약 (첫 문장 + α)
+        sentences = msg.content.split('.')
+        if len(sentences) > 1:
+            content = sentences[0] + '.' + (sentences[1][:30] + "..." if len(sentences[1]) > 30 else sentences[1])
+        else:
+            content = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
+        
+        speaker_info = ""
+        persona = next((p for p in meeting.personas if p.id == msg.persona_id), None)
+        if persona and not msg.is_moderator:
+            speaker_info = f"[{persona.role}]"
+        
+        context_parts.append(f"{speaker_info} {msg.persona_name}: {content}")
+    
+    # 5. 참고자료 (개선된 추출)
+    if meeting.uploaded_files_content and meeting.meeting_topic:
+        context_parts.append(f"\n=== 참고 자료 ===")
+        topic_keywords = meeting.meeting_topic.lower().split()[:5]  # 키워드 확장
+        
+        # 관련 내용 추출
+        relevant_content = meeting.get_relevant_file_content(topic_keywords)
+        if relevant_content and len(relevant_content) > 50:
+            # 참고자료를 적절한 길이로 요약
+            if len(relevant_content) > 400:
+                relevant_content = relevant_content[:400] + "..."
+            context_parts.append(relevant_content)
+    
+    # 전체 맥락 조합 및 적절한 길이 제한
+    full_context = "\n".join(context_parts)
+    
+    # 토큰 제한 (3000자 = 약 750토큰, max_tokens 300에 맞게 조정)
+    max_length = 3000
+    if len(full_context) > max_length:
+        # 중요도 순으로 내용 유지
+        essential = []
+        essential.append(f"주제: {meeting.meeting_topic}")
+        essential.append(f"라운드: {meeting.conversation_round + 1}/{meeting.max_rounds}")
+        essential.append(f"단계: {stage}")
+        essential.append("\n최근대화:")
+        
+        # 최근 6개 메시지를 적절한 길이로
+        for msg in meeting.messages[-6:]:
+            content = msg.content.split('.')[0][:50] + "..." if len(msg.content) > 50 else msg.content
+            essential.append(f"{msg.persona_name}: {content}")
+        
+        full_context = "\n".join(essential)
+        
+        # 여전히 길면 더 줄이기
+        if len(full_context) > max_length:
+            full_context = full_context[:max_length] + "..."
+    
+    return full_context
+
+def stream_response(text: str, typing_speed: float = 0.1):
+    """스트리밍 타이핑 효과 - 속도 조절 가능"""
+    import time
+    words = text.split()
+    for i, word in enumerate(words):
+        if i == 0:
+            yield word
+        else:
+            yield " " + word
+        time.sleep(typing_speed)  # 타이핑 속도 조절 (사용자 설정)
+
+def display_message(message: Message, is_latest: bool = False):
+    """메시지 표시"""
+    avatar = "🎯" if message.is_moderator else "🎭"
+    if message.is_human_input:
+        avatar = "👤"
+    
+    with st.chat_message(
+        "assistant" if not message.is_human_input else "human",
+        avatar=avatar
+    ):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.write(f"**{message.persona_name}**")
+            # 최신 메시지만 타이핑 효과 적용
+            if is_latest and not message.is_human_input:
+                # 세션 상태에서 타이핑 속도 가져오기
+                meeting = st.session_state.virtual_meeting
+                st.write_stream(stream_response(message.content, meeting.typing_speed))
+            else:
+                st.write(message.content)
+        with col2:
+            st.caption(message.timestamp.strftime('%H:%M:%S'))
+            if message.is_human_input:
+                st.caption("👤 인간 개입")
+
+def should_moderator_intervene(meeting: VirtualMeeting) -> bool:
+    """사회자가 개입해야 하는 상황인지 판단"""
+    if not meeting.messages or meeting.conversation_round < 2:
+        return False
+    
+    # 최근 사회자 개입 후 쿨다운 체크 (최소 5개 메시지 후에 다시 개입 가능)
+    if meeting.last_moderator_intervention:
+        messages_since_intervention = 0
+        for msg in reversed(meeting.messages):
+            if msg.timestamp <= meeting.last_moderator_intervention:
+                break
+            if not msg.is_moderator:  # 사회자가 아닌 메시지만 카운트
+                messages_since_intervention += 1
+        
+        if messages_since_intervention < 5:  # 5개 메시지 미만이면 개입하지 않음
+            return False
+    
+    # 특정 조건에서 사회자 개입 필요
+    total_rounds = meeting.max_rounds
+    current_round = meeting.conversation_round + 1
+    round_percentage = current_round / total_rounds
+    
+    # 단계 전환 시점에서 사회자가 정리 (더 엄격한 조건)
+    stage_transitions = [0.2, 0.4, 0.6, 0.8]
+    for transition in stage_transitions:
+        if abs(round_percentage - transition) < 0.02:  # 전환점을 더 좁게 설정 (5% -> 2%)
+            # 해당 단계에서 이미 개입했는지 체크
+            if meeting.last_moderator_intervention:
+                last_intervention_round = meeting.conversation_round
+                transition_round = int(total_rounds * transition)
+                if abs(last_intervention_round - transition_round) <= 2:  # 이미 해당 단계에서 개입했으면 스킵
+                    continue
+            return True
+    
+    # 마지막 라운드 전에 사회자가 마무리 유도 (한 번만)
+    if current_round >= total_rounds - 2:
+        # 마지막 단계에서 아직 개입하지 않았다면 개입
+        if not meeting.last_moderator_intervention:
+            return True
+        # 마지막 개입이 현재 라운드보다 5라운드 이상 전이면 다시 개입
+        messages_since_last_intervention = 0
+        for msg in reversed(meeting.messages):
+            if msg.timestamp <= meeting.last_moderator_intervention:
+                break
+            if not msg.is_moderator:
+                messages_since_last_intervention += 1
+        if messages_since_last_intervention >= 10:  # 10개 메시지 후에 마무리 개입
+            return True
+    
+    return False
+
+def generate_final_meeting_summary(meeting: VirtualMeeting, model_name: str = "gpt-4o-mini") -> str:
+    """사회자가 회의 최종 마무리 메시지 생성"""
+    try:
+        # 모델에 따른 클라이언트 설정
+        if model_name.startswith('claude'):
+            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_key or anthropic_key.strip() == '' or anthropic_key == 'NA':
+                raise ValueError("Anthropic API 키가 올바르지 않습니다.")
+            client = anthropic.Anthropic(api_key=anthropic_key)
+        else:
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+                raise ValueError("OpenAI API 키가 올바르지 않습니다.")
+            client = OpenAI(api_key=openai_key)
+        
+        # 전체 회의 맥락 생성
+        comprehensive_context = get_comprehensive_meeting_context(meeting)
+        
+        system_prompt = """당신은 회의 사회자입니다. 
+        
+        모든 참가자가 마지막 라운드에서 최종 결론을 발표했습니다.
+        이제 회의를 공식적으로 마무리할 차례입니다.
+        
+        다음 요소들을 포함하여 회의를 마무리하세요:
+        1. 오늘 회의에서 논의된 주요 내용 간략 정리
+        2. 참가자들이 제시한 핵심 결론들 요약
+        3. 합의된 사항이나 공통된 의견 강조
+        4. 향후 실행해야 할 액션 아이템 정리
+        5. 회의 참가에 대한 감사 인사
+        6. 회의 공식 종료 선언
+        
+        따뜻하고 전문적인 톤으로 3-4문장 정도로 작성해주세요.
+        """
+        
+        user_message = f"""회의 전체 맥락:
+        {comprehensive_context}
+        
+        주제: {meeting.meeting_topic}
+        총 라운드: {meeting.max_rounds}
+        
+        위 내용을 바탕으로 회의를 공식적으로 마무리해주세요."""
+        
+        if model_name.startswith('claude'):
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=300,
+                temperature=0.7,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}]
+            )
+            return response.content[0].text.strip()
+        else:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=300,
+                temperature=0.7
+            )
+            return response.choices[0].message.content.strip()
+    
+    except Exception as e:
+        return f"🏁 모든 참가자분들의 훌륭한 의견 발표로 '{meeting.meeting_topic}' 회의가 성공적으로 마무리되었습니다. 오늘 논의된 내용들을 바탕으로 좋은 결과가 있기를 기대합니다. 회의를 공식 종료하겠습니다. 감사합니다."
+
+def generate_moderator_intervention(meeting: VirtualMeeting, model_name: str = "gpt-4o-mini") -> str:
+    """사회자의 능동적 개입 메시지 생성"""
+    try:
+        # 모델에 따른 클라이언트 설정
+        if model_name.startswith('claude'):
+            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_key or anthropic_key.strip() == '' or anthropic_key == 'NA':
+                return "지금까지의 논의를 정리해보겠습니다."
+            client = anthropic.Anthropic(api_key=anthropic_key)
+        else:
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if not openai_key or openai_key.strip() == '' or openai_key == 'NA':
+                return "지금까지의 논의를 정리해보겠습니다."
+            client = OpenAI(api_key=openai_key)
+        
+        # 현재 상황 분석
+        total_rounds = meeting.max_rounds
+        current_round = meeting.conversation_round + 1
+        round_percentage = current_round / total_rounds
+        
+        # 단계별 사회자 역할 정의
+        if round_percentage <= 0.2:
+            stage_role = "문제 정의 단계를 정리하고 다음 단계로 안내"
+        elif round_percentage <= 0.4:
+            stage_role = "다양한 관점들을 정리하고 해결책 모색 단계로 전환"
+        elif round_percentage <= 0.6:
+            stage_role = "제시된 해결책들을 정리하고 비교 분석 단계로 안내"
+        elif round_percentage <= 0.8:
+            stage_role = "논의된 내용을 바탕으로 합의점 도출 유도"
+        else:
+            stage_role = "전체 회의 내용을 종합하고 최종 결론 도출"
+        
+        # 최근 대화 요약
+        recent_messages = meeting.messages[-6:] if len(meeting.messages) > 6 else meeting.messages
+        recent_summary = "\n".join([f"{msg.persona_name}: {msg.content[:100]}..." for msg in recent_messages])
+        
+        # 개입 횟수에 따른 다양한 접근 방식
+        moderator_messages = [msg for msg in meeting.messages if msg.is_moderator and not msg.is_human_input]
+        intervention_count = len(moderator_messages)
+        
+        if intervention_count % 3 == 0:
+            approach = "참가자들의 의견을 요약하고 다음 단계 방향을 제시하는"
+        elif intervention_count % 3 == 1:
+            approach = "구체적인 질문을 통해 논의를 심화시키는"
+        else:
+            approach = "다른 관점에서 문제를 바라보도록 유도하는"
+        
+        system_prompt = f"""당신은 전문적인 회의 사회자입니다. 
+        현재 상황:
+        - 회의 주제: {meeting.meeting_topic}
+        - 현재 라운드: {current_round}/{total_rounds} ({round_percentage*100:.1f}% 진행)
+        - 현재 단계: {stage_role}
+        - 접근 방식: {approach}
+        
+        다음 역할을 수행하세요:
+        1. {approach} 방식으로 개입
+        2. 이전 발언과는 다른 관점이나 표현 사용
+        3. 참가자들에게 구체적이고 실행 가능한 방향 제시
+        
+        중요: 이전 사회자 발언과 중복되지 않도록 새로운 관점이나 구체적인 질문을 포함하여 2-3문장으로 발언하세요.
+        예시 접근:
+        - "구체적으로 어떤 부분에서..." 
+        - "다른 관점에서 보면..."
+        - "실제 구현 시 고려해야 할..."
+        - "우선순위를 정한다면..." 등"""
+        
+        user_message = f"최근 대화 내용:\n{recent_summary}\n\n위 내용을 바탕으로 사회자로서 적절한 개입 발언을 해주세요."
+        
+        if model_name.startswith('claude'):
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=300,
+                temperature=0.7,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}]
+            )
+            return response.content[0].text.strip()
+        else:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=300,
+                temperature=0.7
+            )
+            return response.choices[0].message.content.strip()
+            
+    except Exception as e:
+        # 기본 메시지 반환
+        total_rounds = meeting.max_rounds
+        current_round = meeting.conversation_round + 1
+        return f"지금까지 좋은 의견들이 많이 나왔습니다. 현재 {current_round}/{total_rounds} 라운드가 진행되고 있으니, 논의를 더욱 발전시켜 나가겠습니다."
+
+def run_conversation_round(meeting: VirtualMeeting) -> bool:
+    """🎯 대화 체인 시스템 - 한 번에 한 발언자만 처리"""
+    if not meeting.should_continue():
+        return False
+    
+    # 현재 발언자 가져오기
+    current_persona = meeting.get_next_speaker()
+    if not current_persona:
+        return False
+    
+    # 🎯 대화 흐름 분석 및 방향 제시
+    meeting.analyze_conversation_flow()
+    conversation_direction = meeting.get_conversation_direction()
+    
+    # 모델 선택
+    selected_model = st.session_state.get('selected_ai_model', 'gpt-4o-mini')
+    
+    # 기본 대화 히스토리
+    conversation_history = format_conversation_history(meeting.messages, last_n=10)
+    
+    # 종합 맥락 생성
+    comprehensive_context = get_comprehensive_meeting_context(meeting)
+    
+    # 🎯 AI 응답 생성 (대화 체인 시스템 적용)
+    response = generate_ai_response(
+        current_persona,
+        conversation_history,
+        meeting.meeting_topic,
+        meeting.uploaded_files_content,
+        meeting.conversation_round + 1,  # 다음 라운드 번호
+        enhanced_context=comprehensive_context,
+        model_name=selected_model,
+        total_rounds=meeting.max_rounds,
+        conversation_direction=conversation_direction  # 🎯 대화 방향 가이드 추가
+    )
+    
+    # 메시지 추가
+    meeting.add_message(current_persona.id, response)
+    
+    # 🎯 발언자 순서만 진행 (라운드는 절대 자동 증가하지 않음)
+    meeting.advance_speaker()
+    
+    return True
+
+def preset_personas() -> List[Dict]:
+    """미리 설정된 페르소나 목록"""
+    return [
+        {
+            "name": "전략기획자 이전략",
+            "role": "전략기획팀장",
+            "personality": "분석적이고 체계적인 사고를 하는 성격",
+            "expertise": "전략 수립, 사업 분석, 시장 조사",
+            "speaking_style": "논리적이고 체계적인 설명을 하는 말투"
+        },
+        {
+            "name": "디자이너 박창의",
+            "role": "UX/UI 디자이너",
+            "personality": "창의적이고 사용자 중심적 사고를 하는 성격",
+            "expertise": "사용자 경험, 인터페이스 디자인, 디자인 시스템",
+            "speaking_style": "감성적이고 직관적인 표현을 사용하는 말투"
+        },
+        {
+            "name": "개발자 김코딩",
+            "role": "시니어 개발자",
+            "personality": "논리적이고 문제 해결 지향적인 성격",
+            "expertise": "소프트웨어 개발, 시스템 아키텍처, 기술 최적화",
+            "speaking_style": "간결하고 기술적인 용어를 사용하는 말투"
+        },
+        {
+            "name": "영업팀장 최세일즈",
+            "role": "영업팀장",
+            "personality": "적극적이고 목표 지향적인 성격",
+            "expertise": "고객 관리, 영업 전략, 협상",
+            "speaking_style": "열정적이고 설득력 있는 말투"
+        },
+        {
+            "name": "재무담당자 정캐시",
+            "role": "재무팀장",
+            "personality": "신중하고 정확성을 중시하는 성격",
+            "expertise": "재무 분석, 예산 관리, 투자 평가",
+            "speaking_style": "정확한 수치와 데이터를 기반으로 한 신중한 말투"
+        }
+    ]
+
+def main():
+    
+    
+    # 세션 상태 초기화
+    initialize_session_state()
+    meeting = st.session_state.virtual_meeting
+    
+    # 사이드바 - 회의 설정
+    with st.sidebar:
+        st.header("🎯 회의 설정")
+        
+        # AI 모델 선택 (독서토론과 동일한 방식)
+        st.subheader("🤖 AI 모델 설정")
+        
+        # 사용 가능한 모델 목록 생성
+        available_models = []
+        has_anthropic_key = os.environ.get('ANTHROPIC_API_KEY') is not None
+        if has_anthropic_key:
+            available_models.extend([
+                'claude-3-5-sonnet-latest',
+                'claude-3-5-haiku-latest',
+            ])
+        has_openai_key = os.environ.get('OPENAI_API_KEY') is not None
+        if has_openai_key:
+            available_models.extend(['gpt-4o', 'gpt-4o-mini'])
+        
+        # 모델이 하나도 없으면 기본값 추가
+        if not available_models:
+            available_models = ['gpt-4o-mini']
+        
+        # 현재 선택된 모델이 사용 가능한 목록에 있는지 확인
+        current_model = st.session_state.get('selected_ai_model', 'gpt-4o-mini')
+        if current_model not in available_models and available_models:
+            current_model = available_models[0]
+            st.session_state.selected_ai_model = current_model
+        
+        # 모델 선택 UI
+        selected_model = st.selectbox(
+            '🧠 AI 모델 선택',
+            options=available_models,
+            index=available_models.index(current_model) if current_model in available_models else 0,
+            help='Claude(Anthropic)는 ANTHROPIC_API_KEY, OpenAI는 OPENAI_API_KEY 필요'
+        )
+        
+        # 모델이 실제로 변경된 경우에만 세션 상태 업데이트
+        if selected_model != st.session_state.get('selected_ai_model'):
+            st.session_state.selected_ai_model = selected_model
+        
+        # 선택된 모델 정보 표시
+        if selected_model.startswith('claude'):
+            st.info("🧠 **Claude 모델 사용 중**\n- 고품질 대화 생성\n- 긴 맥락 이해 우수")
+        else:
+            st.info("🧠 **OpenAI 모델 사용 중**\n- 빠른 응답 속도\n- 안정적인 성능")
+        
+        st.divider()
+        
+        # 회의 주제
+        meeting.meeting_topic = st.text_area(
+            "회의 주제",
+            value=meeting.meeting_topic,
+            help="토론할 주제를 입력하세요",
+            placeholder="예: 신제품 출시 전략 수립"
+        )
+        
+        # 회의 시간 설정
+        meeting.meeting_duration = st.slider(
+            "회의 시간 (분)",
+            min_value=5,
+            max_value=120,
+            value=meeting.meeting_duration
+        )
+        
+        # 최대 라운드 설정
+        new_max_rounds = st.slider(
+            "최대 대화 라운드",
+            min_value=3,
+            max_value=100,
+            value=meeting.max_rounds,
+            help="🔒 이 값은 절대 자동으로 변경되지 않습니다! 라운드는 자동으로 진행되지만, 설정한 최대값은 고정됩니다."
+        )
+        
+        # 🔧 원본 최대 라운드 추적 (사용자가 직접 변경할 때만)
+        if new_max_rounds != meeting.max_rounds:
+            meeting.max_rounds = new_max_rounds
+            meeting.original_max_rounds = new_max_rounds  # 사용자가 직접 설정한 원본 값 저장
+            meeting.extension_granted = False  # 연장 여부 초기화
+            st.success(f"✅ 최대 라운드가 {new_max_rounds}로 설정되었습니다!")
+        
+        # 발언 속도 설정
+        meeting.speaking_speed = st.slider(
+            "발언 간격 (초)",
+            min_value=1,
+            max_value=10,
+            value=meeting.speaking_speed,
+            help="자동 모드에서 발언 간격을 조절합니다"
+        )
+        
+        # 타이핑 속도 설정 (새로 추가)
+        st.subheader("⌨️ 화면 표시 설정")
+        
+        # 타이핑 속도 옵션
+        typing_options = {
+            "매우 빠름 (0.02초)": 0.02,
+            "빠름 (0.05초)": 0.05,
+            "보통 (0.1초)": 0.1,
+            "느림 (0.15초)": 0.15,
+            "매우 느림 (0.25초)": 0.25,
+            "커스텀": "custom"
+        }
+        
+        # 현재 설정된 값에 맞는 옵션 찾기
+        current_option = "보통 (0.1초)"  # 기본값
+        for option, value in typing_options.items():
+            if value == meeting.typing_speed:
+                current_option = option
+                break
+        
+        selected_option = st.selectbox(
+            "💬 텍스트 타이핑 속도",
+            options=list(typing_options.keys()),
+            index=list(typing_options.keys()).index(current_option),
+            help="AI 발언이 화면에 타이핑되어 나오는 속도를 조절합니다"
+        )
+        
+        if typing_options[selected_option] == "custom":
+            meeting.typing_speed = st.slider(
+                "커스텀 타이핑 속도 (초/단어)",
+                min_value=0.01,
+                max_value=0.5,
+                value=meeting.typing_speed,
+                step=0.01,
+                help="숫자가 낮을수록 빠르게 타이핑됩니다"
+            )
+        else:
+            meeting.typing_speed = typing_options[selected_option]
+        
+        # 타이핑 속도 미리보기
+        with st.expander("⚡ 타이핑 속도 미리보기", expanded=False):
+            if st.button("🎬 테스트 해보기"):
+                sample_text = "안녕하세요! 이것은 타이핑 속도 테스트입니다. 현재 설정된 속도로 텍스트가 표시됩니다."
+                st.write("**샘플 텍스트:**")
+                st.write_stream(stream_response(sample_text, meeting.typing_speed))
+                st.caption(f"현재 설정: {meeting.typing_speed}초/단어")
+        
+        st.divider()
+        
+        # 파일 업로드
+        st.header("📁 참고 자료 업로드")
+        uploaded_files = st.file_uploader(
+            "파일을 업로드하세요",
+            type=['txt','md','pdf', 'docx', 'csv'],
+            accept_multiple_files=True,
+            help="페르소나들이 참고할 자료를 업로드하세요"
+        )
+        
+        if uploaded_files:
+            if st.button("📄 파일 처리"):
+                with st.spinner("파일을 처리 중입니다..."):
+                    combined_content = ""
+                    for file in uploaded_files:
+                        content = extract_text_from_file(file)
+                        combined_content += f"\n--- {file.name} ---\n{content}\n"
+                    
+                    meeting.uploaded_files_content = combined_content
+                    st.success(f"✅ {len(uploaded_files)}개 파일이 처리되었습니다!")
+            
+            # 파일이 처리된 경우 분석 결과 표시
+            if meeting.uploaded_files_content:
+                st.subheader("📖 파일 분석 결과")
+                
+                # 파일 분석 실행
+                analysis = meeting.analyze_uploaded_files()
+                
+                # 분석 정보 표시
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("📄 총 길이", f"{analysis.get('total_length', 0):,}자")
+                with col2:
+                    st.metric("📝 단어 수", f"{analysis.get('word_count', 0):,}개")
+                with col3:
+                    st.metric("🔑 키워드", f"{len(analysis.get('keywords', [])):,}개")
+                
+                # 핵심 키워드 표시
+                if analysis.get('keywords'):
+                    st.write("**🔑 핵심 키워드:**")
+                    keyword_display = ", ".join(analysis['keywords'][:15])
+                    st.info(keyword_display)
+                
+                # 회의 주제와의 연관성 표시
+                if meeting.meeting_topic:
+                    topic_keywords = meeting.meeting_topic.replace(',', ' ').replace('.', ' ').split()
+                    topic_keywords = [k.strip().lower() for k in topic_keywords if len(k.strip()) >= 2]
+                    file_keywords = [k.lower() for k in analysis.get('keywords', [])]
+                    
+                    matching_keywords = [k for k in topic_keywords if k in file_keywords]
+                    if matching_keywords:
+                        st.success(f"✅ 회의 주제와 매칭되는 키워드: {', '.join(matching_keywords)}")
+                    else:
+                        st.warning("⚠️ 회의 주제와 직접적으로 매칭되는 키워드가 없습니다.")
+                
+                # 파일 내용 미리보기 (토글)
+                with st.expander("📋 파일 내용 미리보기", expanded=False):
+                    st.text_area(
+                        "처리된 내용",
+                        value=analysis.get('summary', meeting.uploaded_files_content[:500]),
+                        height=150,
+                        disabled=True,
+                        key="file_preview"
+                    )
+                
+                # RAG 활용 미리보기
+                if meeting.meeting_topic:
+                    with st.expander("🔍 AI가 활용할 관련 내용 미리보기", expanded=False):
+                        relevant_content = meeting.get_relevant_file_content(topic_keywords)
+                        if relevant_content:
+                            st.text_area(
+                                "회의 주제와 관련된 파일 내용",
+                                value=relevant_content,
+                                height=200,
+                                disabled=True,
+                                help="이 내용이 AI 응답 생성 시 우선적으로 참고됩니다"
+                            )
+                        else:
+                            st.info("회의 주제와 관련된 특정 내용을 찾지 못했습니다. 전체 요약이 사용됩니다.")
+        
+        st.divider()
+        
+        # 회의 제어
+        st.header("🎮 회의 제어")
+        
+        if not meeting.is_active:
+            if st.button("🚀 회의 시작", type="primary"):
+                if meeting.meeting_topic and len(meeting.personas) > 1:
+                    meeting.is_active = True
+                    meeting.start_time = datetime.now()
+                    meeting.conversation_round = 0
+                    meeting.current_speaker_index = 0
+                    
+                    # 사회자 인사말 추가
+                    moderator = meeting.get_moderator()
+                    if moderator:
+                        opening_message = f"안녕하세요, 오늘 '{meeting.meeting_topic}'에 대해 논의하겠습니다. 모든 참가자들의 활발한 참여를 부탁드립니다."
+                        meeting.add_message(moderator.id, opening_message)
+                    
+                    st.success("✅ 회의가 시작되었습니다!")
+                    st.rerun()
+                else:
+                    st.error("⚠️ 회의 주제와 최소 2명의 페르소나가 필요합니다.")
+        else:
+            # 회의 진행 상태 표시
+            if meeting.start_time:
+                elapsed = datetime.now() - meeting.start_time
+                remaining = meeting.meeting_duration * 60 - elapsed.seconds
+                st.info(f"⏰ 경과: {elapsed.seconds//60}분 | 남은시간: {max(0, remaining//60)}분")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("⏸️ 회의 중단"):
+                    meeting.is_active = False
+                    st.success("⏸️ 회의가 중단되었습니다.")
+                    st.rerun()
+            with col2:
+                if st.button("🔄 회의 재시작"):
+                    meeting.is_active = True
+                    st.success("▶️ 회의가 재시작되었습니다.")
+                    st.rerun()
+            
+            # 자동 모드 토글
+            meeting.auto_mode = st.toggle("🤖 자동 진행 모드", value=meeting.auto_mode)
+            if meeting.auto_mode:
+                st.success("🚀 자동 모드 활성화! 정해진 라운드까지 완전 자동으로 진행됩니다.")
+                st.info("💡 화면을 보고 있지 않아도 됩니다. 자동으로 완료되면 알림이 표시됩니다.")
+        
+        # 회의 종료 조건
+        if meeting.is_active:
+            st.divider()
+            st.header("📊 진행 상황")
+            progress = min(meeting.conversation_round / meeting.max_rounds, 1.0)
+            st.progress(progress, text=f"라운드 진행: {meeting.conversation_round}/{meeting.max_rounds}")
+    
+    # 메인 영역
+    tab1, tab2, tab3, tab4 = st.tabs(["👥 페르소나 관리", "💬 실시간 회의", "📊 회의 현황", "📝 회의록"])
+    
+    with tab1:
+        st.header("👥 페르소나 관리")
+        
+        # 프리셋 페르소나 추가
+        st.subheader("🎯 프리셋 페르소나")
+        preset_options = preset_personas()
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            selected_preset = st.selectbox(
+                "프리셋 선택",
+                options=range(len(preset_options)),
+                format_func=lambda x: f"{preset_options[x]['name']} ({preset_options[x]['role']})",
+                index=None,
+                placeholder="프리셋을 선택하세요"
+            )
+        with col2:
+            if selected_preset is not None and st.button("➕ 프리셋 추가"):
+                preset = preset_options[selected_preset]
+                new_persona = Persona(
+                    id=str(uuid.uuid4()),
+                    name=preset['name'],
+                    role=preset['role'],
+                    prompt="",  # 자동 생성됨
+                    personality=preset['personality'],
+                    expertise=preset['expertise'],
+                    speaking_style=preset['speaking_style']
+                )
+                
+                if meeting.add_persona(new_persona):
+                    st.success(f"✅ {preset['name']} 페르소나가 추가되었습니다!")
+                    st.rerun()
+                else:
+                    st.error("❌ 최대 10개의 페르소나만 추가할 수 있습니다.")
+        
+        st.divider()
+        
+        # 커스텀 페르소나 추가
+        with st.expander("➕ 커스텀 페르소나 추가", expanded=False):
+            with st.form("add_persona"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    name = st.text_input("이름", placeholder="예: 김전문")
+                    role = st.text_input("역할", placeholder="예: 마케팅 담당자")
+                    expertise = st.text_input("전문 분야", placeholder="예: 디지털 마케팅, SNS 전략")
+                with col2:
+                    personality = st.text_area("성격/특성", placeholder="예: 창의적이고 도전적인 성격")
+                    speaking_style = st.text_input("말하는 스타일", placeholder="예: 열정적이고 구체적인 말투")
+                
+                prompt = st.text_area(
+                    "커스텀 프롬프트 (선택사항)",
+                    help="비워두면 자동으로 생성됩니다",
+                    placeholder="이 페르소나의 특별한 행동 패턴이나 전문성을 정의하는 프롬프트를 입력하세요"
+                )
+                
+                if st.form_submit_button("페르소나 추가", type="primary"):
+                    if name and role:
+                        new_persona = Persona(
+                            id=str(uuid.uuid4()),
+                            name=name,
+                            role=role,
+                            prompt=prompt,
+                            personality=personality,
+                            expertise=expertise,
+                            speaking_style=speaking_style
+                        )
+                        
+                        if meeting.add_persona(new_persona):
+                            st.success(f"✅ {name} 페르소나가 추가되었습니다!")
+                            st.rerun()
+                        else:
+                            st.error("❌ 최대 10개의 페르소나만 추가할 수 있습니다.")
+                    else:
+                        st.error("⚠️ 이름과 역할은 필수 항목입니다.")
+        
+        # 기존 페르소나 목록
+        st.subheader("현재 페르소나 목록")
+        for i, persona in enumerate(meeting.personas):
+            icon = "🎯" if persona.is_moderator else "🎭"
+            
+            with st.expander(f"{icon} {persona.name} ({persona.role})"):
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    st.write(f"**전문 분야:** {persona.expertise}")
+                    st.write(f"**성격:** {persona.personality}")
+                    st.write(f"**말하는 스타일:** {persona.speaking_style}")
+                    
+                    # 프롬프트 표시 (expander 대신 toggle 사용)
+                    show_prompt = st.toggle(
+                        "🤖 AI 프롬프트 보기", 
+                        key=f"show_prompt_{persona.id}_{i}"  # 인덱스 추가로 고유성 보장
+                    )
+                    if show_prompt:
+                        st.text_area(
+                            "프롬프트",
+                            value=persona.prompt,
+                            height=100,
+                            disabled=True,
+                            key=f"prompt_view_{persona.id}_{i}"  # 인덱스 추가로 고유성 보장
+                        )
+                
+                with col2:
+                    if not persona.is_moderator:
+                        if st.button("🗑️ 삭제", key=f"delete_{persona.id}"):
+                            meeting.remove_persona(persona.id)
+                            st.success(f"✅ {persona.name} 페르소나가 삭제되었습니다.")
+                            st.rerun()
+                    else:
+                        st.info("🔒 사회자")
+    
+    with tab2:
+        st.header("💬 실시간 회의")
+        
+        if not meeting.is_active:
+            st.info("ℹ️ 회의를 시작하려면 사이드바에서 '회의 시작' 버튼을 클릭하세요.")
+            
+            # 회의 시작 전 미리보기
+            if meeting.meeting_topic:
+                st.subheader("📋 회의 정보")
+                st.write(f"**주제:** {meeting.meeting_topic}")
+                st.write(f"**예상 시간:** {meeting.meeting_duration}분")
+                st.write(f"**참여자:** {len(meeting.personas)}명")
+                st.write(f"**참여자 목록:** {', '.join([p.name for p in meeting.personas])}")
+        else:
+            # 회의 진행 상황
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                elapsed_time = datetime.now() - meeting.start_time
+                st.metric("⏰ 경과 시간", f"{elapsed_time.seconds // 60}분")
+            with col2:
+                # 라운드 표시에 상태 정보 추가
+                current_round_display = f"{meeting.conversation_round + 1}/{meeting.max_rounds}"
+                if meeting.conversation_round + 1 == meeting.max_rounds:
+                    current_round_display += " (🏁 마지막)"
+                elif meeting.conversation_round >= meeting.max_rounds:
+                    current_round_display = f"{meeting.max_rounds}/{meeting.max_rounds} (✅ 완료)"
+                st.metric("🔄 현재 라운드", current_round_display)
+            with col3:
+                st.metric("💬 총 메시지", len(meeting.messages))
+            with col4:
+                next_speaker = meeting.get_next_speaker()
+                if meeting.conversation_round >= meeting.max_rounds:
+                    # 회의가 종료된 경우
+                    moderator = meeting.get_moderator()
+                    last_message = meeting.messages[-1] if meeting.messages else None
+                    
+                    if last_message and last_message.is_moderator and moderator and last_message.persona_id == moderator.id:
+                        st.metric("🎤 다음 발언자", "회의 완료")
+                    else:
+                        st.metric("🎤 다음 발언자", f"{moderator.name} (마무리)")
+                elif meeting.conversation_round + 1 == meeting.max_rounds:
+                    # 마지막 라운드인 경우
+                    speaker_name = next_speaker.name if next_speaker else "없음"
+                    st.metric("🎤 다음 발언자", f"{speaker_name} (최종결론)")
+                else:
+                    st.metric("🎤 다음 발언자", next_speaker.name if next_speaker else "없음")
+            
+            # 사회자 개입
+            st.subheader("🎯 사회자 개입")
+            moderator = meeting.get_moderator()
+            if moderator:
+                with st.form("moderator_form"):
+                    human_input = st.text_area(
+                        f"{moderator.name}로서 발언",
+                        help="사회자 역할로 회의 방향을 제시하거나 의견을 추가하세요",
+                        placeholder="예: 지금까지의 의견을 정리해보겠습니다..."
+                    )
+                    
+                    if st.form_submit_button("💬 발언하기", type="primary"):
+                        if human_input:
+                            meeting.add_message(moderator.id, human_input, is_human_input=True)
+                            st.success("✅ 발언이 추가되었습니다!")
+                            st.rerun()
+            
+            # 라운드 진행 상황 표시 (조정 기능 제거)
+            st.subheader("📊 라운드 진행 상황")
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                # 현재 진행률 계산
+                current_progress = meeting.conversation_round / meeting.max_rounds * 100
+                progress_color = "🟢" if current_progress < 70 else "🟡" if current_progress < 90 else "🔴"
+                
+                st.write(f"**현재 진행률**: {progress_color} {current_progress:.1f}% ({meeting.conversation_round}/{meeting.max_rounds})")
+                
+                # 토론 단계 표시
+                round_percentage = (meeting.conversation_round + 1) / meeting.max_rounds
+                if round_percentage <= 0.2:
+                    stage = "🔍 문제 정의 및 현황 파악"
+                elif round_percentage <= 0.4:
+                    stage = "💡 문제 탐색 및 해결책 제시"
+                elif round_percentage <= 0.6:
+                    stage = "⚖️ 해결책 비교 및 분석"
+                elif round_percentage <= 0.8:
+                    stage = "🤝 합의점 도출 및 구체화"
+                else:
+                    stage = "📋 최종 결론 및 실행 방안"
+                
+                st.info(f"**현재 토론 단계**: {stage}")
+            
+            with col2:
+                # 설정값 보호 상태 표시
+                st.success(f"🔒 **최대 라운드 고정**\n{meeting.original_max_rounds}라운드로 설정됨")
+                if meeting.extension_granted:
+                    st.warning(f"⚠️ **1라운드 연장**\n{meeting.original_max_rounds} → {meeting.max_rounds}")
+                st.info("💡 사이드바에서만 변경 가능")
+                
+                # 라운드 자동 진행 안내
+                st.caption("🔄 라운드는 모든 참가자 발언 완료 시 자동 진행됩니다")
+            
+            # 대화 진행 컨트롤
+            st.subheader("🗣️ 대화 진행")
+            
+            # 🎯 대화 체인 시스템 상태 표시
+            non_moderator_personas = meeting.get_non_moderator_personas()
+            if non_moderator_personas:
+                next_speaker = meeting.get_next_speaker()
+                if next_speaker:
+                    st.info(f"🎯 **다음 발언자**: {next_speaker.name} ({next_speaker.role}) | 발언 순서: {meeting.turn_counter + 1}번째")
+                
+                # 대화 방향 가이드 표시
+                if hasattr(meeting, 'get_conversation_direction'):
+                    direction = meeting.get_conversation_direction()
+                    if direction and direction != "회의 주제에 대한 첫 번째 의견을 제시해주세요.":
+                        st.info(f"🧭 **대화 방향**: {direction}")
+                
+                # 현재 논의 초점 표시
+                if hasattr(meeting, 'discussion_focus') and meeting.discussion_focus:
+                    st.success(f"🎯 **현재 논의 초점**: {meeting.discussion_focus}")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                # 🎯 회의 상태에 따른 버튼 표시
+                if meeting.conversation_round >= meeting.max_rounds:
+                    st.success("🏁 회의 완료")
+                    st.info(f"✅ {meeting.max_rounds}라운드 모두 완료되었습니다.")
+                elif st.button("💬 다음 발언", type="primary"):
+                    with st.spinner("🤖 AI가 응답을 생성 중입니다..."):
+                        success = run_conversation_round(meeting)
+                        if success:
+                            st.rerun()
+                        else:
+                            st.info("ℹ️ 회의가 종료되었습니다.")
+            
+            with col2:
+                # 진행 상황 표시 (라운드는 자동으로 진행됨)
+                current_round_display = meeting.conversation_round + 1
+                progress = meeting.conversation_round / meeting.max_rounds
+                st.metric(
+                    "📊 진행 상황", 
+                    f"{current_round_display}/{meeting.max_rounds} 라운드",
+                    f"{progress*100:.1f}% 완료"
+                )
+                st.progress(progress)
+                
+                # 라운드 자동 진행 상태 표시
+                non_moderator_count = len(meeting.get_non_moderator_personas())
+                if non_moderator_count > 0:
+                    current_turn_in_round = (meeting.current_speaker_index % non_moderator_count) + 1
+                    st.caption(f"현재 라운드 내 진행: {current_turn_in_round}/{non_moderator_count}명 발언")
+                else:
+                    st.caption("참가자가 없습니다")
+            
+            with col3:
+                if st.button("🎯 사회자 정리"):
+                    # 강제로 사회자 개입 실행
+                    moderator = meeting.get_moderator()
+                    if moderator:
+                        with st.spinner("🎯 사회자가 정리 중입니다..."):
+                            selected_model = st.session_state.get('selected_ai_model', 'gpt-4o-mini')
+                            intervention_message = generate_moderator_intervention(meeting, selected_model)
+                            meeting.add_message(moderator.id, intervention_message)
+                            # 마지막 개입 시간 기록
+                            meeting.last_moderator_intervention = datetime.now()
+                            st.success("✅ 사회자가 중간 정리를 했습니다.")
+                            st.rerun()
+                    else:
+                        st.error("❌ 사회자가 없습니다.")
+            
+            with col4:
+                if st.button("🔚 회의 종료"):
+                    meeting.is_active = False
+                    # 사회자 마무리 발언
+                    if moderator:
+                        closing_message = "오늘 회의를 마치겠습니다. 모든 분들의 활발한 참여에 감사드립니다."
+                        meeting.add_message(moderator.id, closing_message)
+                    st.success("✅ 회의가 종료되었습니다.")
+                    st.rerun()
+            
+            # 토론 완성도 체크 (새로 추가)
+            if meeting.conversation_round > 0:
+                st.subheader("📊 토론 완성도 체크")
+                
+                # 진행률 기반 완성도 분석
+                round_percentage = meeting.conversation_round / meeting.max_rounds
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    # 토론 깊이 체크
+                    avg_message_length = sum(len(msg.content) for msg in meeting.messages) / len(meeting.messages) if meeting.messages else 0
+                    depth_score = min(100, avg_message_length / 2)  # 200자 기준 100점
+                    st.metric("💭 토론 깊이", f"{depth_score:.0f}점", help="평균 발언 길이 기준")
+                
+                with col2:
+                    # 참여도 체크
+                    non_mod_personas = meeting.get_non_moderator_personas()
+                    if non_mod_personas:
+                        speaker_counts = {}
+                        for msg in meeting.messages:
+                            if not msg.is_moderator and not msg.is_human_input:
+                                speaker_counts[msg.persona_id] = speaker_counts.get(msg.persona_id, 0) + 1
+                        
+                        participation_rate = len(speaker_counts) / len(non_mod_personas) * 100
+                        st.metric("👥 참여도", f"{participation_rate:.0f}%", help="모든 참가자 발언 비율")
+                
+                with col3:
+                    # 단계별 진행도
+                    if round_percentage <= 0.2:
+                        stage_completion = "문제정의 진행중"
+                        stage_color = "🔵"
+                    elif round_percentage <= 0.4:
+                        stage_completion = "해결책 모색중"
+                        stage_color = "🟡"
+                    elif round_percentage <= 0.6:
+                        stage_completion = "대안 비교중"
+                        stage_color = "🟠"
+                    elif round_percentage <= 0.8:
+                        stage_completion = "합의 도출중"
+                        stage_color = "🟣"
+                    else:
+                        stage_completion = "결론 정리중"
+                        stage_color = "🔴"
+                    
+                    st.metric("🎯 진행 단계", f"{stage_color} {stage_completion}")
+                
+                # 완성도 종합 평가
+                overall_completion = (round_percentage * 40) + (min(depth_score, 100) * 0.3) + (participation_rate * 0.3)
+                
+                if overall_completion >= 80:
+                    completion_status = "🟢 우수한 토론 진행"
+                elif overall_completion >= 60:
+                    completion_status = "🟡 양호한 토론 진행"
+                else:
+                    completion_status = "🔴 더 깊이 있는 토론 필요"
+                
+                st.info(f"**종합 완성도**: {completion_status} ({overall_completion:.0f}점)")
+                
+                # 토론 개선 제안 및 종료 알림
+                if round_percentage > 0.6 and overall_completion < 70:
+                    st.warning("💡 **토론 개선 제안**: 더 구체적인 해결책과 실행 방안을 논의해보세요.")
+                elif round_percentage > 0.8 and overall_completion < 80:
+                    st.warning("💡 **마무리 제안**: 지금까지의 논의를 종합하여 명확한 결론을 도출해보세요.")
+                
+                # 회의 자동 종료 알림
+                try:
+                    if hasattr(meeting, '_is_conclusion_reached') and meeting._is_conclusion_reached():
+                        st.success("🎉 **회의 완료**: 결론이 충분히 도출되어 회의가 자동으로 종료될 예정입니다.")
+                    elif round_percentage > 0.9:
+                        st.info("⏰ **회의 마무리**: 최대 라운드에 가까워지고 있습니다. 결론을 정리해주세요.")
+                except AttributeError:
+                    # 구버전 meeting 객체인 경우 간단한 대안 사용
+                    if round_percentage > 0.9:
+                        st.info("⏰ **회의 마무리**: 최대 라운드에 가까워지고 있습니다. 결론을 정리해주세요.")
+            
+            # 🎯 대화 체인 시스템 상태 (새로 추가)
+            with st.expander("🎯 대화 체인 시스템 상태", expanded=False):
+                if hasattr(meeting, 'conversation_chain'):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write("**📋 합의된 사항들:**")
+                        if meeting.agreements:
+                            for i, agreement in enumerate(meeting.agreements[-3:], 1):
+                                st.write(f"{i}. {agreement}")
+                        else:
+                            st.write("아직 합의된 사항이 없습니다.")
+                    
+                    with col2:
+                        st.write("**⚠️ 이견이 있는 사항들:**")
+                        if meeting.disagreements:
+                            for i, disagreement in enumerate(meeting.disagreements[-3:], 1):
+                                st.write(f"{i}. {disagreement}")
+                        else:
+                            st.write("특별한 이견이 없습니다.")
+                    
+                    st.write(f"**🎯 현재 논의 초점:** {meeting.discussion_focus or '아직 설정되지 않음'}")
+                    st.write(f"**📊 발언 순서:** {meeting.turn_counter}번째 발언")
+                else:
+                    st.info("대화 체인 시스템을 초기화하는 중입니다...")
+            
+            # 맥락 미리보기 (새로 추가)
+            with st.expander("🔍 다음 발언 맥락 미리보기", expanded=False):
+                next_speaker = meeting.get_next_speaker()
+                if next_speaker:
+                    st.write(f"**다음 발언자:** {next_speaker.name} ({next_speaker.role})")
+                    
+                    # 맥락 미리보기
+                    comprehensive_context = get_comprehensive_meeting_context(meeting)
+                    st.text_area(
+                        "AI가 참고할 전체 맥락",
+                        value=comprehensive_context,
+                        height=200,
+                        disabled=True,
+                        help="이 맥락이 AI에게 전달되어 라운드별 연속성을 유지합니다"
+                    )
+                    
+                    # 토큰 길이 정보
+                    context_length = len(comprehensive_context)
+                    st.caption(f"📊 맥락 길이: {context_length:,}자 (약 {context_length//4:,} 토큰)")
+                else:
+                    st.info("발언 가능한 참가자가 없습니다.")
+            
+            # 자동 진행 모드 상태 표시만 (실행은 메인 함수 끝에서)
+            if meeting.auto_mode:
+                st.success(f"🚀 자동 진행 모드 활성화 - {meeting.speaking_speed}초마다 자동 발언")
+                st.info(f"🎯 목표: {meeting.max_rounds}라운드까지 자동 완료")
+                
+                # 자동 진행 상태 표시 - 정확한 시간 계산
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    if meeting.last_message_time:
+                        time_since_last = (datetime.now() - meeting.last_message_time).total_seconds()
+                        remaining_time = max(0, meeting.speaking_speed - time_since_last)
+                        progress_value = min(1.0, (meeting.speaking_speed - remaining_time) / meeting.speaking_speed)
+                        
+                        if remaining_time <= 0:
+                            st.success("⚡ 다음 발언 실행 중...")
+                        else:
+                            st.progress(
+                                progress_value,
+                                text=f"다음 발언까지 {remaining_time:.1f}초 남음"
+                            )
+                    else:
+                        st.info("🚀 첫 발언 준비 중...")
+                
+                with col2:
+                    if st.button("⏸️ 자동모드 중단"):
+                        meeting.auto_mode = False
+                        st.info("자동 모드가 중단되었습니다.")
+                        st.rerun()
+            
+            # 대화 내용 표시 (항상 최신 상태로)
+            st.subheader("💭 대화 내용")
+            
+            # 대화 컨테이너 (스크롤 가능)
+            chat_container = st.container()
+            with chat_container:
+                if meeting.messages:
+                    # 모든 메시지 표시 (최신 메시지만 타이핑 효과)
+                    for i, message in enumerate(meeting.messages):
+                        is_latest = (i == len(meeting.messages) - 1)  # 마지막 메시지인지 확인
+                        display_message(message, is_latest=is_latest)
+                    
+                    # 최신 메시지 강조
+                    st.info(f"💬 총 메시지: {len(meeting.messages)}개 | 마지막 발언: {meeting.messages[-1].timestamp.strftime('%H:%M:%S')}")
+                else:
+                    st.info("💭 아직 대화가 시작되지 않았습니다.")
+                
+                # 자동 스크롤을 위한 앵커
+                st.write("")
+    
+    with tab3:
+        st.header("📊 회의 현황")
+        
+        if meeting.messages:
+            # 회의 개요
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("💬 총 발언 수", len(meeting.messages))
+            with col2:
+                human_messages = sum(1 for msg in meeting.messages if msg.is_human_input)
+                st.metric("👤 인간 개입", human_messages)
+            with col3:
+                if meeting.start_time:
+                    duration = datetime.now() - meeting.start_time
+                    st.metric("⏱️ 회의 시간", f"{duration.seconds//60}분 {duration.seconds%60}초")
+            
+            # 추가 시스템 설정 정보
+            col4, col5, col6, col7 = st.columns(4)
+            with col4:
+                st.metric("🕐 발언 간격", f"{meeting.speaking_speed}초")
+            with col5:
+                st.metric("⌨️ 타이핑 속도", f"{meeting.typing_speed}초/단어")
+            with col6:
+                saved_count = len(get_saved_meeting_records())
+                st.metric("💾 저장된 회의록", f"{saved_count}개")
+            with col7:
+                current_ai_model = st.session_state.get('selected_ai_model', 'gpt-4o-mini')
+                model_display = current_ai_model.split('-')[0].upper()  # claude 또는 GPT
+                st.metric("🧠 AI 모델", model_display)
+            
+            # 발언 통계
+            speaker_stats = {}
+            for message in meeting.messages:
+                if message.persona_name in speaker_stats:
+                    speaker_stats[message.persona_name] += 1
+                else:
+                    speaker_stats[message.persona_name] = 1
+            
+            # 발언 횟수 차트
+            if speaker_stats:
+                st.subheader("👤 발언자별 통계")
+                df_stats = pd.DataFrame(list(speaker_stats.items()), columns=['발언자', '발언 횟수'])
+                df_stats = df_stats.sort_values('발언 횟수', ascending=True)
+                st.bar_chart(df_stats.set_index('발언자'))
+                
+                # 발언 분포 파이 차트
+                try:
+                    import plotly.express as px
+                    fig = px.pie(df_stats, values='발언 횟수', names='발언자', title='발언 분포')
+                    st.plotly_chart(fig, use_container_width=True)
+                except ImportError:
+                    st.info("📊 Plotly가 설치되지 않아 파이 차트를 표시할 수 없습니다.")
+            
+            # 시간대별 활동
+            st.subheader("📈 시간대별 활동")
+            if len(meeting.messages) > 1:
+                time_data = []
+                for i, message in enumerate(meeting.messages):
+                    time_data.append({
+                        '순서': i + 1,
+                        '시간': message.timestamp.strftime('%H:%M:%S'),
+                        '발언자': message.persona_name,
+                        '내용 길이': len(message.content)
+                    })
+                
+                df_time = pd.DataFrame(time_data)
+                st.line_chart(df_time.set_index('순서')['내용 길이'])
+            
+            # 🔧 새로운 회의 제어 상태 (반복 감지, 연장 정보)
+            st.subheader("🛠️ 회의 제어 상태")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                # 원본 최대 라운드 vs 현재 최대 라운드
+                if hasattr(meeting, 'original_max_rounds') and hasattr(meeting, 'extension_granted'):
+                    if meeting.extension_granted:
+                        st.warning(f"⚠️ **라운드 연장됨**\n원본: {meeting.original_max_rounds} → 현재: {meeting.max_rounds}")
+                    else:
+                        st.success(f"✅ **원본 설정 유지**\n설정된 최대 라운드: {meeting.original_max_rounds}")
+                else:
+                    st.info(f"📊 최대 라운드: {meeting.max_rounds}")
+            
+            with col2:
+                # 반복 대화 감지 상태
+                if hasattr(meeting, 'consecutive_repetitions'):
+                    if meeting.consecutive_repetitions >= 2:
+                        st.error(f"🔄 **반복 감지됨**\n연속 반복: {meeting.consecutive_repetitions}회")
+                    elif meeting.consecutive_repetitions >= 1:
+                        st.warning(f"⚠️ **반복 주의**\n연속 반복: {meeting.consecutive_repetitions}회")
+                    else:
+                        st.success("✅ **건전한 대화**\n반복 없음")
+                else:
+                    st.info("🔄 반복 감지 초기화 중...")
+            
+            with col3:
+                # 자동 종료 조건 체크
+                try:
+                    if hasattr(meeting, '_is_conclusion_reached') and meeting._is_conclusion_reached():
+                        st.success("🎯 **결론 도출 완료**\n회의 종료 가능")
+                    elif hasattr(meeting, '_detect_repetitive_conversation') and meeting._detect_repetitive_conversation():
+                        st.warning("🔄 **반복 대화 감지**\n조기 종료 예정")
+                    else:
+                        st.info("💬 **대화 진행 중**\n정상 상태")
+                except:
+                    st.info("🔍 **상태 분석 중**")
+            
+            # 라운드별 요약 현황 (새로 추가)
+            st.subheader("🔄 라운드별 맥락 유지 현황")
+            if meeting.conversation_round > 0:
+                for round_num in range(1, meeting.conversation_round + 1):
+                    with st.expander(f"📋 라운드 {round_num} 요약", expanded=False):
+                        summary = meeting.generate_round_summary(round_num)
+                        if summary:
+                            st.text(summary)
+                        else:
+                            st.info("요약 생성 중...")
+            else:
+                st.info("아직 완료된 라운드가 없습니다.")
+            
+            # 핵심 인사이트 (새로 추가)
+            key_insights = meeting.extract_key_insights()
+            if key_insights:
+                st.subheader("💡 핵심 인사이트")
+                for insight in key_insights:
+                    st.write(f"• {insight}")
+            
+            # 참고 자료 활용 현황 (새로 추가)
+            if meeting.uploaded_files_content:
+                st.subheader("📊 참고 자료 활용 현황")
+                analysis = meeting.analyze_uploaded_files()
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("📄 파일 크기", f"{analysis.get('total_length', 0):,}자")
+                    st.metric("🔑 추출된 키워드", f"{len(analysis.get('keywords', []))}")
+                
+                with col2:
+                    # 회의 주제와 키워드 매칭률 계산
+                    if meeting.meeting_topic and analysis.get('keywords'):
+                        topic_keywords = meeting.meeting_topic.replace(',', ' ').replace('.', ' ').split()
+                        topic_keywords = [k.strip().lower() for k in topic_keywords if len(k.strip()) >= 2]
+                        file_keywords = [k.lower() for k in analysis.get('keywords', [])]
+                        
+                        matching_keywords = [k for k in topic_keywords if k in file_keywords]
+                        match_rate = len(matching_keywords) / len(topic_keywords) * 100 if topic_keywords else 0
+                        
+                        st.metric("🎯 주제 연관도", f"{match_rate:.1f}%")
+                        st.metric("✅ 매칭 키워드", f"{len(matching_keywords)}개")
+                
+                # 파일 활용 품질 지표
+                with st.expander("📈 파일 활용 분석", expanded=False):
+                    if analysis.get('keywords'):
+                        st.write("**🔑 상위 키워드:**")
+                        st.write(", ".join(analysis['keywords'][:10]))
+                    
+                    if analysis.get('sections'):
+                        st.write(f"**📁 섹션 구분:** {len(analysis['sections'])}개")
+                        for i, section in enumerate(analysis['sections'][:3]):
+                            st.write(f"  {i+1}. {section['title']}")
+                    
+                    # RAG 품질 평가
+                    if meeting.meeting_topic:
+                        relevant_content = meeting.get_relevant_file_content(topic_keywords)
+                        if "관련 참고 자료" in relevant_content:
+                            st.success("✅ RAG 시스템이 관련 내용을 성공적으로 추출했습니다")
+                        else:
+                            st.info("ℹ️ 전체 요약을 사용하여 참고 자료를 활용합니다")
+            
+            # 저장된 회의록 현황 (새로 추가)
+            st.subheader("💾 저장된 회의록 현황")
+            saved_records = get_saved_meeting_records()
+            
+            if saved_records:
+                # 최근 5개 회의록만 표시
+                recent_saved = saved_records[:5]
+                
+                for record in recent_saved:
+                    with st.container():
+                        col1, col2, col3 = st.columns([3, 2, 1])
+                        with col1:
+                            st.write(f"📋 **{record['title']}**")
+                        with col2:
+                            st.caption(f"📅 {record['date'].strftime('%Y-%m-%d %H:%M')}")
+                        with col3:
+                            if st.button("📖", key=f"quick_view_{record['meeting_id']}", help="빠른 보기"):
+                                st.session_state.selected_meeting_id = record['meeting_id']
+                
+                if len(saved_records) > 5:
+                    st.caption(f"... 외 {len(saved_records) - 5}개 더 (회의록 탭에서 전체 확인)")
+            else:
+                st.info("저장된 회의록이 없습니다.")
+            
+            # 최근 활동
+            st.subheader("🕐 최근 활동")
+            recent_messages = meeting.messages[-10:] if len(meeting.messages) > 10 else meeting.messages
+            for message in reversed(recent_messages):
+                icon = "🎯" if message.is_moderator else "🎭"
+                if message.is_human_input:
+                    icon = "👤"
+                
+                st.write(
+                    f"{icon} **{message.timestamp.strftime('%H:%M:%S')}** - "
+                    f"{message.persona_name}: {message.content[:100]}..."
+                )
+        else:
+            st.info("ℹ️ 아직 회의 메시지가 없습니다.")
+    
+    with tab4:
+        st.header("📝 회의록")
+        
+        # 서브탭 생성
+        subtab1, subtab2, subtab3 = st.tabs(["📝 현재 회의록", "💾 회의록 저장", "📚 저장된 회의록"])
+        
+        with subtab1:
+            st.subheader("📝 현재 회의 내용")
+            
+            if meeting.messages:
+                # 회의록 생성
+                meeting_log = generate_meeting_log(meeting)
+                
+                # 다운로드 버튼
+                col1, col2, col3 = st.columns([1, 1, 1])
+                with col1:
+                    st.download_button(
+                        label="📥 Markdown 다운로드",
+                        data=meeting_log,
+                        file_name=f"meeting_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                        mime="text/markdown"
+                    )
+                with col2:
+                    # JSON 형태로도 다운로드 가능
+                    json_data = {
+                        "meeting_info": {
+                            "topic": meeting.meeting_topic,
+                            "start_time": meeting.start_time.isoformat() if meeting.start_time else None,
+                            "duration": meeting.meeting_duration,
+                            "participants": [{"name": p.name, "role": p.role} for p in meeting.personas]
+                        },
+                        "messages": [
+                            {
+                                "timestamp": msg.timestamp.isoformat(),
+                                "speaker": msg.persona_name,
+                                "content": msg.content,
+                                "is_human_input": msg.is_human_input
+                            } for msg in meeting.messages
+                        ]
+                    }
+                    
+                    st.download_button(
+                        label="📊 JSON 다운로드",
+                        data=json.dumps(json_data, ensure_ascii=False, indent=2),
+                        file_name=f"meeting_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
+                
+                # 회의록 미리보기
+                st.subheader("👀 회의록 미리보기")
+                st.markdown(meeting_log)
+            else:
+                st.info("ℹ️ 회의록이 비어있습니다.")
+        
+        with subtab2:
+            st.subheader("💾 회의록 데이터베이스 저장")
+            
+            if meeting.messages:
+                # 회의록 생성
+                meeting_log = generate_meeting_log(meeting)
+                
+                # AI 요약 생성 버튼
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    st.write("**📋 AI 회의록 요약 생성**")
+                    st.caption("AI가 회의 내용을 분석하여 구조화된 요약을 생성합니다.")
+                
+                with col2:
+                    if st.button("🤖 AI 요약 생성", type="secondary"):
+                        with st.spinner("AI가 회의록을 요약하고 있습니다..."):
+                            selected_model = st.session_state.get('selected_ai_model', 'gpt-4o-mini')
+                            summary = generate_meeting_summary(meeting_log, selected_model)
+                            st.session_state.meeting_summary = summary
+                
+                # 생성된 요약 표시
+                if 'meeting_summary' in st.session_state:
+                    st.subheader("📋 AI 생성 요약")
+                    st.markdown(st.session_state.meeting_summary)
+                    
+                    # 저장 버튼
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        if st.button("💾 회의록 저장", type="primary"):
+                            if save_meeting_record(meeting, meeting_log, st.session_state.meeting_summary):
+                                st.success("✅ 회의록이 성공적으로 저장되었습니다!")
+                                # 요약 세션 상태 클리어
+                                if 'meeting_summary' in st.session_state:
+                                    del st.session_state.meeting_summary
+                                st.rerun()
+                            else:
+                                st.error("❌ 회의록 저장에 실패했습니다.")
+                    
+                    with col2:
+                        if st.button("🔄 요약 재생성"):
+                            if 'meeting_summary' in st.session_state:
+                                del st.session_state.meeting_summary
+                            st.rerun()
+                else:
+                    st.info("💡 먼저 'AI 요약 생성' 버튼을 클릭하여 회의록 요약을 생성해주세요.")
+                
+                # 저장 정보 안내
+                st.markdown("""
+                ---
+                ### 📊 저장될 정보
+                - **회의 주제**: {topic}
+                - **회의 일시**: {date}
+                - **참가자**: {participants}
+                - **전체 대화록**: 모든 발언 내용
+                - **AI 요약**: 구조화된 회의 요약
+                """.format(
+                    topic=meeting.meeting_topic,
+                    date=meeting.start_time.strftime('%Y-%m-%d %H:%M:%S') if meeting.start_time else "미정",
+                    participants=", ".join([p.name for p in meeting.personas])
+                ))
+            else:
+                st.info("ℹ️ 저장할 회의 내용이 없습니다.")
+        
+        with subtab3:
+            st.subheader("📚 저장된 회의록 관리")
+            
+            # 저장된 회의록 목록 조회
+            saved_records = get_saved_meeting_records()
+            
+            if saved_records:
+                # 검색 기능
+                search_term = st.text_input("🔍 회의록 검색", placeholder="회의 주제나 참가자명으로 검색...")
+                
+                # 검색 필터링
+                if search_term:
+                    filtered_records = [
+                        record for record in saved_records 
+                        if search_term.lower() in record['title'].lower() or 
+                           search_term.lower() in record['participants'].lower()
+                    ]
+                else:
+                    filtered_records = saved_records
+                
+                st.write(f"**📊 총 {len(filtered_records)}개의 회의록이 있습니다.**")
+                
+                # 회의록 목록 표시
+                for record in filtered_records:
+                    with st.expander(f"📅 {record['date'].strftime('%Y-%m-%d %H:%M')} - {record['title']}", expanded=False):
+                        col1, col2, col3 = st.columns([2, 1, 1])
+                        
+                        with col1:
+                            st.write(f"**참가자**: {record['participants']}")
+                            st.write(f"**저장일시**: {record['created_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+                        
+                        with col2:
+                            if st.button("📖 상세보기", key=f"view_{record['meeting_id']}"):
+                                st.session_state.selected_meeting_id = record['meeting_id']
+                        
+                        with col3:
+                            if st.button("🗑️ 삭제", key=f"delete_{record['meeting_id']}", type="secondary"):
+                                if delete_meeting_record(record['meeting_id']):
+                                    st.success("✅ 회의록이 삭제되었습니다.")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ 삭제에 실패했습니다.")
+                
+                # 선택된 회의록 상세 보기
+                if 'selected_meeting_id' in st.session_state:
+                    st.markdown("---")
+                    st.subheader("📖 회의록 상세 내용")
+                    
+                    detail = get_meeting_record_detail(st.session_state.selected_meeting_id)
+                    if detail:
+                        # 기본 정보
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**📋 회의 주제**: {detail['title']}")
+                            st.write(f"**📅 회의 일시**: {detail['date'].strftime('%Y-%m-%d %H:%M:%S')}")
+                        with col2:
+                            st.write(f"**👥 참가자**: {detail['participants']}")
+                            st.write(f"**💾 저장일시**: {detail['created_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+                        
+                        # 탭으로 구분된 내용
+                        detail_tab1, detail_tab2 = st.tabs(["📋 AI 요약", "📝 전체 대화록"])
+                        
+                        with detail_tab1:
+                            if detail['summary']:
+                                st.markdown(detail['summary'])
+                            else:
+                                st.info("요약이 없습니다.")
+                        
+                        with detail_tab2:
+                            if detail['full_text']:
+                                st.markdown(detail['full_text'])
+                            else:
+                                st.info("대화록이 없습니다.")
+                        
+                        # 다운로드 버튼
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.download_button(
+                                label="📥 요약 다운로드",
+                                data=detail['summary'] or "요약 없음",
+                                file_name=f"meeting_summary_{detail['meeting_id']}.md",
+                                mime="text/markdown"
+                            )
+                        with col2:
+                            st.download_button(
+                                label="📥 전체 대화록 다운로드",
+                                data=detail['full_text'] or "대화록 없음",
+                                file_name=f"meeting_full_{detail['meeting_id']}.md",
+                                mime="text/markdown"
+                            )
+                        with col3:
+                            if st.button("❌ 상세보기 닫기"):
+                                if 'selected_meeting_id' in st.session_state:
+                                    del st.session_state.selected_meeting_id
+                                st.rerun()
+                    else:
+                        st.error("회의록을 찾을 수 없습니다.")
+            else:
+                st.info("📝 저장된 회의록이 없습니다. 회의를 진행한 후 '회의록 저장' 탭에서 저장해보세요.")
+
+    # 🚀 강화된 자동 모드 실행 로직
+    if meeting.auto_mode and meeting.is_active:
+        if meeting.should_continue():
+            if meeting.is_time_to_speak():
+                # 실제로 대화 실행
+                success = run_conversation_round(meeting)
+                if success:
+                    # 새로운 메시지가 추가되었으므로 즉시 새로고침
+                    st.rerun()
+                else:
+                    # 회의 자동 종료
+                    meeting.is_active = False
+                    meeting.auto_mode = False
+                    moderator = meeting.get_moderator()
+                    if moderator:
+                        closing_message = "자동 모드로 진행된 회의를 마치겠습니다. 모든 분들의 의견에 감사드립니다."
+                        meeting.add_message(moderator.id, closing_message)
+                    st.success("✅ 자동 모드 회의가 완료되었습니다.")
+                    st.rerun()
+            else:
+                # 시간이 안 되었으면 0.5초 후 다시 체크 (더 빠른 반응)
+                time.sleep(0.5)
+                st.rerun()
+        else:
+            # 🎯 정해진 라운드 완료 - 자동 종료
+            meeting.is_active = False
+            meeting.auto_mode = False
+            moderator = meeting.get_moderator()
+            if moderator:
+                final_message = f"예정된 {meeting.max_rounds}라운드가 모두 완료되어 회의를 마치겠습니다. 활발한 토론에 감사드립니다."
+                meeting.add_message(moderator.id, final_message)
+            st.success(f"🏁 {meeting.max_rounds}라운드 회의가 자동으로 완료되었습니다!")
+            st.balloons()  # 축하 애니메이션
+            st.rerun()
+
+def generate_meeting_log(meeting: VirtualMeeting) -> str:
+    """회의록 생성"""
+    log = f"""# 📋 회의록
+
+## 🎯 회의 정보
+- **주제**: {meeting.meeting_topic}
+- **시작 시간**: {meeting.start_time.strftime('%Y-%m-%d %H:%M:%S') if meeting.start_time else 'N/A'}
+- **예정 시간**: {meeting.meeting_duration}분
+- **총 라운드**: {meeting.conversation_round}
+- **참여자 수**: {len(meeting.personas)}명
+
+## 👥 참여자 목록
+"""
+    for persona in meeting.personas:
+        icon = "🎯" if persona.is_moderator else "🎭"
+        log += f"- {icon} **{persona.name}** ({persona.role})\n"
+    
+    log += f"\n## 💬 대화 내용 ({len(meeting.messages)}개 메시지)\n\n"
+    
+    current_round = 0
+    for i, message in enumerate(meeting.messages):
+        # 라운드 구분
+        if i > 0 and not message.is_human_input and not message.is_moderator:
+            speaker_index = [j for j, p in enumerate(meeting.get_non_moderator_personas()) 
+                           if p.id == message.persona_id]
+            if speaker_index and speaker_index[0] == 0:
+                current_round += 1
+                log += f"\n### 🔄 라운드 {current_round}\n\n"
+        
+        # 메시지 추가
+        icon = "🎯" if message.is_moderator else "🎭"
+        if message.is_human_input:
+            icon = "👤"
+        
+        log += f"**{message.timestamp.strftime('%H:%M:%S')}** {icon} **{message.persona_name}**\n"
+        log += f"> {message.content}\n\n"
+    
+    log += f"\n---\n*회의록 생성 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
+    
+    return log
+
+if __name__ == "__main__":
+    main() 

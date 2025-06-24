@@ -1723,6 +1723,75 @@ def create_jarvis_interactions_table():
         st.error(f"JARVIS 대화 테이블 생성 오류: {e}")
         return False
 
+def create_reading_discussion_records_table():
+    """독서토론 AI 생성 콘텐츠 및 음성 기록 테이블 생성"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reading_discussion_records (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                book_title VARCHAR(200) NOT NULL COMMENT '책 제목',
+                source_file_name VARCHAR(200) COMMENT '원본 파일명',
+                content_type ENUM('summary', 'application', 'fable') NOT NULL COMMENT '콘텐츠 유형',
+                ai_content LONGTEXT COMMENT 'AI 생성 텍스트 내용',
+                audio_data LONGBLOB COMMENT 'MP3 오디오 데이터',
+                audio_filename VARCHAR(200) COMMENT '오디오 파일명',
+                fable_type VARCHAR(100) COMMENT '우화 스타일 (우화인 경우)',
+                model_used VARCHAR(50) COMMENT '사용된 AI 모델',
+                extra_prompt TEXT COMMENT '추가 프롬프트',
+                opening_ment TEXT COMMENT '오프닝 멘트 (우화용)',
+                next_topic VARCHAR(200) COMMENT '다음 토론 주제',
+                previous_topic VARCHAR(200) COMMENT '이전 토론 주제',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_book_title (book_title),
+                INDEX idx_content_type (content_type),
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        st.success("✅ 독서토론 기록 테이블이 성공적으로 생성되었습니다.")
+        return True
+    except Exception as e:
+        st.error(f"❌ 독서토론 기록 테이블 생성 중 오류: {str(e)}")
+        return False
+
+def update_reading_discussion_records_table():
+    """기존 독서토론 기록 테이블에 'application' content_type 추가"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        
+        # 테이블이 존재하는지 확인
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM information_schema.tables 
+            WHERE table_schema = DATABASE()
+            AND table_name = 'reading_discussion_records'
+        """)
+        table_exists = cursor.fetchone()[0] > 0
+        
+        if table_exists:
+            # content_type ENUM에 'application' 추가
+            cursor.execute("""
+                ALTER TABLE reading_discussion_records 
+                MODIFY COLUMN content_type ENUM('summary', 'application', 'fable') NOT NULL COMMENT '콘텐츠 유형'
+            """)
+            conn.commit()
+            st.success("✅ 독서토론 기록 테이블이 성공적으로 업데이트되었습니다. (application 타입 추가)")
+        else:
+            st.warning("⚠️ 독서토론 기록 테이블이 존재하지 않습니다. 먼저 테이블을 생성해주세요.")
+        
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"❌ 독서토론 기록 테이블 업데이트 중 오류: {str(e)}")
+        return False
+
 def main():
     
     
@@ -1743,7 +1812,9 @@ def main():
          "Virtual Company AI 멀티에이전트 분석 결과 저장용 테이블 생성",
          "업무일지 테이블 생성",
          "업무일지 테이블에 TODO 리스트 컬럼 추가",
-         "JARVIS 대화 저장 테이블 생성"]
+         "JARVIS 대화 저장 테이블 생성",
+         "독서토론 기록 테이블 생성",
+         "독서토론 기록 테이블 업데이트 (application 타입 추가)"]
     )
     
     if menu == "테이블 목록":
@@ -2486,6 +2557,107 @@ def main():
                     st.dataframe(schema_df)
             else:
                 st.error("테이블 생성 중 오류가 발생했습니다.")
+    
+    elif menu == "독서토론 기록 테이블 생성":
+        st.header("📚 독서토론 기록 테이블 생성")
+        
+        st.markdown("""
+        ### 📖 독서토론 AI 콘텐츠 저장 시스템
+        
+        **생성될 테이블:**
+        - **reading_discussion_records**: 독서토론 AI 생성 콘텐츠 및 음성 기록
+          - AI 요약/우화 텍스트 내용
+          - MP3 오디오 데이터 (LONGBLOB)
+          - 우화 스타일, 사용 모델, 추가 프롬프트 등 메타데이터
+          - 오프닝 멘트, 다음/이전 토론 주제
+        
+        **지원 기능:**
+        - AI 요약 결과와 MP3 파일 자동 저장
+        - 우화 생성 결과와 MP3 파일 자동 저장
+        - 이야기 재생 탭에서 저장된 콘텐츠 조회 및 재생
+        """)
+        
+        if st.button("📚 독서토론 기록 테이블 생성", type="primary"):
+            if create_reading_discussion_records_table():
+                # 생성된 테이블 구조 표시
+                st.write("### 생성된 테이블 구조:")
+                schema = get_table_schema("reading_discussion_records")
+                if schema:
+                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                    st.dataframe(schema_df)
+                    
+                st.info("""
+                🎉 **완료!** 이제 독서토론에서 생성된 AI 콘텐츠와 음성이 자동으로 저장됩니다.
+                
+                **다음 단계:**
+                1. 독서토론 페이지로 이동
+                2. AI 요약/우화 생성 시 자동으로 DB에 저장
+                3. '이야기 재생' 탭에서 저장된 콘텐츠 확인
+                4. 저장된 MP3 파일 재생 가능
+                """)
+            else:
+                st.error("❌ 독서토론 기록 테이블 생성에 실패했습니다.")
+    
+    elif menu == "독서토론 기록 테이블 업데이트 (application 타입 추가)":
+        st.header("📚 독서토론 기록 테이블 업데이트")
+        
+        st.markdown("""
+        ### 🔄 content_type에 'application' 추가
+        
+        **업데이트 내용:**
+        - 기존 `content_type ENUM('summary', 'fable')`를 
+        - `content_type ENUM('summary', 'application', 'fable')`로 변경
+        - 적용 파일 서브탭에서 생성된 콘텐츠 저장 지원
+        
+        **적용 파일 기능:**
+        - AI 적용 파일 요약 및 총평 생성
+        - 음성 생성 시 DB에 자동 저장
+        - 이야기 재생 탭에서 조회 및 재생 가능
+        """)
+        
+        # 현재 테이블 구조 확인
+        schema = get_table_schema("reading_discussion_records")
+        if schema:
+            st.write("### 현재 reading_discussion_records 테이블 구조:")
+            schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+            st.dataframe(schema_df)
+            
+            # content_type 컬럼 확인
+            content_type_info = None
+            for row in schema:
+                if row[0] == 'content_type':
+                    content_type_info = row[1]
+                    break
+            
+            if content_type_info:
+                st.write(f"**현재 content_type 정의:** `{content_type_info}`")
+                if 'application' in content_type_info:
+                    st.success("✅ 'application' 타입이 이미 포함되어 있습니다!")
+                else:
+                    st.warning("❌ 'application' 타입이 없습니다. 업데이트가 필요합니다.")
+        else:
+            st.error("❌ reading_discussion_records 테이블이 존재하지 않습니다. 먼저 '독서토론 기록 테이블 생성'을 실행해주세요.")
+        
+        if st.button("🔄 테이블 업데이트 (application 타입 추가)", type="primary"):
+            if update_reading_discussion_records_table():
+                # 업데이트된 테이블 구조 확인
+                st.write("### 🔄 업데이트된 reading_discussion_records 테이블 구조:")
+                schema = get_table_schema("reading_discussion_records")
+                if schema:
+                    schema_df = pd.DataFrame(schema, columns=['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'])
+                    st.dataframe(schema_df, use_container_width=True)
+                    
+                st.info("""
+                🎉 **완료!** 이제 적용 파일 서브탭에서도 AI 콘텐츠를 저장할 수 있습니다.
+                
+                **다음 단계:**
+                1. 독서토론 페이지 → 독서토론 검색/조회 탭으로 이동
+                2. 적용 파일 서브탭에서 AI 요약 생성
+                3. 음성 생성 시 자동으로 DB에 저장
+                4. '이야기 재생' 탭에서 적용파일 콘텐츠 확인
+                """)
+            else:
+                st.error("❌ 테이블 업데이트에 실패했습니다.")
 
 if __name__ == "__main__":
     main() 

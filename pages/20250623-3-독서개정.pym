@@ -70,54 +70,14 @@ def save_material(book_title, file_name, content, type):
     conn = connect_to_db()
     cursor = conn.cursor()
     try:
-        # 먼저 테이블 구조 확인
-        cursor.execute("DESCRIBE reading_materials")
-        table_info = cursor.fetchall()
-        content_column_info = None
-        for column in table_info:
-            if column[0] == 'content':
-                content_column_info = column
-                break
-        
-        # content 컬럼의 최대 길이 확인 및 제한
-        max_length = None
-        if content_column_info:
-            column_type = content_column_info[1].lower()
-            if 'varchar' in column_type:
-                # VARCHAR(n) 형태에서 n 추출
-                import re
-                match = re.search(r'varchar\((\d+)\)', column_type)
-                if match:
-                    max_length = int(match.group(1))
-            elif column_type in ['text']:
-                max_length = 65535  # TEXT 타입의 최대 길이
-            elif column_type in ['mediumtext']:
-                max_length = 16777215  # MEDIUMTEXT 타입의 최대 길이
-            elif column_type in ['longtext']:
-                max_length = 4294967295  # LONGTEXT 타입의 최대 길이
-        
-        # 내용이 너무 길면 자르기
-        original_length = len(content)
-        if max_length and len(content) > max_length:
-            content = content[:max_length-100] + "\n\n[내용이 너무 길어서 일부가 잘렸습니다.]"
-            st.warning(f"내용이 너무 길어서 {original_length}자에서 {len(content)}자로 잘렸습니다.")
-        
         cursor.execute(
             "INSERT INTO reading_materials (book_title, file_name, content, type) VALUES (%s, %s, %s, %s)",
             (book_title, file_name, content, type)
         )
         conn.commit()
-        
-        # 컬럼 타입 정보 표시
-        if content_column_info:
-            st.info(f"DB 저장 완료 (content 컬럼 타입: {content_column_info[1]}, 저장된 내용 길이: {len(content)}자)")
-        
         return True
     except Exception as e:
         st.error(f"DB 저장 중 오류: {str(e)}")
-        if content_column_info:
-            st.error(f"현재 content 컬럼 타입: {content_column_info[1]}")
-            st.error(f"저장하려는 내용 길이: {len(content)}자")
         conn.rollback()
         return False
     finally:
@@ -1122,20 +1082,18 @@ def main():
     
     with tab1:
         st.header("요약/적용 파일 등록")
-        
-
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("파일 업로드")
-            uploaded_file = st.file_uploader("요약/적용 파일 업로드 (txt, md, pdf)", type=["txt", "md","pdf"])
+            uploaded_file = st.file_uploader("요약/적용 파일 업로드 (txt, md)", type=["txt", "md"])
         with col2:
             st.subheader("텍스트 직접 입력")
             text_input = st.text_area("텍스트를 복사해 넣으세요", height=200)
         # 책 제목 선택 (selectbox, 기본값: Good to Great)
         book_title = st.selectbox(
             "책 제목",
-            ["Built to Last", "퍼스널 MBA", "레이달리오의 원칙", "Good to Great"],
-            index=3
+            ["퍼스널 MBA", "레이달리오의 원칙", "Good to Great"],
+            index=2
         )
         material_type = st.selectbox("자료 유형", ["요약", "적용"])
         openai_api_key = os.getenv('OPENAI_API_KEY')
@@ -1146,135 +1104,31 @@ def main():
         # ---
         if uploaded_file:
             file_name = uploaded_file.name
-            file_extension = file_name.lower().split('.')[-1] if '.' in file_name else ''
-            
-            # PDF 파일 처리
-            if file_extension == 'pdf':
-                try:
-                    import PyPDF2
-                    import io
-                    
-                    # 파일을 BytesIO로 변환
-                    pdf_bytes = uploaded_file.read()
-                    pdf_file = io.BytesIO(pdf_bytes)
-                    
-                    # PDF 리더 생성
-                    pdf_reader = PyPDF2.PdfReader(pdf_file)
-                    
-                    # 모든 페이지의 텍스트 추출
-                    raw_text = ""
-                    for page_num in range(len(pdf_reader.pages)):
-                        page = pdf_reader.pages[page_num]
-                        page_text = page.extract_text()
-                        raw_text += f"\n--- 페이지 {page_num + 1} ---\n{page_text}\n"
-                    
-                    if raw_text.strip():
-                        st.success(f"PDF에서 텍스트가 성공적으로 추출되었습니다! (총 {len(pdf_reader.pages)}페이지)")
-                        st.info(f"추출된 텍스트 길이: {len(raw_text)}자")
-                    else:
-                        st.warning("PDF에서 텍스트를 추출할 수 없습니다. 이미지 기반 PDF이거나 보호된 PDF일 수 있습니다.")
-                        raw_text = "[PDF 텍스트 추출 실패] 수동으로 텍스트를 입력해 주세요."
-                        
-                except ImportError:
-                    st.error("PDF 처리를 위해 PyPDF2 라이브러리가 필요합니다.")
-                    st.code("pip install PyPDF2", language="bash")
-                    raw_text = "[PDF 라이브러리 없음] PyPDF2를 설치하거나 텍스트를 수동으로 입력해 주세요."
-                except Exception as e:
-                    st.error(f"PDF 처리 중 오류: {str(e)}")
-                    st.info("대안으로 pdfplumber를 시도해보겠습니다...")
-                    
-                    # 대안: pdfplumber 시도
-                    try:
-                        import pdfplumber
-                        
-                        uploaded_file.seek(0)  # 파일 포인터 초기화
-                        with pdfplumber.open(uploaded_file) as pdf:
-                            raw_text = ""
-                            for page_num, page in enumerate(pdf.pages):
-                                page_text = page.extract_text()
-                                if page_text:
-                                    raw_text += f"\n--- 페이지 {page_num + 1} ---\n{page_text}\n"
-                        
-                        if raw_text.strip():
-                            st.success(f"pdfplumber로 PDF 텍스트 추출 성공! (총 {len(pdf.pages)}페이지)")
-                        else:
-                            raw_text = "[PDF 텍스트 추출 실패] 수동으로 텍스트를 입력해 주세요."
-                            
-                    except ImportError:
-                        st.error("PDF 처리를 위해 pdfplumber 라이브러리도 필요합니다.")
-                        st.code("pip install pdfplumber", language="bash")
-                        raw_text = "[PDF 라이브러리 없음] PyPDF2 또는 pdfplumber를 설치하거나 텍스트를 수동으로 입력해 주세요."
-                    except Exception as e2:
-                        st.error(f"pdfplumber로도 PDF 처리 실패: {str(e2)}")
-                        raw_text = "[PDF 텍스트 추출 실패] 수동으로 텍스트를 입력해 주세요."
-            
-            # 텍스트 파일 처리 (txt, md)
-            else:
-                try:
-                    # 먼저 UTF-8 시도
-                    raw_text = uploaded_file.read().decode('utf-8')
-                except UnicodeDecodeError:
-                    # UTF-8 실패 시 다른 인코딩들 시도
-                    uploaded_file.seek(0)  # 파일 포인터를 처음으로 되돌림
-                    file_bytes = uploaded_file.read()
-                    
-                    # 한국어에서 자주 사용되는 인코딩들을 순서대로 시도
-                    encodings_to_try = ['cp949', 'euc-kr', 'utf-8-sig', 'latin-1']
-                    
-                    raw_text = None
-                    for encoding in encodings_to_try:
-                        try:
-                            raw_text = file_bytes.decode(encoding)
-                            st.info(f"파일이 {encoding} 인코딩으로 성공적으로 읽혔습니다.")
-                            break
-                        except UnicodeDecodeError:
-                            continue
-                    
-                    if raw_text is None:
-                        # 모든 인코딩이 실패한 경우, errors='ignore'로 강제 읽기
-                        raw_text = file_bytes.decode('utf-8', errors='ignore')
-                        st.warning("파일 인코딩을 자동으로 감지할 수 없어서 일부 문자가 깨질 수 있습니다.")
+            raw_text = uploaded_file.read().decode('utf-8')
         elif text_input.strip():
             file_name = f"manual_input_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             raw_text = text_input
         if st.button("등록 (AI 요약 및 저장)"):
             if not raw_text:
                 st.warning("파일 업로드 또는 텍스트 입력이 필요합니다.")
-            elif not openai_api_key:
+            elif not openai_api_key and not uploaded_file:
                 st.error("OpenAI API 키가 설정되지 않았습니다.")
             else:
-                with st.spinner("AI 요약 중입니다..."):
+                with st.spinner("저장 중입니다..."):
                     try:
-                        # 파일 업로드든 직접 입력이든 모두 AI 요약 후 저장
                         if uploaded_file:
-                            st.info(f"📄 {file_name} 파일을 AI가 요약 중입니다...")
+                            # 파일 업로드 시 AI 요약 없이 원문 저장
+                            saved = save_material(book_title, file_name, raw_text, "summary" if material_type=="요약" else "application")
+                            preview_content = raw_text
                         else:
-                            st.info("📝 입력된 텍스트를 AI가 요약 중입니다...")
-                        
-                        # 모든 경우에 AI 요약 실행
-                        summary = ai_summarize(raw_text, st.session_state.selected_model, extra_prompt_reg)
-                        saved = save_material(book_title, file_name, summary, "summary" if material_type=="요약" else "application")
-                        
+                            # 직접 입력 시 AI 요약 후 저장 (요약/적용 모두)
+                            summary = ai_summarize(raw_text, st.session_state.selected_model, extra_prompt_reg)
+                            saved = save_material(book_title, file_name, summary, "summary" if material_type=="요약" else "application")
+                            preview_content = summary
                         if saved:
-                            st.success("AI 요약 및 저장 완료!")
-                            
-                            # 원본과 요약본 비교 표시
-                            if uploaded_file:
-                                st.markdown("### 📊 원본 vs AI 요약 비교")
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.markdown("#### 📄 원본 파일 내용")
-                                    st.markdown(f"**길이**: {len(raw_text):,}자")
-                                    with st.expander("원본 내용 보기", expanded=False):
-                                        st.markdown(format_bullet_points(raw_text[:1000] + "..." if len(raw_text) > 1000 else raw_text))
-                                with col2:
-                                    st.markdown("#### 🤖 AI 요약 결과")
-                                    st.markdown(f"**길이**: {len(summary):,}자")
-                                    st.markdown(format_bullet_points(summary))
-                            else:
-                                st.markdown("### 🤖 AI 요약 결과")
-                                st.markdown(format_bullet_points(summary))
-                        
+                            st.success("저장 완료!")
+                            st.markdown("### 저장된 내용 미리보기")
+                            st.markdown(format_bullet_points(preview_content))
                     except Exception as e:
                         st.error(f"AI 요약/저장 중 오류: {str(e)}")
 
@@ -1446,8 +1300,6 @@ def main():
                             st.session_state['ai_app_summary_result_backup'] = ai_app_summary
                             # 영구 백업도 함께 저장
                             st.session_state['ai_app_summary_result_permanent_backup'] = ai_app_summary
-                            
-                            st.success("AI 적용 파일 요약이 생성되었습니다! 음성 생성 버튼을 클릭하면 음성과 함께 DB에 저장됩니다.")
                         except Exception as e:
                             st.error(f"AI 요약 중 오류: {str(e)}")
                 if st.session_state['ai_app_summary_result']:
@@ -1467,35 +1319,6 @@ def main():
                                 st.session_state['tts_app_audio_backup'] = tts_app_audio
                                 # 영구 백업도 함께 저장
                                 st.session_state['tts_app_audio_permanent_backup'] = tts_app_audio
-                                
-                                # 적용 파일 음성 데이터를 base64에서 추출하여 DB 저장
-                                try:
-                                    import re
-                                    base64_match = re.search(r'data:audio/mp3;base64,([^"]+)', tts_app_audio)
-                                    if base64_match:
-                                        audio_base64 = base64_match.group(1)
-                                        audio_binary = base64.b64decode(audio_base64)
-                                        
-                                        # DB에 적용 파일 음성 데이터와 함께 저장
-                                        # 원본 적용 파일 + AI 요약을 함께 저장
-                                        ai_app_content = st.session_state.get('ai_app_summary_result', '')
-                                        combined_content = f"=== 📝 원본 적용 파일 ===\n{selected_application['content']}\n\n=== 🤖 AI 요약 및 총평 ===\n{ai_app_content}" if ai_app_content else selected_application['content']
-                                        
-                                        save_success = save_reading_discussion_record(
-                                            book_title=selected_application['book_title'],
-                                            source_file_name=selected_application['file_name'],
-                                            content_type='application',
-                                            ai_content=combined_content,
-                                            audio_data=audio_binary,
-                                            audio_filename=f"application_{selected_application['book_title']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
-                                            model_used=st.session_state.selected_model,
-                                            extra_prompt=extra_prompt_app,
-                                            next_topic=next_topic
-                                        )
-                                        if save_success:
-                                            st.success("적용 파일 음성이 생성되고 텍스트와 함께 DB에 저장되었습니다!")
-                                except Exception as db_e:
-                                    st.warning(f"음성은 생성되었지만 DB 저장 중 오류: {str(db_e)}")
                         except Exception as e:
                             st.error(f"음성 생성 중 오류: {str(e)}")
                 if st.session_state['tts_app_audio']:
@@ -1628,7 +1451,7 @@ def main():
         with col1:
             content_type_filter = st.selectbox(
                 "콘텐츠 유형", 
-                ["전체", "요약", "적용파일", "우화"],
+                ["전체", "요약", "우화"],
                 key="playback_content_type"
             )
         with col2:
@@ -1644,7 +1467,6 @@ def main():
         # 필터링된 데이터 가져오기
         content_type_param = None if content_type_filter == "전체" else content_type_filter.lower()
         content_type_param = "summary" if content_type_param == "요약" else content_type_param
-        content_type_param = "application" if content_type_param == "적용파일" else content_type_param
         content_type_param = "fable" if content_type_param == "우화" else content_type_param
         
         book_title_param = None if book_title_filter == "전체" else book_title_filter
@@ -1690,7 +1512,7 @@ def main():
                 st.markdown("---")
             
             for i, record in enumerate(filtered_records):
-                with st.expander(f"{'📝' if record['content_type'] == 'summary' else '📋' if record['content_type'] == 'application' else '📚'} {record['book_title']} - {record['content_type'].upper()} ({record['created_at'].strftime('%Y-%m-%d %H:%M')})"):
+                with st.expander(f"{'📝' if record['content_type'] == 'summary' else '📚'} {record['book_title']} - {record['content_type'].upper()} ({record['created_at'].strftime('%Y-%m-%d %H:%M')})"):
                     # 메타데이터 정보
                     meta_col1, meta_col2 = st.columns(2)
                     with meta_col1:
@@ -1727,25 +1549,6 @@ def main():
                                         st.markdown(format_bullet_points(original_content))
                                     with sub_tab2:
                                         st.markdown(format_bullet_points(ai_content))
-                                else:
-                                    st.markdown(format_bullet_points(content))
-                            else:
-                                st.markdown(format_bullet_points(content))
-                        elif record['content_type'] == 'application':
-                            # 적용 파일의 경우 원본과 AI 요약을 구분하여 표시
-                            content = record['ai_content']
-                            if "=== 📝 원본 적용 파일 ===" in content and "=== 🤖 AI 요약 및 총평 ===" in content:
-                                parts = content.split("=== 🤖 AI 요약 및 총평 ===")
-                                if len(parts) == 2:
-                                    original_content = parts[0].replace("=== 📝 원본 적용 파일 ===", "").strip()
-                                    ai_content = parts[1].strip()
-                                    
-                                    # 탭으로 구분하여 표시
-                                    sub_tab1, sub_tab2 = st.tabs(["📝 원본 적용 파일", "🤖 AI 요약 및 총평"])
-                                    with sub_tab1:
-                                        st.markdown(format_bullet_points(original_content))
-                                    with sub_tab2:
-                                        st.markdown(ai_content)
                                 else:
                                     st.markdown(format_bullet_points(content))
                             else:

@@ -1123,19 +1123,105 @@ def main():
     with tab1:
         st.header("요약/적용 파일 등록")
         
-
+        # DB 구조 확인 및 업그레이드 버튼
+        with st.expander("🔧 데이터베이스 관리", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("📋 테이블 구조 확인"):
+                    try:
+                        conn = connect_to_db()
+                        cursor = conn.cursor()
+                        cursor.execute("DESCRIBE reading_materials")
+                        table_info = cursor.fetchall()
+                        
+                        st.write("### reading_materials 테이블 구조:")
+                        for column in table_info:
+                            field_name, field_type, null, key, default, extra = column
+                            st.write(f"- **{field_name}**: {field_type} (Null: {null}, Key: {key})")
+                            if field_name == 'content':
+                                if 'varchar' in field_type.lower():
+                                    st.warning(f"⚠️ content 컬럼이 {field_type}로 설정되어 있어 긴 텍스트 저장 시 문제가 될 수 있습니다.")
+                                elif field_type.lower() == 'text':
+                                    st.info(f"✅ content 컬럼이 {field_type}로 설정되어 있습니다. (최대 65KB)")
+                                elif field_type.lower() in ['mediumtext', 'longtext']:
+                                    st.success(f"✅ content 컬럼이 {field_type}로 설정되어 있어 대용량 텍스트를 저장할 수 있습니다.")
+                        
+                        cursor.close()
+                        conn.close()
+                    except Exception as e:
+                        st.error(f"테이블 구조 확인 중 오류: {str(e)}")
+            
+            with col2:
+                if st.button("🔄 content 컬럼을 LONGTEXT로 업그레이드"):
+                    try:
+                        conn = connect_to_db()
+                        cursor = conn.cursor()
+                        
+                        # 백업 테이블 생성
+                        cursor.execute("CREATE TABLE IF NOT EXISTS reading_materials_backup AS SELECT * FROM reading_materials")
+                        st.info("✅ 백업 테이블 생성 완료")
+                        
+                        # content 컬럼 타입 변경
+                        cursor.execute("ALTER TABLE reading_materials MODIFY COLUMN content LONGTEXT")
+                        conn.commit()
+                        
+                        st.success("✅ content 컬럼이 LONGTEXT로 성공적으로 업그레이드되었습니다!")
+                        st.info("이제 대용량 텍스트도 문제없이 저장할 수 있습니다.")
+                        
+                        # 변경된 구조 확인
+                        cursor.execute("DESCRIBE reading_materials")
+                        table_info = cursor.fetchall()
+                        for column in table_info:
+                            if column[0] == 'content':
+                                st.write(f"업그레이드된 content 컬럼 타입: **{column[1]}**")
+                        
+                        cursor.close()
+                        conn.close()
+                    except Exception as e:
+                        st.error(f"컬럼 업그레이드 중 오류: {str(e)}")
+                        st.error("데이터베이스 관리자에게 문의하세요.")
+            
+            st.markdown("---")
+            st.markdown("""
+            **💡 안내:**
+            - **VARCHAR**: 제한된 길이 (보통 255자 또는 지정된 길이)
+            - **TEXT**: 최대 65KB (약 65,000자)
+            - **MEDIUMTEXT**: 최대 16MB (약 16,000,000자)  
+            - **LONGTEXT**: 최대 4GB (약 4,000,000,000자)
+            
+            긴 문서나 AI 생성 콘텐츠를 저장하려면 LONGTEXT 권장
+            """)
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("파일 업로드")
             uploaded_file = st.file_uploader("요약/적용 파일 업로드 (txt, md, pdf)", type=["txt", "md","pdf"])
+            
+            # PDF 지원 라이브러리 설치 안내
+            with st.expander("📄 PDF 파일 지원", expanded=False):
+                st.markdown("""
+                **PDF 파일을 업로드하려면 다음 라이브러리 중 하나가 필요합니다:**
+                
+                ```bash
+                # 옵션 1: PyPDF2 (기본)
+                pip install PyPDF2
+                
+                # 옵션 2: pdfplumber (더 정확한 텍스트 추출)
+                pip install pdfplumber
+                ```
+                
+                **💡 참고:**
+                - **PyPDF2**: 빠르고 가벼움, 기본적인 텍스트 추출
+                - **pdfplumber**: 더 정확한 텍스트 추출, 표와 레이아웃 인식
+                - **이미지 기반 PDF**: OCR이 필요하므로 텍스트 직접 입력 권장
+                """)
         with col2:
             st.subheader("텍스트 직접 입력")
             text_input = st.text_area("텍스트를 복사해 넣으세요", height=200)
         # 책 제목 선택 (selectbox, 기본값: Good to Great)
         book_title = st.selectbox(
             "책 제목",
-            ["Built to Last", "퍼스널 MBA", "레이달리오의 원칙", "Good to Great"],
-            index=3
+            ["퍼스널 MBA", "레이달리오의 원칙", "Good to Great"],
+            index=2
         )
         material_type = st.selectbox("자료 유형", ["요약", "적용"])
         openai_api_key = os.getenv('OPENAI_API_KEY')

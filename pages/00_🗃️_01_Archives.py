@@ -1409,7 +1409,7 @@ def main():
                                         use_container_width=True
                                     )
                                 
-                                if st.button("🔄 교체", key=f"replace_file_{file_info['file_data_id']}", use_container_width=True):
+                                if st.button("🔄 교체", key=f"replace_btn_{file_info['file_data_id']}", use_container_width=True):
                                     st.session_state[f'replace_file_{file_info["file_data_id"]}'] = True
                                 
                                 if st.button("🗑️ 삭제", key=f"delete_file_{file_info['file_data_id']}", use_container_width=True):
@@ -1895,7 +1895,7 @@ def main():
                         st.write(f"• **{file_info['filename']}** ({file_info['file_type'].upper()}) - {file_info['file_size']:,} bytes")
                     
                     with col_file_2:
-                        if st.button("🔄 교체", key=f"edit_replace_{file_info['file_data_id']}", use_container_width=True):
+                        if st.button("🔄 교체", key=f"edit_replace_btn_{file_info['file_data_id']}", use_container_width=True):
                             st.session_state[f'edit_replace_file_{file_info["file_data_id"]}'] = True
                         
                         if st.button("🗑️ 삭제", key=f"edit_delete_{file_info['file_data_id']}", use_container_width=True):
