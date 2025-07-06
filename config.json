@@ -21,7 +21,9 @@
       "--key",
       "40c9efff-242a-46d9-8a5e-920d93026767",
       "--profile",
-      "fellow-marten-leepHc"
+      "fellow-marten-leepHc",
+      "--config",
+      "{\"mysqlHost\": \"localhost\", \"mysqlPort\": 3306, \"mysqlUser\": \"iotuser\", \"mysqlPassword\": \"iot12345\", \"mysqlDatabase\": \"newbiz\"}"
     ],
     "transport": "stdio"
   }

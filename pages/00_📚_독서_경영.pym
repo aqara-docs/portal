@@ -1,0 +1,360 @@
+import streamlit as st
+import mysql.connector
+from mysql.connector import Error
+import os
+from dotenv import load_dotenv
+import base64
+import hashlib
+import re
+import time
+
+# 환경 변수 로드
+load_dotenv()
+
+st.set_page_config(page_title="🎵 이야기 재생 전용", layout="wide")
+
+st.title("🎵 독서 경영-이야기 재생 전용")
+
+# DB 연결 함수
+def connect_to_db():
+    try:
+        connection = mysql.connector.connect(
+            user=os.getenv('SQL_USER'),
+            password=os.getenv('SQL_PASSWORD'),
+            host=os.getenv('SQL_HOST'),
+            database=os.getenv('SQL_DATABASE_NEWBIZ'),
+            charset='utf8mb4',
+            collation='utf8mb4_unicode_ci'
+        )
+        return connection
+    except Error as e:
+        st.error(f"데이터베이스 연결 오류: {e}")
+        return None
+
+# 텍스트 포맷팅 함수
+def format_bullet_points(text):
+    """텍스트를 bullet point 형태로 포맷팅"""
+    lines = text.split('\n')
+    formatted = []
+    for line in lines:
+        # 제목(섹션) 강조: 굵게 처리
+        if line.strip().startswith('#') or line.strip().startswith('**') or (line.strip() and not line.strip().startswith('•') and not line.strip().startswith('-')):
+            formatted.append(f"**{line.strip().replace('#','').strip()}**")
+        # bullet point
+        elif '•' in line:
+            parts = line.split('•')
+            new_line = parts[0]
+            for part in parts[1:]:
+                if part.strip():
+                    new_line += '\n• ' + part.strip()
+            formatted.append(new_line)
+        else:
+            formatted.append(line)
+    return '\n'.join(formatted)
+
+# AI 컨텐츠 파싱 함수
+def parse_ai_content(ai_content, content_type):
+    """AI 컨텐츠를 파싱하여 구분된 섹션으로 반환"""
+    if not ai_content:
+        return None, None
+    
+    try:
+        if content_type == 'summary':
+            # Summary 타입: 원본 요약 파일과 AI 생성 핵심 요약으로 구분
+            if "=== 📝 원본 요약 파일 ===" in ai_content and "=== 🤖 AI 생성 핵심 요약 ===" in ai_content:
+                parts = ai_content.split("=== 🤖 AI 생성 핵심 요약 ===")
+                original_part = parts[0].replace("=== 📝 원본 요약 파일 ===", "").strip()
+                ai_part = parts[1].strip() if len(parts) > 1 else ""
+                return original_part, ai_part
+                
+        elif content_type == 'application':
+            # Application 타입: 원본 적용 파일과 AI 요약 및 총평으로 구분
+            if "=== 📝 원본 적용 파일 ===" in ai_content and "=== 🤖 AI 요약 및 총평 ===" in ai_content:
+                parts = ai_content.split("=== 🤖 AI 요약 및 총평 ===")
+                original_part = parts[0].replace("=== 📝 원본 적용 파일 ===", "").strip()
+                ai_part = parts[1].strip() if len(parts) > 1 else ""
+                return original_part, ai_part
+                
+        elif content_type == 'fable':
+            # Fable 타입: 전체가 AI 생성 우화
+            return None, ai_content
+            
+        # 구분자가 없는 경우 전체를 AI 부분으로 간주
+        return None, ai_content
+        
+    except Exception as e:
+        st.warning(f"컨텐츠 파싱 중 오류: {e}")
+        return None, ai_content
+
+# 독서토론 레코드 조회 함수 (디버깅 강화)
+def get_reading_discussion_records(content_type=None, book_title=None):
+    connection = connect_to_db()
+    if not connection:
+        return []
+    
+    try:
+        cursor = connection.cursor(dictionary=True)
+        
+        # 쿼리 로깅을 위한 정보 수집
+        query = """
+            SELECT id, book_title, source_file_name, content_type, ai_content, 
+                   audio_data, audio_filename, fable_type, model_used, extra_prompt,
+                   opening_ment, next_topic, previous_topic, created_at
+            FROM reading_discussion_records 
+            WHERE 1=1
+        """
+        params = []
+        
+        if content_type:
+            query += " AND content_type = %s"
+            params.append(content_type)
+        
+        if book_title:
+            query += " AND book_title = %s"
+            params.append(book_title)
+        
+        # ID를 기준으로 정렬
+        query += " ORDER BY id DESC"
+        
+        # 디버그 모드에서 쿼리 정보 표시
+        if st.session_state.get("show_query_debug", False):
+            st.sidebar.markdown("### 🔍 쿼리 디버그")
+            st.sidebar.code(f"Query: {query}")
+            st.sidebar.write(f"Params: {params}")
+        
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+        
+        # 디버그 모드에서 조회 결과 표시
+        if st.session_state.get("show_query_debug", False):
+            st.sidebar.write(f"조회된 레코드 수: {len(records)}")
+            for i, record in enumerate(records):
+                st.sidebar.write(f"{i+1}. ID {record['id']}: {record['book_title']}")
+                audio_size = len(record['audio_data']) if record['audio_data'] else 0
+                st.sidebar.caption(f"   음성: {audio_size} bytes, 파일명: {record['audio_filename']}")
+        
+        return records
+        
+    except Error as e:
+        st.error(f"데이터 조회 오류: {e}")
+        return []
+    
+    finally:
+        if connection and connection.is_connected():
+            cursor.close()
+            connection.close()
+
+# 음성 파일 지문 생성 함수
+def generate_audio_fingerprint(audio_data):
+    """음성 데이터의 고유 지문 생성"""
+    if not audio_data:
+        return "NO_AUDIO"
+    
+    # 음성 데이터의 크기와 시작/끝 부분의 해시를 조합
+    size = len(audio_data)
+    start_hash = hashlib.md5(audio_data[:min(1000, size)]).hexdigest()[:8]
+    end_hash = hashlib.md5(audio_data[-min(1000, size):]).hexdigest()[:8]
+    
+    return f"{size}_{start_hash}_{end_hash}"
+
+# 교차 참조 분석 함수
+def analyze_audio_text_matching():
+    """전체 데이터베이스에서 음성-텍스트 매칭 분석"""
+    connection = connect_to_db()
+    if not connection:
+        return []
+    
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, book_title, content_type, ai_content, audio_data, created_at
+            FROM reading_discussion_records 
+            ORDER BY id ASC
+        """)
+        all_records = cursor.fetchall()
+        
+        analysis_results = []
+        for record in all_records:
+            # 텍스트 지문 생성 (첫 100자)
+            text_snippet = record['ai_content'][:100] if record['ai_content'] else "NO_TEXT"
+            text_fingerprint = hashlib.md5(text_snippet.encode()).hexdigest()[:8]
+            
+            # 음성 지문 생성
+            audio_fingerprint = generate_audio_fingerprint(record['audio_data'])
+            
+            analysis_results.append({
+                'id': record['id'],
+                'book_title': record['book_title'],
+                'content_type': record['content_type'],
+                'text_fingerprint': text_fingerprint,
+                'audio_fingerprint': audio_fingerprint,
+                'text_snippet': text_snippet,
+                'created_at': record['created_at']
+            })
+        
+        return analysis_results
+        
+    except Error as e:
+        st.error(f"분석 중 오류: {e}")
+        return []
+    
+    finally:
+        if connection and connection.is_connected():
+            cursor.close()
+            connection.close()
+
+# 책 제목 목록 조회 함수
+def get_book_titles():
+    connection = connect_to_db()
+    if not connection:
+        return []
+    
+    try:
+        cursor = connection.cursor()
+        cursor.execute("SELECT DISTINCT book_title FROM reading_discussion_records ORDER BY book_title")
+        titles = [row[0] for row in cursor.fetchall()]
+        return titles
+        
+    except Error as e:
+        st.error(f"책 제목 조회 오류: {e}")
+        return []
+    
+    finally:
+        if connection and connection.is_connected():
+            cursor.close()
+            connection.close()
+
+# 메인 앱
+def main():
+    #st.markdown("### 🎵 이야기 재생")
+    st.write("저장된 AI 요약과 우화 콘텐츠를 조회하고 음성을 재생할 수 있습니다.")
+    
+    # 데이터 개수 선택
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        record_count = st.selectbox(
+            "표시할 최근 레코드 수",
+            [3, 5, 10, 15, 20, 30, 50],
+            index=2,  # 디폴트 10개
+            key="record_count"
+        )
+    with col2:
+        if st.button("🔄 새로고침"):
+            st.rerun()
+    
+    # 최근 N개 데이터 가져오기
+    all_records = get_reading_discussion_records()
+    filtered_records = all_records[:record_count]
+    
+    if filtered_records:
+        # 헤더
+        st.write(f"### 📋 총 {len(filtered_records)}개의 기록이 있습니다.")
+        
+        for i, record in enumerate(filtered_records):
+            with st.expander(f"{'📝' if record['content_type'] == 'summary' else '📋' if record['content_type'] == 'application' else '📚'} {record['book_title']} - {record['content_type'].upper()} ({record['created_at'].strftime('%Y-%m-%d %H:%M')})"):
+                # 메타데이터 정보
+                meta_col1, meta_col2 = st.columns(2)
+                with meta_col1:
+                    st.write(f"**📖 책 제목:** {record['book_title']}")
+                    st.write(f"**📄 원본 파일:** {record['source_file_name'] or 'N/A'}")
+                    st.write(f"**🤖 사용 모델:** {record['model_used'] or 'N/A'}")
+                with meta_col2:
+                    if record['content_type'] == 'fable':
+                        st.write(f"**🎭 우화 스타일:** {record['fable_type'] or 'N/A'}")
+                    if record['next_topic']:
+                        st.write(f"**➡️ 다음 주제:** {record['next_topic']}")
+                    if record['previous_topic']:
+                        st.write(f"**⬅️ 이전 주제:** {record['previous_topic']}")
+                
+                # 추가 프롬프트가 있다면 표시
+                if record['extra_prompt']:
+                    st.write(f"**💡 추가 프롬프트:** {record['extra_prompt']}")
+                
+                # AI 생성 콘텐츠 표시
+                if record['ai_content']:
+                    st.markdown("#### 📝 저장된 콘텐츠")
+                    if record['content_type'] == 'summary':
+                        # 요약의 경우 원본과 AI 요약을 구분하여 표시
+                        content = record['ai_content']
+                        if "=== 📝 원본 요약 파일 ===" in content and "=== 🤖 AI 생성 핵심 요약 ===" in content:
+                            parts = content.split("=== 🤖 AI 생성 핵심 요약 ===")
+                            if len(parts) == 2:
+                                original_content = parts[0].replace("=== 📝 원본 요약 파일 ===", "").strip()
+                                ai_content = parts[1].strip()
+                                
+                                # 탭으로 구분하여 표시
+                                sub_tab1, sub_tab2 = st.tabs(["📝 원본 요약", "🤖 AI 핵심 요약"])
+                                with sub_tab1:
+                                    st.markdown(format_bullet_points(original_content))
+                                with sub_tab2:
+                                    st.markdown(format_bullet_points(ai_content))
+                            else:
+                                st.markdown(format_bullet_points(content))
+                        else:
+                            st.markdown(format_bullet_points(content))
+                    elif record['content_type'] == 'application':
+                        # 적용 파일의 경우 원본과 AI 요약을 구분하여 표시
+                        content = record['ai_content']
+                        if "=== 📝 원본 적용 파일 ===" in content and "=== 🤖 AI 요약 및 총평 ===" in content:
+                            parts = content.split("=== 🤖 AI 요약 및 총평 ===")
+                            if len(parts) == 2:
+                                original_content = parts[0].replace("=== 📝 원본 적용 파일 ===", "").strip()
+                                ai_content = parts[1].strip()
+                                
+                                # 탭으로 구분하여 표시
+                                sub_tab1, sub_tab2 = st.tabs(["📝 원본 적용 파일", "🤖 AI 요약 및 총평"])
+                                with sub_tab1:
+                                    st.markdown(format_bullet_points(original_content))
+                                with sub_tab2:
+                                    st.markdown(ai_content)
+                            else:
+                                st.markdown(format_bullet_points(content))
+                        else:
+                            st.markdown(format_bullet_points(content))
+                    else:
+                        # 우화의 경우 그대로 표시
+                        st.markdown(record['ai_content'])
+                
+                # 음성 재생 기능
+                if record['audio_data']:
+                    st.markdown("#### 🎵 음성 재생")
+                    try:
+                        # BLOB 데이터를 base64로 변환하여 재생
+                        audio_base64 = base64.b64encode(record['audio_data']).decode('utf-8')
+                        audio_html = f'''
+                            <audio controls style="width: 100%;">
+                                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                                Your browser does not support the audio element.
+                            </audio>
+                        '''
+                        st.markdown(audio_html, unsafe_allow_html=True)
+                        
+                        # 다운로드 버튼
+                        st.download_button(
+                            label="🎵 음성 파일 다운로드",
+                            data=record['audio_data'],
+                            file_name=record['audio_filename'] or f"{record['content_type']}_{record['book_title']}_{record['id']}.mp3",
+                            mime="audio/mp3",
+                            key=f"download_audio_{record['id']}"
+                        )
+                    except Exception as e:
+                        st.error(f"음성 재생 중 오류: {str(e)}")
+                else:
+                    st.info("저장된 음성 파일이 없습니다.")
+                
+                # 구분선
+                st.markdown("---")
+    else:
+        st.info("저장된 기록이 없습니다. AI 요약이나 우화를 생성하고 음성을 생성해보세요!")
+    
+    # 푸터
+    st.markdown("---")
+    st.markdown("""
+    **💡 사용 팁:**
+    - **탭 구분**: "AI 핵심 요약" 및 "AI 요약 및 총평" 탭의 내용이 실제 음성으로 변환된 텍스트입니다
+    - **다운로드**: 각 음성 파일을 다운로드할 수 있습니다
+    - **최신순 정렬**: 가장 최근에 생성된 콘텐츠부터 표시됩니다
+    """)
+
+if __name__ == "__main__":
+    main() 

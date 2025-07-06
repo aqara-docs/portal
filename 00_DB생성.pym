@@ -1,0 +1,520 @@
+# Pain Button 관련 테이블 생성
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS dot_pain_events (
+        event_id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        target_user_id INT NOT NULL,
+        meeting_id INT NOT NULL,
+        pain_level INT NOT NULL CHECK (pain_level BETWEEN 1 AND 5),
+        reason TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES dot_user_credibility(user_id),
+        FOREIGN KEY (target_user_id) REFERENCES dot_user_credibility(user_id),
+        FOREIGN KEY (meeting_id) REFERENCES dot_meetings(meeting_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS dot_pain_stats (
+        user_id INT PRIMARY KEY,
+        total_pain_received INT DEFAULT 0,
+        avg_pain_level FLOAT DEFAULT 0,
+        last_pain_at DATETIME,
+        FOREIGN KEY (user_id) REFERENCES dot_user_credibility(user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""") 
+
+# =============================================================================
+# SCM (Supply Chain Management) 시스템 테이블들
+# =============================================================================
+
+# 1. 공급업체 마스터 테이블 (기존 sourcing_suppliers 개선)
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scm_suppliers (
+        supplier_id INT AUTO_INCREMENT PRIMARY KEY,
+        supplier_code VARCHAR(50) UNIQUE NOT NULL,
+        supplier_name VARCHAR(255) NOT NULL,
+        supplier_name_en VARCHAR(255),
+        business_registration_number VARCHAR(50),
+        tax_number VARCHAR(50),
+        
+        # 기본 정보
+        country VARCHAR(100),
+        region VARCHAR(100),
+        city VARCHAR(100),
+        address TEXT,
+        postal_code VARCHAR(20),
+        
+        # 산업 및 전문 분야
+        industry VARCHAR(200),
+        sub_industry VARCHAR(200),
+        specialization TEXT,
+        main_products TEXT,
+        certifications JSON,
+        
+        # 연락처 정보
+        primary_contact_name VARCHAR(100),
+        primary_contact_title VARCHAR(100),
+        primary_phone VARCHAR(50),
+        primary_email VARCHAR(100),
+        website VARCHAR(500),
+        
+        # 비즈니스 정보
+        company_size ENUM('startup', 'small', 'medium', 'large', 'enterprise') DEFAULT 'medium',
+        annual_revenue DECIMAL(15,2),
+        employee_count INT,
+        established_year INT,
+        
+        # 평가 정보
+        overall_rating DECIMAL(3,2) DEFAULT 0.00,
+        quality_rating DECIMAL(3,2) DEFAULT 0.00,
+        cost_rating DECIMAL(3,2) DEFAULT 0.00,
+        delivery_rating DECIMAL(3,2) DEFAULT 0.00,
+        service_rating DECIMAL(3,2) DEFAULT 0.00,
+        reliability_rating DECIMAL(3,2) DEFAULT 0.00,
+        
+        # 리스크 및 상태 관리
+        risk_level ENUM('low', 'medium', 'high', 'critical') DEFAULT 'medium',
+        risk_factors JSON,
+        compliance_status ENUM('compliant', 'under_review', 'non_compliant') DEFAULT 'under_review',
+        supplier_status ENUM('active', 'inactive', 'suspended', 'blacklisted', 'pending_approval') DEFAULT 'pending_approval',
+        
+        # 메타데이터
+        discovered_by VARCHAR(100),
+        created_by VARCHAR(100),
+        last_updated_by VARCHAR(100),
+        last_evaluated_at DATETIME,
+        last_contacted_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        # 인덱스
+        INDEX idx_supplier_code (supplier_code),
+        INDEX idx_supplier_name (supplier_name),
+        INDEX idx_country (country),
+        INDEX idx_industry (industry),
+        INDEX idx_status (supplier_status),
+        INDEX idx_risk_level (risk_level),
+        INDEX idx_overall_rating (overall_rating),
+        FULLTEXT idx_search (supplier_name, supplier_name_en, specialization, main_products)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 2. 공급업체 연락처 히스토리 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scm_supplier_contacts (
+        contact_id INT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id INT NOT NULL,
+        contact_type ENUM('primary', 'secondary', 'emergency', 'technical', 'commercial', 'quality') DEFAULT 'secondary',
+        contact_name VARCHAR(100) NOT NULL,
+        title VARCHAR(100),
+        department VARCHAR(100),
+        phone VARCHAR(50),
+        mobile VARCHAR(50),
+        email VARCHAR(100),
+        is_active BOOLEAN DEFAULT TRUE,
+        notes TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (supplier_id) REFERENCES scm_suppliers(supplier_id) ON DELETE CASCADE,
+        INDEX idx_supplier_id (supplier_id),
+        INDEX idx_contact_type (contact_type),
+        INDEX idx_is_active (is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 3. 공급업체 평가 히스토리 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scm_supplier_evaluations (
+        evaluation_id INT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id INT NOT NULL,
+        evaluation_type ENUM('initial', 'periodic', 'audit', 'performance_review', 'incident_based') DEFAULT 'periodic',
+        evaluation_period VARCHAR(20),  # 2024Q1, 2024-01 등
+        
+        # 평가 점수
+        overall_score DECIMAL(3,2) DEFAULT 0.00,
+        quality_score DECIMAL(3,2) DEFAULT 0.00,
+        cost_score DECIMAL(3,2) DEFAULT 0.00,
+        delivery_score DECIMAL(3,2) DEFAULT 0.00,
+        service_score DECIMAL(3,2) DEFAULT 0.00,
+        reliability_score DECIMAL(3,2) DEFAULT 0.00,
+        innovation_score DECIMAL(3,2) DEFAULT 0.00,
+        sustainability_score DECIMAL(3,2) DEFAULT 0.00,
+        
+        # 평가 상세
+        strengths TEXT,
+        weaknesses TEXT,
+        improvement_areas TEXT,
+        recommendations TEXT,
+        evaluator_name VARCHAR(100),
+        evaluator_department VARCHAR(100),
+        
+        # 액션 아이템
+        action_items JSON,
+        next_evaluation_date DATE,
+        
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (supplier_id) REFERENCES scm_suppliers(supplier_id) ON DELETE CASCADE,
+        INDEX idx_supplier_id (supplier_id),
+        INDEX idx_evaluation_type (evaluation_type),
+        INDEX idx_evaluation_period (evaluation_period),
+        INDEX idx_overall_score (overall_score)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 4. 공급업체 계약 정보 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scm_supplier_contracts (
+        contract_id INT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id INT NOT NULL,
+        contract_number VARCHAR(100) UNIQUE NOT NULL,
+        contract_name VARCHAR(255) NOT NULL,
+        contract_type ENUM('master_agreement', 'purchase_order', 'framework', 'one_time', 'service') DEFAULT 'master_agreement',
+        
+        # 계약 기간
+        start_date DATE NOT NULL,
+        end_date DATE,
+        auto_renewal BOOLEAN DEFAULT FALSE,
+        renewal_period_months INT DEFAULT 12,
+        
+        # 계약 조건
+        payment_terms VARCHAR(100),  # NET30, NET60 등
+        currency VARCHAR(10) DEFAULT 'USD',
+        total_contract_value DECIMAL(15,2),
+        minimum_order_quantity INT,
+        maximum_order_quantity INT,
+        
+        # 가격 조건
+        pricing_model ENUM('fixed', 'volume_based', 'market_based', 'cost_plus') DEFAULT 'fixed',
+        price_adjustment_clause TEXT,
+        
+        # 품질 및 서비스 조건
+        quality_requirements TEXT,
+        delivery_terms VARCHAR(100),  # FOB, CIF, EXW 등
+        lead_time_days INT,
+        sla_requirements JSON,
+        
+        # 계약 상태
+        contract_status ENUM('draft', 'under_negotiation', 'active', 'expired', 'terminated', 'renewed') DEFAULT 'draft',
+        
+        # 메타데이터
+        created_by VARCHAR(100),
+        approved_by VARCHAR(100),
+        contract_file_path VARCHAR(500),
+        notes TEXT,
+        
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (supplier_id) REFERENCES scm_suppliers(supplier_id) ON DELETE CASCADE,
+        INDEX idx_supplier_id (supplier_id),
+        INDEX idx_contract_number (contract_number),
+        INDEX idx_contract_status (contract_status),
+        INDEX idx_start_date (start_date),
+        INDEX idx_end_date (end_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 5. 공급업체 성과 모니터링 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scm_supplier_performance (
+        performance_id INT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id INT NOT NULL,
+        measurement_date DATE NOT NULL,
+        measurement_period ENUM('daily', 'weekly', 'monthly', 'quarterly') DEFAULT 'monthly',
+        
+        # KPI 지표
+        on_time_delivery_rate DECIMAL(5,2) DEFAULT 0.00,  # 정시 납기율 (%)
+        quality_defect_rate DECIMAL(5,2) DEFAULT 0.00,    # 품질 불량률 (%)
+        cost_variance_percentage DECIMAL(5,2) DEFAULT 0.00, # 비용 변동률 (%)
+        invoice_accuracy_rate DECIMAL(5,2) DEFAULT 0.00,   # 송장 정확도 (%)
+        response_time_hours DECIMAL(8,2) DEFAULT 0.00,     # 평균 응답 시간 (시간)
+        
+        # 주문 및 배송 정보
+        total_orders INT DEFAULT 0,
+        completed_orders INT DEFAULT 0,
+        cancelled_orders INT DEFAULT 0,
+        total_order_value DECIMAL(15,2) DEFAULT 0.00,
+        
+        # 품질 지표
+        total_items_received INT DEFAULT 0,
+        defective_items INT DEFAULT 0,
+        returned_items INT DEFAULT 0,
+        rework_items INT DEFAULT 0,
+        
+        # 배송 지표
+        early_deliveries INT DEFAULT 0,
+        on_time_deliveries INT DEFAULT 0,
+        late_deliveries INT DEFAULT 0,
+        average_lead_time_days DECIMAL(5,2) DEFAULT 0.00,
+        
+        # 비용 지표
+        planned_cost DECIMAL(15,2) DEFAULT 0.00,
+        actual_cost DECIMAL(15,2) DEFAULT 0.00,
+        cost_savings DECIMAL(15,2) DEFAULT 0.00,
+        
+        # 서비스 지표
+        support_tickets_created INT DEFAULT 0,
+        support_tickets_resolved INT DEFAULT 0,
+        avg_resolution_time_hours DECIMAL(8,2) DEFAULT 0.00,
+        customer_satisfaction_score DECIMAL(3,2) DEFAULT 0.00,
+        
+        # 메타데이터
+        data_source VARCHAR(100),  # manual, erp, api 등
+        created_by VARCHAR(100),
+        notes TEXT,
+        
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (supplier_id) REFERENCES scm_suppliers(supplier_id) ON DELETE CASCADE,
+        INDEX idx_supplier_id (supplier_id),
+        INDEX idx_measurement_date (measurement_date),
+        INDEX idx_measurement_period (measurement_period),
+        UNIQUE KEY unique_supplier_period (supplier_id, measurement_date, measurement_period)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 6. 공급업체 문서 관리 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scm_supplier_documents (
+        document_id INT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id INT NOT NULL,
+        document_type ENUM('contract', 'certificate', 'audit_report', 'financial_statement', 'insurance', 'quality_manual', 'other') NOT NULL,
+        document_name VARCHAR(255) NOT NULL,
+        document_description TEXT,
+        file_path VARCHAR(500),
+        file_size_kb INT,
+        file_type VARCHAR(50),
+        
+        # 문서 메타데이터
+        document_date DATE,
+        expiry_date DATE,
+        is_critical BOOLEAN DEFAULT FALSE,
+        requires_renewal BOOLEAN DEFAULT FALSE,
+        
+        # 상태 관리
+        document_status ENUM('active', 'expired', 'pending_renewal', 'archived') DEFAULT 'active',
+        
+        # 메타데이터
+        uploaded_by VARCHAR(100),
+        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_reviewed_by VARCHAR(100),
+        last_reviewed_at DATETIME,
+        
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (supplier_id) REFERENCES scm_suppliers(supplier_id) ON DELETE CASCADE,
+        INDEX idx_supplier_id (supplier_id),
+        INDEX idx_document_type (document_type),
+        INDEX idx_document_status (document_status),
+        INDEX idx_expiry_date (expiry_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 7. 공급업체 이슈 및 인시던트 관리 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scm_supplier_incidents (
+        incident_id INT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id INT NOT NULL,
+        incident_number VARCHAR(50) UNIQUE NOT NULL,
+        incident_title VARCHAR(255) NOT NULL,
+        incident_type ENUM('quality', 'delivery', 'service', 'compliance', 'financial', 'communication', 'other') NOT NULL,
+        severity ENUM('low', 'medium', 'high', 'critical') DEFAULT 'medium',
+        priority ENUM('low', 'medium', 'high', 'urgent') DEFAULT 'medium',
+        
+        # 인시던트 상세
+        description TEXT NOT NULL,
+        impact_assessment TEXT,
+        root_cause TEXT,
+        corrective_actions TEXT,
+        preventive_actions TEXT,
+        
+        # 상태 관리
+        status ENUM('open', 'in_progress', 'under_review', 'resolved', 'closed') DEFAULT 'open',
+        resolution_summary TEXT,
+        
+        # 담당자 정보
+        reported_by VARCHAR(100),
+        assigned_to VARCHAR(100),
+        resolved_by VARCHAR(100),
+        
+        # 일정 관리
+        reported_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        target_resolution_date DATETIME,
+        actual_resolution_date DATETIME,
+        
+        # 비즈니스 영향
+        financial_impact DECIMAL(15,2) DEFAULT 0.00,
+        customer_impact_level ENUM('none', 'low', 'medium', 'high') DEFAULT 'none',
+        
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (supplier_id) REFERENCES scm_suppliers(supplier_id) ON DELETE CASCADE,
+        INDEX idx_supplier_id (supplier_id),
+        INDEX idx_incident_type (incident_type),
+        INDEX idx_severity (severity),
+        INDEX idx_status (status),
+        INDEX idx_reported_date (reported_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 8. 공급업체 활동 로그 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scm_supplier_activity_logs (
+        log_id INT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id INT NOT NULL,
+        activity_type ENUM('created', 'updated', 'deleted', 'contacted', 'evaluated', 'contracted', 'incident_reported', 'status_changed') NOT NULL,
+        activity_description TEXT NOT NULL,
+        
+        # 변경 사항 추적
+        field_changed VARCHAR(100),
+        old_value TEXT,
+        new_value TEXT,
+        
+        # 메타데이터
+        performed_by VARCHAR(100),
+        ip_address VARCHAR(45),
+        user_agent TEXT,
+        
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (supplier_id) REFERENCES scm_suppliers(supplier_id) ON DELETE CASCADE,
+        INDEX idx_supplier_id (supplier_id),
+        INDEX idx_activity_type (activity_type),
+        INDEX idx_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+print("✅ SCM 공급업체 관리 테이블들이 성공적으로 생성되었습니다!")
+
+# =============================================================================
+# Sourcing RPA 시스템 테이블들
+# =============================================================================
+
+# 1. RPA 세션 관리 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sourcing_rpa_sessions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        session_title VARCHAR(255) NOT NULL,
+        workflow_type VARCHAR(100) NOT NULL,
+        automation_mode VARCHAR(50) NOT NULL,
+        user_request TEXT NOT NULL,
+        model_name VARCHAR(100) NOT NULL,
+        status ENUM('running', 'completed', 'failed', 'paused') DEFAULT 'running',
+        total_agents INT DEFAULT 6,
+        completed_agents INT DEFAULT 0,
+        start_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+        end_time DATETIME NULL,
+        total_suppliers_found INT DEFAULT 0,
+        total_execution_time INT DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        INDEX idx_session_title (session_title),
+        INDEX idx_status (status),
+        INDEX idx_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 2. RPA 에이전트 결과 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sourcing_rpa_agent_results (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        session_id INT NOT NULL,
+        agent_key VARCHAR(100) NOT NULL,
+        agent_name VARCHAR(255) NOT NULL,
+        execution_order INT NOT NULL,
+        status ENUM('pending', 'running', 'completed', 'failed') DEFAULT 'pending',
+        result_data LONGTEXT,
+        execution_time INT DEFAULT 0,
+        error_message TEXT,
+        suppliers_found INT DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (session_id) REFERENCES sourcing_rpa_sessions(id) ON DELETE CASCADE,
+        INDEX idx_session_id (session_id),
+        INDEX idx_agent_key (agent_key),
+        INDEX idx_status (status),
+        INDEX idx_execution_order (execution_order)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 3. 발견된 공급업체 테이블 (RPA를 통해 발견된 임시 공급업체)
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sourcing_suppliers (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        session_id INT,
+        company_name VARCHAR(255) NOT NULL,
+        website VARCHAR(500),
+        email VARCHAR(255),
+        phone VARCHAR(100),
+        location VARCHAR(255),
+        specialization TEXT,
+        discovered_by VARCHAR(100),
+        search_query TEXT,
+        raw_data TEXT,
+        
+        # 검증 상태
+        verification_status ENUM('pending', 'verified', 'rejected', 'migrated_to_scm') DEFAULT 'pending',
+        verification_notes TEXT,
+        
+        # SCM 연결 정보
+        scm_supplier_id INT NULL,  # scm_suppliers 테이블과의 연결
+        
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (session_id) REFERENCES sourcing_rpa_sessions(id) ON DELETE SET NULL,
+        FOREIGN KEY (scm_supplier_id) REFERENCES scm_suppliers(supplier_id) ON DELETE SET NULL,
+        INDEX idx_session_id (session_id),
+        INDEX idx_company_name (company_name),
+        INDEX idx_verification_status (verification_status),
+        INDEX idx_discovered_by (discovered_by),
+        FULLTEXT idx_search (company_name, specialization, location)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 4. RPA 자동화 로그 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sourcing_rpa_automation_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        session_id INT NOT NULL,
+        log_level ENUM('INFO', 'WARNING', 'ERROR', 'DEBUG') DEFAULT 'INFO',
+        component VARCHAR(100) NOT NULL,
+        message TEXT NOT NULL,
+        additional_data JSON,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (session_id) REFERENCES sourcing_rpa_sessions(id) ON DELETE CASCADE,
+        INDEX idx_session_id (session_id),
+        INDEX idx_log_level (log_level),
+        INDEX idx_component (component),
+        INDEX idx_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+# 5. RPA 성능 메트릭 테이블
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sourcing_rpa_metrics (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        session_id INT NOT NULL,
+        metric_name VARCHAR(100) NOT NULL,
+        metric_value DECIMAL(10,4) NOT NULL,
+        metric_unit VARCHAR(50),
+        measurement_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (session_id) REFERENCES sourcing_rpa_sessions(id) ON DELETE CASCADE,
+        INDEX idx_session_id (session_id),
+        INDEX idx_metric_name (metric_name),
+        INDEX idx_measurement_time (measurement_time)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
+
+print("✅ Sourcing RPA 시스템 테이블들이 성공적으로 생성되었습니다!") 
