@@ -1,0 +1,570 @@
+import streamlit as st
+import os
+from dotenv import load_dotenv
+import openai
+import numpy as np
+import time
+import json
+from datetime import datetime
+import hashlib
+import glob
+
+# langchain 및 FAISS 관련
+from langchain.vectorstores import FAISS
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.document_loaders import (
+    PyPDFLoader, UnstructuredPowerPointLoader, UnstructuredExcelLoader, 
+    UnstructuredWordDocumentLoader, UnstructuredMarkdownLoader
+)
+
+# 페이지 설정
+st.set_page_config(
+    page_title="Q-Li",
+    page_icon="🤔",
+    layout="wide"
+)
+
+load_dotenv()
+
+# ===== LLM 클라이언트 관리 =====
+class LLMClient:
+    """다양한 LLM 클라이언트를 관리하는 클래스"""
+    
+    def __init__(self):
+        self.clients = {}
+        self.models = {}
+        self.setup_clients()
+    
+    def setup_clients(self):
+        """사용 가능한 LLM 클라이언트들을 설정"""
+        # OpenAI 클라이언트 (기본)
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if openai_key:
+            try:
+                self.clients['openai'] = openai.OpenAI(api_key=openai_key)
+                self.models['openai'] = [
+                    'gpt-4o-mini',
+                    'gpt-4o',
+                    'gpt-4-turbo',
+                    'gpt-4',
+                    'gpt-3.5-turbo'
+                ]
+            except Exception as e:
+                st.warning(f"OpenAI 클라이언트 설정 실패: {e}")
+        
+        # Ollama 클라이언트 (로컬 LLM) - 선택적
+        try:
+            import requests
+            # Ollama 서버 연결 테스트 (짧은 타임아웃)
+            response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            if response.status_code == 200:
+                self.clients['ollama'] = requests
+                self.models['ollama'] = [
+                    'mistral:latest',
+                    'llama3.1:latest',
+                    'llama3.1:8b',
+                    'phi4:latest',
+                    'llama3.3:latest',
+                    'llama2:latest',
+                    'gemma2:latest',
+                    'gemma:latest',
+                    'llama3.2:latest',
+                    'deepseek-r1:32b',
+                    'deepseek-r1:70b',
+                    'deepseek-r1:14b',
+                    'nomic-embed-text:latest'
+                ]
+        except Exception as e:
+            # Ollama 연결 실패 시 조용히 무시 (경고 메시지 제거)
+            pass
+        
+        # Perplexity 클라이언트
+        perplexity_key = os.getenv('PERPLEXITY_API_KEY')
+        if perplexity_key:
+            try:
+                self.clients['perplexity'] = openai.OpenAI(
+                    api_key=perplexity_key,
+                    base_url="https://api.perplexity.ai"
+                )
+                self.models['perplexity'] = [
+                    'sonar-pro',
+                    'sonar-small-online',
+                    'llama-3.1-sonar-small-128k-online',
+                    'llama-3.1-sonar-medium-128k-online',
+                    'llama-3.1-sonar-large-128k-online'
+                ]
+            except Exception as e:
+                st.warning(f"Perplexity 클라이언트 설정 실패: {e}")
+        
+        # Anthropic 클라이언트 (Claude)
+        anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+        if anthropic_key:
+            try:
+                import anthropic
+                self.clients['anthropic'] = anthropic.Anthropic(api_key=anthropic_key)
+                self.models['anthropic'] = [
+                    'claude-3-7-sonnet-latest',
+                    'claude-3-5-sonnet-20241022',
+                    'claude-3-5-haiku-20241022',
+                    'claude-3-opus-20240229',
+                    'claude-3-sonnet-20240229',
+                    'claude-3-haiku-20240307'
+                ]
+            except Exception as e:
+                st.warning(f"Anthropic 클라이언트 설정 실패: {e}")
+        
+        # Google Gemini 클라이언트
+        google_key = os.getenv('GOOGLE_API_KEY')
+        if google_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=google_key)
+                self.clients['google'] = genai
+                self.models['google'] = [
+                    'gemini-1.5-pro',
+                    'gemini-1.5-flash',
+                    'gemini-pro',
+                    'gemini-pro-vision'
+                ]
+            except Exception as e:
+                st.warning(f"Google Gemini 클라이언트 설정 실패: {e}")
+    
+    def get_available_providers(self):
+        """사용 가능한 LLM 제공자 목록 반환"""
+        return list(self.clients.keys())
+    
+    def get_models_for_provider(self, provider):
+        """특정 제공자의 모델 목록 반환"""
+        return self.models.get(provider, [])
+    
+    def generate_response(self, provider, model, messages, temperature=0.7, max_tokens=2000):
+        """선택된 LLM으로 응답 생성"""
+        try:
+            if provider == 'ollama':
+                return self._generate_ollama_response(model, messages, temperature, max_tokens)
+            elif provider == 'openai':
+                return self._generate_openai_response(model, messages, temperature, max_tokens)
+            elif provider == 'perplexity':
+                return self._generate_perplexity_response(model, messages, temperature, max_tokens)
+            elif provider == 'anthropic':
+                return self._generate_anthropic_response(model, messages, temperature, max_tokens)
+            elif provider == 'google':
+                return self._generate_google_response(model, messages, temperature, max_tokens)
+            else:
+                return None, f"지원하지 않는 제공자: {provider}"
+        except Exception as e:
+            return None, f"응답 생성 오류: {str(e)}"
+    
+    def _generate_ollama_response(self, model, messages, temperature, max_tokens):
+        """Ollama 응답 생성"""
+        try:
+            # Ollama API 형식에 맞게 메시지 변환
+            ollama_messages = []
+            for msg in messages:
+                if msg['role'] == 'system':
+                    # 시스템 메시지는 프롬프트에 포함
+                    continue
+                elif msg['role'] == 'user':
+                    ollama_messages.append({
+                        'role': 'user',
+                        'content': msg['content']
+                    })
+                elif msg['role'] == 'assistant':
+                    ollama_messages.append({
+                        'role': 'assistant',
+                        'content': msg['content']
+                    })
+            
+            # 시스템 메시지가 있으면 첫 번째 사용자 메시지에 포함
+            system_content = ""
+            for msg in messages:
+                if msg['role'] == 'system':
+                    system_content = msg['content']
+                    break
+            
+            if system_content and ollama_messages:
+                ollama_messages[0]['content'] = f"{system_content}\n\n{ollama_messages[0]['content']}"
+            
+            # Ollama API 호출
+            response = self.clients['ollama'].post(
+                "http://localhost:11434/api/chat",
+                json={
+                    "model": model,
+                    "messages": ollama_messages,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": max_tokens
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result['message']['content'], None
+            else:
+                return None, f"Ollama API 오류: {response.status_code}"
+                
+        except Exception as e:
+            return None, f"Ollama 응답 생성 오류: {str(e)}"
+    
+    def _generate_openai_response(self, model, messages, temperature, max_tokens):
+        """OpenAI 응답 생성"""
+        response = self.clients['openai'].chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content, None
+    
+    def _generate_perplexity_response(self, model, messages, temperature, max_tokens):
+        """Perplexity 응답 생성"""
+        response = self.clients['perplexity'].chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content, None
+    
+    def _generate_anthropic_response(self, model, messages, temperature, max_tokens):
+        """Anthropic 응답 생성"""
+        # Anthropic은 다른 메시지 형식을 사용
+        system_message = ""
+        user_messages = []
+        
+        for msg in messages:
+            if msg['role'] == 'system':
+                system_message = msg['content']
+            else:
+                user_messages.append(msg['content'])
+        
+        user_content = "\n\n".join(user_messages)
+        
+        response = self.clients['anthropic'].messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_message,
+            messages=[{"role": "user", "content": user_content}]
+        )
+        return response.content[0].text, None
+    
+    def _generate_google_response(self, model, messages, temperature, max_tokens):
+        """Google Gemini 응답 생성"""
+        # Gemini는 다른 메시지 형식을 사용
+        user_content = ""
+        for msg in messages:
+            if msg['role'] == 'user':
+                user_content += msg['content'] + "\n\n"
+        
+        model_instance = self.clients['google'].GenerativeModel(model)
+        response = model_instance.generate_content(
+            user_content,
+            generation_config=self.clients['google'].types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens
+            )
+        )
+        return response.text, None
+
+# ===== FAISS 기반 파일시스템 RAGSystem =====
+class FileRAGSystem:
+    """FAISS + 파일시스템 기반 RAG 시스템"""
+    def __init__(self, base_folder_path="./pages/rag_files"):
+        self.base_folder_path = base_folder_path
+        self.current_folder_path = base_folder_path
+        self.vectorstore = None
+        self.docs = []
+        self.is_loaded = False
+        self.embeddings = OpenAIEmbeddings()
+        self.load_files_and_build_index()
+
+    def set_search_folder(self, folder_path):
+        """검색할 폴더 설정"""
+        self.current_folder_path = folder_path
+        self.load_files_and_build_index()
+
+    def load_files_and_build_index(self):
+        """폴더 내 모든 지원 파일을 읽어 벡터 인덱스 구축"""
+        loaders = [
+            ("*.pdf", PyPDFLoader),
+            ("*.pptx", UnstructuredPowerPointLoader),
+            ("*.xlsx", UnstructuredExcelLoader),
+            ("*.docx", UnstructuredWordDocumentLoader),
+            ("*.md", UnstructuredMarkdownLoader),
+        ]
+        all_docs = []
+        
+        # 전체 검색인 경우 finance 폴더 제외
+        if self.current_folder_path == "./pages/rag_files":
+            # 모든 하위 폴더를 검색하되 finance 폴더는 제외
+            for root, dirs, files in os.walk(self.current_folder_path):
+                # finance 폴더 제외
+                if "finance" in dirs:
+                    dirs.remove("finance")
+                
+                for pattern, loader_cls in loaders:
+                    for file in glob.glob(os.path.join(root, pattern)):
+                        try:
+                            loader = loader_cls(file)
+                            all_docs.extend(loader.load())
+                        except Exception as e:
+                            st.warning(f"{file} 로딩 실패: {e}")
+        else:
+            # 특정 폴더만 검색
+            for pattern, loader_cls in loaders:
+                for file in glob.glob(os.path.join(self.current_folder_path, pattern)):
+                    try:
+                        loader = loader_cls(file)
+                        all_docs.extend(loader.load())
+                    except Exception as e:
+                        st.warning(f"{file} 로딩 실패: {e}")
+        
+        self.docs = all_docs
+        if all_docs:
+            self.vectorstore = FAISS.from_documents(all_docs, self.embeddings)
+            self.is_loaded = True
+        else:
+            self.vectorstore = None
+            self.is_loaded = False
+
+    def search(self, query, k=5):
+        """쿼리와 유사한 문서 top-k 반환"""
+        if not self.is_loaded:
+            return []
+        try:
+            results = self.vectorstore.similarity_search(query, k=k)
+            return results
+        except Exception as e:
+            st.error(f"FAISS 검색 오류: {e}")
+            return []
+
+# ===== 챗봇 클래스 (FAISS 기반) =====
+class FileRAGChatbot:
+    def __init__(self):
+        self.llm_client = LLMClient()
+        self.rag_system = FileRAGSystem()
+        self.conversation_history = []
+
+    def generate_response(self, user_query, provider='openai', model=None, temperature=0.7):
+        try:
+            # 1. RAG를 통한 관련 문서 검색
+            relevant_docs = self.rag_system.search(user_query, k=5)
+            if not relevant_docs:
+                return "관련 정보를 찾을 수 없습니다. 파일을 확인해 주세요.", None
+            # 2. 컨텍스트 구성
+            context = self._build_context(relevant_docs)
+            # 3. 프롬프트 구성
+            prompt = self._build_prompt(user_query, context)
+            # 4. LLM 응답 생성
+            if model is None:
+                models = self.llm_client.get_models_for_provider(provider)
+                model = models[0] if models else None
+            if not model:
+                return "지원하는 모델이 없습니다.", None
+            response, error = self.llm_client.generate_response(
+                provider, model, prompt, temperature
+            )
+            if error:
+                return f"응답 생성 오류: {error}", None
+            # 5. 대화 기록 업데이트
+            self.conversation_history.append({
+                'user': user_query,
+                'assistant': response,
+                'timestamp': datetime.now(),
+                'provider': provider,
+                'model': model
+            })
+            return response, relevant_docs
+        except Exception as e:
+            return f"챗봇 오류: {str(e)}", None
+
+    def _build_context(self, relevant_docs):
+        context_parts = []
+        for i, doc in enumerate(relevant_docs, 1):
+            title = doc.metadata.get('source', f'문서 {i}')
+            content = doc.page_content[:1000]
+            context_parts.append(f"문서 {i} - {title}:\n{content}")
+        return "\n\n".join(context_parts)
+
+    def _build_prompt(self, user_query, context):
+        system_prompt = f"""당신은 아카라라이프의 사내 챗봇입니다.\n\n아래 문서 내용에 근거해서만 답변하세요.\n문서에 없는 정보는 '해당 정보가 문서에 없습니다'라고 답변하세요.\n\n아래는 관련 문서 내용입니다:\n{context}\n\n사용자 질문: {user_query}"""
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query}
+        ]
+
+    def clear_history(self):
+        self.conversation_history = []
+
+# ===== Streamlit UI =====
+if 'chatbot' not in st.session_state:
+    st.session_state.chatbot = FileRAGChatbot()
+if 'conversation' not in st.session_state:
+    st.session_state.conversation = []
+
+st.title("🤔 Q-Li (아카라라이프 사내 챗봇)")
+st.markdown("업무 문서, PDF, PPTX, XLSX, DOCX, MD 파일 기반 RAG 챗봇입니다.")
+
+# 폴더 옵션 정의
+folder_options = {
+    "전체 검색 (재무 정보 제외)": "./pages/rag_files",
+    "업무 프로세스": "./pages/rag_files/process",
+    "동료 정보": "./pages/rag_files/colleagues", 
+    "재무 정보": "./pages/rag_files/finance"
+}
+
+# 폴더 선택 라디오 버튼
+st.markdown("### 📁 검색 폴더 선택")
+
+if 'selected_folder' not in st.session_state:
+    st.session_state.selected_folder = "전체 검색 (finance 제외)"
+
+selected_folder = st.radio(
+    "검색할 폴더를 선택하세요:",
+    options=list(folder_options.keys()),
+    index=list(folder_options.keys()).index(st.session_state.selected_folder),
+    help="선택한 폴더의 문서만 검색합니다. 전체 검색은 finance 폴더를 제외합니다."
+)
+
+# 폴더 변경 시 RAG 시스템 업데이트
+if selected_folder != st.session_state.selected_folder:
+    st.session_state.selected_folder = selected_folder
+    folder_path = folder_options[selected_folder]
+    
+    # 전체 검색인 경우 finance 폴더 제외
+    if selected_folder == "전체 검색 (finance 제외)":
+        st.session_state.chatbot.rag_system.set_search_folder(folder_path)
+        st.info(f"📁 선택된 폴더: {selected_folder} (finance 폴더 제외)")
+    else:
+        st.session_state.chatbot.rag_system.set_search_folder(folder_path)
+        st.info(f"📁 선택된 폴더: {selected_folder}")
+
+st.markdown("---")
+
+# LLM 제공자/모델 선택
+with st.sidebar:
+    st.markdown("## ⚙️ 설정")
+    providers = st.session_state.chatbot.llm_client.get_available_providers()
+    if providers:
+        # OpenAI를 기본 제공자로 설정
+        default_provider = 'openai' if 'openai' in providers else providers[0]
+        provider_index = providers.index(default_provider) if default_provider in providers else 0
+        
+        selected_provider = st.selectbox(
+            "LLM 제공자 선택",
+            providers,
+            index=provider_index
+        )
+        models = st.session_state.chatbot.llm_client.get_models_for_provider(selected_provider)
+        if models:
+            # 기본 모델 설정
+            if selected_provider == 'openai' and 'gpt-4o-mini' in models:
+                model_index = models.index('gpt-4o-mini')
+            elif selected_provider == 'anthropic' and 'claude-3-7-sonnet-latest' in models:
+                model_index = models.index('claude-3-7-sonnet-latest')
+            elif selected_provider == 'ollama' and 'mistral:latest' in models:
+                model_index = models.index('mistral:latest')
+            else:
+                model_index = 0
+            
+            selected_model = st.selectbox(
+                "모델 선택",
+                models,
+                index=model_index
+            )
+        else:
+            selected_model = None
+    else:
+        st.error("사용 가능한 LLM 제공자가 없습니다.")
+        selected_provider = None
+        selected_model = None
+    temperature = st.slider("창의성 (Temperature)", 0.0, 1.0, 0.7, 0.1)
+    st.markdown("---")
+    if st.button("🔄 파일 인덱스 재구축"):
+        with st.spinner("파일 인덱스를 재구축 중입니다..."):
+            # 현재 선택된 폴더로 인덱스 재구축
+            folder_path = folder_options[st.session_state.selected_folder]
+            st.session_state.chatbot.rag_system.set_search_folder(folder_path)
+            st.success(f"파일 인덱스가 재구축되었습니다! (폴더: {st.session_state.selected_folder})")
+
+# CSS 스타일 추가 (00_🤔_Q-Li.py와 동일)
+st.markdown("""
+<style>
+.user-bubble {
+    background: #2d2d2d;
+    color: #fff;
+    padding: 0.7em 1em;
+    border-radius: 1em 1em 0 1em;
+    margin: 0.5em 0;
+    max-width: 70%;
+    align-self: flex-end;
+    text-align: right;
+}
+.bot-bubble {
+    background: #2323a7;
+    color: #fff;
+    padding: 0.7em 1em;
+    border-radius: 1em 1em 1em 0;
+    margin: 0.5em 0;
+    max-width: 70%;
+    align-self: flex-start;
+    text-align: left;
+}
+.bubble-container {
+    display: flex;
+    flex-direction: column;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# 대화 기록 표시 (맨 위)
+st.markdown("### 💬 챗봇과 대화하기")
+st.markdown('<div class="bubble-container">', unsafe_allow_html=True)
+for i, message in enumerate(st.session_state.conversation):
+    if message['role'] == '사용자':
+        st.markdown(f"<div class='user-bubble'>👤 {message['content']}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div class='bot-bubble'>🤔 {message['content']}</div>", unsafe_allow_html=True)
+        if 'relevant_docs' in message and message['relevant_docs']:
+            with st.expander("📚 참고 문서", expanded=False):
+                for j, doc in enumerate(message['relevant_docs'], 1):
+                    title = doc.metadata.get('source', f'문서 {j}')
+                    st.markdown(f"**{title}**")
+                    st.markdown(doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content)
+st.markdown('</div>', unsafe_allow_html=True)
+
+# 입력 필드 (맨 아래 고정)
+st.markdown("---")
+st.markdown("### 💬 질문하기")
+
+# 입력 필드 키 관리
+if 'chat_input_key' not in st.session_state:
+    st.session_state['chat_input_key'] = 0
+
+# 입력 필드
+user_input = st.text_area(
+    "질문을 입력하세요:",
+    key=f"chat_input_{st.session_state['chat_input_key']}",
+    value="",
+    height=80,
+    label_visibility="collapsed",
+    placeholder="메시지를 입력하세요..."
+)
+
+if st.button("전송", type="primary"):
+    if user_input.strip():
+        st.session_state.conversation.append({'role': '사용자', 'content': user_input, 'timestamp': datetime.now()})
+        with st.spinner("🤖 답변 생성 중..."):
+            response, relevant_docs = st.session_state.chatbot.generate_response(
+                user_input, selected_provider, selected_model, temperature
+            )
+            st.session_state.conversation.append({'role': '챗봇', 'content': response, 'timestamp': datetime.now(), 'provider': selected_provider, 'model': selected_model, 'relevant_docs': relevant_docs})
+        # 입력 초기화를 위한 키 변경
+        if 'chat_input_key' not in st.session_state:
+            st.session_state['chat_input_key'] = 0
+        st.session_state['chat_input_key'] += 1
+        st.rerun()

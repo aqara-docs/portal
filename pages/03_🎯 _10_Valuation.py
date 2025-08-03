@@ -15,6 +15,7 @@ import graphviz
 import plotly.express as px
 import plotly.graph_objects as go
 import mysql.connector
+import dart_fss as dart_fss
 
 # 환경 변수 로드
 load_dotenv()
@@ -24,6 +25,9 @@ openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 # Anthropic 클라이언트 초기화
 anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+
+# DART API 키 설정
+dart_fss.set_api_key(api_key=os.getenv('DART_API_KEY'))
 
 # MySQL Database configuration
 db_config = {

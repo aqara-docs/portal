@@ -1,0 +1,836 @@
+import streamlit as st
+import os
+import mysql.connector
+from dotenv import load_dotenv
+import pandas as pd
+import numpy as np
+import time
+import io
+import base64
+from datetime import datetime
+from bs4 import BeautifulSoup
+import requests
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# AI/LLM
+from openai import OpenAI
+import anthropic
+
+# 파일 파싱
+import PyPDF2
+import docx
+from pptx import Presentation
+import openpyxl
+
+# 환경 변수 로드
+load_dotenv()
+
+# DB 연결
+DB_CONFIG = {
+    'user': os.getenv('SQL_USER'),
+    'password': os.getenv('SQL_PASSWORD'),
+    'host': os.getenv('SQL_HOST'),
+    'database': os.getenv('SQL_DATABASE_NEWBIZ'),
+    'charset': 'utf8mb4',
+    'collation': 'utf8mb4_general_ci'
+}
+
+def connect_to_db():
+    return mysql.connector.connect(**DB_CONFIG)
+
+# --- DB 테이블 생성/확장 ---
+def ensure_tables():
+    conn = connect_to_db()
+    cursor = conn.cursor()
+    # 웹사이트 분석
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS business_website_analyses (
+            analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+            url VARCHAR(500),
+            analysis_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            title VARCHAR(500),
+            meta_description TEXT,
+            status_code INT,
+            response_time DECIMAL(10,3),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # 파일 업로드
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS business_uploaded_files (
+            file_id INT AUTO_INCREMENT PRIMARY KEY,
+            analysis_id INT,
+            filename VARCHAR(255),
+            file_type VARCHAR(20),
+            file_content LONGTEXT,
+            file_binary_data LONGBLOB,
+            file_size INT,
+            uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (analysis_id) REFERENCES business_website_analyses(analysis_id) ON DELETE CASCADE
+        )
+    ''')
+    # AI 분석 결과
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS business_analysis_reports (
+            report_id INT AUTO_INCREMENT PRIMARY KEY,
+            analysis_id INT,
+            report_type VARCHAR(50),
+            report_content LONGTEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (analysis_id) REFERENCES business_website_analyses(analysis_id) ON DELETE CASCADE
+        )
+    ''')
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# --- 파일 파싱/저장/미리보기 ---
+def parse_uploaded_file(uploaded_file):
+    try:
+        file_extension = uploaded_file.name.split('.')[-1].lower()
+        content = ""
+        uploaded_file.seek(0)
+        binary_data = uploaded_file.read()
+        uploaded_file.seek(0)
+        if file_extension == 'pdf':
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            for page in pdf_reader.pages:
+                content += page.extract_text() + "\n"
+        elif file_extension == 'docx':
+            doc = docx.Document(uploaded_file)
+            for paragraph in doc.paragraphs:
+                content += paragraph.text + "\n"
+        elif file_extension == 'pptx':
+            prs = Presentation(uploaded_file)
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        content += shape.text + "\n"
+        elif file_extension == 'xlsx':
+            workbook = openpyxl.load_workbook(uploaded_file, data_only=True)
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                content += f"=== {sheet_name} ===\n"
+                for row in sheet.iter_rows(values_only=True):
+                    row_text = '\t'.join([str(cell) if cell is not None else '' for cell in row])
+                    if row_text.strip():
+                        content += row_text + "\n"
+                content += "\n"
+        elif file_extension in ['txt', 'md']:
+            uploaded_file.seek(0)
+            content = uploaded_file.read().decode('utf-8')
+        elif file_extension in ['jpg', 'jpeg', 'png', 'gif']:
+            content = f"[{file_extension.upper()} 이미지 파일 - {uploaded_file.name}]"
+        else:
+            try:
+                uploaded_file.seek(0)
+                content = uploaded_file.read().decode('utf-8', errors='ignore')
+                if not content.strip():
+                    content = f"[{file_extension.upper()} 파일 - 텍스트 추출 불가]"
+            except:
+                content = f"[{file_extension.upper()} 파일 - 텍스트 추출 불가]"
+        return {
+            'filename': uploaded_file.name,
+            'file_type': file_extension,
+            'content': content,
+            'binary_data': binary_data,
+            'size': len(binary_data)
+        }
+    except Exception as e:
+        st.error(f"파일 파싱 오류: {str(e)}")
+        return None
+
+def save_uploaded_file(analysis_id, file_data):
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO business_uploaded_files
+            (analysis_id, filename, file_type, file_content, file_binary_data, file_size)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        ''', (
+            analysis_id,
+            file_data['filename'],
+            file_data['file_type'],
+            file_data['content'],
+            file_data['binary_data'],
+            file_data['size']
+        ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"파일 저장 오류: {str(e)}")
+        return False
+
+def get_uploaded_files(analysis_id):
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('''
+            SELECT * FROM business_uploaded_files WHERE analysis_id = %s ORDER BY uploaded_at DESC
+        ''', (analysis_id,))
+        files = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return files
+    except Exception as e:
+        st.error(f"파일 목록 조회 오류: {str(e)}")
+        return []
+
+def get_file_binary(file_id):
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('''
+            SELECT filename, file_type, file_binary_data, file_size FROM business_uploaded_files WHERE file_id = %s
+        ''', (file_id,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return result
+    except Exception as e:
+        st.error(f"파일 데이터 조회 오류: {str(e)}")
+        return None
+
+def get_file_mime_type(file_type):
+    mime_types = {
+        'pdf': 'application/pdf',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'txt': 'text/plain',
+        'md': 'text/markdown',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif'
+    }
+    return mime_types.get(file_type.lower(), 'application/octet-stream')
+
+def display_file_preview(file, file_type, filename):
+    try:
+        import base64
+        import tempfile
+        import os
+        from PyPDF2 import PdfReader, PdfWriter
+        file_type_lower = file_type.lower()
+        if file_type_lower in ['jpg', 'jpeg', 'png', 'gif']:
+            st.image(file['file_binary_data'], caption=f"🖼️ {filename}", use_container_width=True)
+            return True
+        elif file_type_lower == 'pdf':
+            if file.get('file_binary_data'):
+                total_size = file.get('file_size', 0)
+                if total_size > 1 * 1024 * 1024:
+                    key = f"pdf_preview_page_start_{filename}"
+                    if key not in st.session_state:
+                        st.session_state[key] = 0
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                        tmp_in.write(file['file_binary_data'])
+                        tmp_in_path = tmp_in.name
+                    reader = PdfReader(tmp_in_path)
+                    total_pages = len(reader.pages)
+                    os.unlink(tmp_in_path)
+                    page_start = st.session_state[key]
+                    page_end = min(page_start + 1, total_pages)
+                    col_prev, col_next = st.columns([1, 1])
+                    with col_prev:
+                        if st.button("⬅️ 이전", disabled=page_start == 0, key=f"prev_{filename}"):
+                            st.session_state[key] = max(0, page_start - 1)
+                            st.rerun()
+                    with col_next:
+                        if st.button("다음 ➡️", disabled=page_end >= total_pages, key=f"next_{filename}"):
+                            st.session_state[key] = min(total_pages - 1, page_start + 1)
+                            st.rerun()
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                            tmp_in.write(file['file_binary_data'])
+                            tmp_in_path = tmp_in.name
+                        reader = PdfReader(tmp_in_path)
+                        writer = PdfWriter()
+                        for i in range(page_start, page_end):
+                            writer.add_page(reader.pages[i])
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_out:
+                            writer.write(tmp_out)
+                            tmp_out_path = tmp_out.name
+                        with open(tmp_out_path, "rb") as f:
+                            preview_pdf_bytes = f.read()
+                        os.unlink(tmp_in_path)
+                        os.unlink(tmp_out_path)
+                        st.markdown(f"**페이지 {page_start+1} / {total_pages}**")
+                        pdf_base64 = base64.b64encode(preview_pdf_bytes).decode('utf-8')
+                        pdf_display = f"""
+                        <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                                width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                            <p>PDF를 표시할 수 없습니다. 
+                            <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                            여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                        </iframe>
+                        """
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"PDF 미리보기 생성 중 오류: {e}")
+                    st.download_button(
+                        label="💾 전체 PDF 다운로드",
+                        data=file['file_binary_data'],
+                        file_name=filename,
+                        mime="application/pdf"
+                    )
+                    return True
+                else:
+                    st.subheader(f"📄 PDF 미리보기: {filename}")
+                    pdf_base64 = base64.b64encode(file['file_binary_data']).decode('utf-8')
+                    pdf_display = f"""
+                    <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                            width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                        <p>PDF를 표시할 수 없습니다. 
+                        <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                        여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                    </iframe>
+                    """
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                    return True
+        elif file_type_lower in ['txt', 'md']:
+            try:
+                text_content = file['file_binary_data'].decode('utf-8')
+                st.subheader(f"📄 텍스트 파일 미리보기: {filename}")
+                if file_type_lower == 'md':
+                    st.markdown(text_content)
+                else:
+                    st.text_area(
+                        "파일 내용",
+                        value=text_content,
+                        height=400,
+                        disabled=True
+                    )
+                return True
+            except Exception as e:
+                st.error(f"텍스트 파일을 읽는 중 오류 발생: {str(e)}")
+                return False
+        elif file_type_lower == 'xlsx':
+            st.info("엑셀 미리보기는 지원 예정입니다.")
+            return False
+        elif file_type_lower == 'pptx':
+            st.info("PPTX 미리보기는 지원 예정입니다.")
+            return False
+        elif file_type_lower == 'docx':
+            st.info("DOCX 미리보기는 지원 예정입니다.")
+            return False
+        return False
+    except Exception as e:
+        st.error(f"파일 미리보기 오류: {str(e)}")
+        return False
+
+# --- 웹사이트 스크래핑/분석 ---
+def scrape_website_content(url, max_pages=20):
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        base_url = url.rstrip('/')
+        internal_links = set()
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            full_url = requests.compat.urljoin(base_url, href)
+            if requests.utils.urlparse(full_url).netloc == requests.utils.urlparse(url).netloc:
+                clean_url = requests.utils.urlparse(full_url)._replace(query='', fragment='').geturl()
+                internal_links.add(clean_url)
+        links_to_scrape = list(internal_links)[:max_pages]
+        all_content = {
+            'url': url,
+            'title': soup.title.string if soup.title else '',
+            'meta_description': '',
+            'headings': [],
+            'paragraphs': [],
+            'lists': [],
+            'text_content': '',
+            'word_count': 0,
+            'sentence_count': 0,
+            'paragraph_count': 0,
+            'status_code': response.status_code,
+            'response_time': response.elapsed.total_seconds(),
+            'scraped_pages': [],
+            'total_pages': len(links_to_scrape) + 1
+        }
+        meta_tags = soup.find_all('meta')
+        for meta in meta_tags:
+            if meta.get('name') == 'description':
+                all_content['meta_description'] = meta.get('content', '')
+        main_page_content = extract_page_content(soup, url)
+        all_content['scraped_pages'].append(main_page_content)
+        st.info(f"🔍 {len(links_to_scrape)}개의 내부 페이지를 스크래핑 중...")
+        with st.spinner("내부 페이지들을 수집하고 있습니다..."):
+            for i, link_url in enumerate(links_to_scrape):
+                try:
+                    page_response = requests.get(link_url, headers=headers, timeout=5)
+                    if page_response.status_code == 200:
+                        page_soup = BeautifulSoup(page_response.content, 'html.parser')
+                        page_content = extract_page_content(page_soup, link_url)
+                        all_content['scraped_pages'].append(page_content)
+                        progress = (i + 1) / len(links_to_scrape)
+                        st.progress(progress)
+                except Exception as e:
+                    st.warning(f"페이지 스크래핑 실패: {link_url} - {str(e)}")
+                    continue
+        all_content = merge_all_page_content(all_content)
+        st.success(f"✅ 총 {len(all_content['scraped_pages'])}개 페이지 스크래핑 완료")
+        return all_content
+    except Exception as e:
+        st.error(f"웹사이트 콘텐츠 스크래핑 중 오류: {str(e)}")
+        return None
+
+def extract_page_content(soup, page_url):
+    for script in soup(["script", "style", "nav", "footer", "header"]):
+        script.decompose()
+    page_data = {
+        'url': page_url,
+        'title': soup.title.string if soup.title else '',
+        'headings': [],
+        'paragraphs': [],
+        'lists': [],
+        'text_content': ''
+    }
+    for tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+        headings = soup.find_all(tag)
+        for heading in headings:
+            text = heading.get_text(strip=True)
+            if text:
+                page_data['headings'].append({
+                    'tag': tag,
+                    'text': text,
+                    'level': int(tag[1])
+                })
+    paragraphs = soup.find_all('p')
+    for p in paragraphs:
+        text = p.get_text(strip=True)
+        if text and len(text) > 10:
+            page_data['paragraphs'].append(text)
+    lists = soup.find_all(['ul', 'ol'])
+    for lst in lists:
+        items = lst.find_all('li')
+        list_items = []
+        for item in items:
+            text = item.get_text(strip=True)
+            if text:
+                list_items.append(text)
+        if list_items:
+            page_data['lists'].append({
+                'type': lst.name,
+                'items': list_items
+            })
+    text_content = soup.get_text()
+    text_content = ' '.join(text_content.split())
+    page_data['text_content'] = text_content
+    return page_data
+
+def merge_all_page_content(all_content):
+    merged_content = all_content.copy()
+    all_text = ""
+    all_headings = []
+    all_paragraphs = []
+    all_lists = []
+    for page in all_content['scraped_pages']:
+        if page['text_content']:
+            all_text += page['text_content'] + " "
+        all_headings.extend(page['headings'])
+        all_paragraphs.extend(page['paragraphs'])
+        all_lists.extend(page['lists'])
+    merged_content['text_content'] = all_text.strip()
+    merged_content['headings'] = all_headings
+    merged_content['paragraphs'] = list(set(all_paragraphs))
+    merged_content['lists'] = all_lists
+    merged_content['word_count'] = len(merged_content['text_content'].split())
+    merged_content['sentence_count'] = len([s for s in merged_content['text_content'].split('.') if s])
+    merged_content['paragraph_count'] = len(merged_content['paragraphs'])
+    return merged_content
+
+# --- AI 분석/리포트 (샘플: OpenAI GPT) ---
+def ai_business_analysis(website_content, file_texts, model_name="gpt-4o-mini"):
+    prompt = f"""
+[기업 웹사이트 및 업로드 파일 통합 분석]
+
+1. 웹사이트 주요 정보 및 구조 요약
+2. 업로드 파일(문서/보고서 등) 주요 내용 요약
+3. 웹사이트와 파일을 종합한 비즈니스 모델/제품/시장/경쟁/기술/전략 분석
+4. 기업의 강점, 약점, 기회, 위협(SWOT)
+5. 투자/성장/혁신/리스크 관점에서의 종합 평가
+6. 구체적 실행 제안 및 인사이트
+
+[웹사이트 요약]
+{website_content[:3000]}
+
+[업로드 파일 요약]
+{file_texts[:3000]}
+
+[분석 리포트]
+- 위 항목별로 구체적이고 실무적인 분석을 해주세요.
+- 표, 리스트, 마크다운, mermaid 차트 등 시각화도 포함해주세요.
+- 실제 기업 컨설팅 보고서 스타일로 작성해주세요.
+"""
+    try:
+        openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        response = openai.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=3000,
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"AI 분석 오류: {str(e)}"
+
+def get_perplexity_market_research(query, api_key=None, model="sonar-pro"):
+    """Perplexity API를 활용한 시장/경쟁사/제품 조사"""
+    import requests
+    import os
+    if api_key is None:
+        api_key = os.environ.get('PERPLEXITY_API_KEY')
+    if not api_key:
+        return "(Perplexity API 키가 설정되지 않았습니다.)"
+    url = "https://api.perplexity.ai/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    prompt = f"""
+아래 회사/제품/시장에 대해 다음 항목을 조사해 주세요:
+- 시장 동향 및 성장 전망
+- 주요 경쟁사 및 경쟁 구도
+- 제품/기술 트렌드
+- 고객/타겟 시장
+- SWOT 요약
+- 투자/성장/리스크 포인트
+
+[조사 대상]
+{query}
+
+[요청]
+- 표, 리스트, 마크다운, 간결한 요약 포함
+- 실제 시장 조사 보고서 스타일로 작성
+"""
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 1800,
+        "temperature": 0.5
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=data, timeout=60)
+        if resp.status_code == 200:
+            result = resp.json()
+            return result['choices'][0]['message']['content']
+        else:
+            return f"(Perplexity API 오류: {resp.status_code} {resp.text})"
+    except Exception as e:
+        return f"(Perplexity API 예외: {str(e)})"
+
+# --- 페르소나 정의 (분야별 전문가) ---
+PERSONAS = {
+    "ECONOMIST": {
+        "name": "경제 전문가",
+        "emoji": "💹",
+        "role": "거시경제, 산업동향, 경제정책 분석 전문가",
+        "system_prompt": "당신은 20년 경력의 경제 전문가입니다. 거시경제, 산업동향, 정책, 글로벌 이슈, 경제지표, 리스크, 기회, 실행전략을 중심으로 분석하세요."
+    },
+    "MARKET": {
+        "name": "시장 전문가",
+        "emoji": "📈",
+        "role": "시장/경쟁/고객/트렌드 분석 전문가",
+        "system_prompt": "당신은 20년 경력의 시장 전문가입니다. 시장규모, 성장성, 경쟁사, 고객, 트렌드, SWOT, 실행전략을 중심으로 분석하세요."
+    },
+    "TECH": {
+        "name": "기술 전문가",
+        "emoji": "🛠️",
+        "role": "기술/제품/혁신/실행 분석 전문가",
+        "system_prompt": "당신은 20년 경력의 기술 전문가입니다. 기술동향, 제품, 혁신, 구현, 리스크, 실행계획을 중심으로 분석하세요."
+    },
+    "INVEST": {
+        "name": "투자 전문가",
+        "emoji": "💰",
+        "role": "투자/재무/수익성/리스크 분석 전문가",
+        "system_prompt": "당신은 20년 경력의 투자 전문가입니다. 투자, 재무, 수익성, 리스크, 성장성, 실행전략을 중심으로 분석하세요."
+    },
+    "POLICY": {
+        "name": "정책 전문가",
+        "emoji": "📜",
+        "role": "정책/규제/ESG/사회적 영향 분석 전문가",
+        "system_prompt": "당신은 20년 경력의 정책 전문가입니다. 정책, 규제, ESG, 사회적 영향, 리스크, 실행전략을 중심으로 분석하세요."
+    }
+}
+CEO_PERSONA = {
+    "name": "통합 분석가",
+    "emoji": "🧑‍💼",
+    "role": "최종 통합 분석 및 실행 전략 제시자",
+    "system_prompt": "당신은 각 분야 전문가의 분석을 통합하여 최종 실행 전략과 시사점을 제시하는 통합 분석가입니다."
+}
+
+def persona_analysis_prompt(persona_info, website_text, file_texts, perplexity_text, selected_url, all_urls):
+    return f"""
+[페르소나: {persona_info['name']}]
+
+1. 분석 대상 회사(웹사이트): {selected_url}
+2. 입력된 모든 회사(웹사이트): {', '.join(all_urls)}
+3. Perplexity 시장/경쟁사/제품 조사 결과:
+{perplexity_text[:2000]}
+4. 업로드 파일 주요 내용:
+{file_texts[:2000]}
+5. 웹사이트 주요 내용:
+{website_text[:2000]}
+
+[분석 요청]
+- {persona_info['role']} 관점에서 전문적으로 상세 분석
+- 표, 리스트, 마크다운, mermaid 차트 등 시각화 포함
+- 최신 트렌드, 리스크, 실행계획, KPI, 협업방안 등 포함
+"""
+
+def analyze_with_persona_concurrent(args):
+    persona_key, persona_info, website_text, file_texts, perplexity_text, selected_url, all_urls = args
+    try:
+        prompt = persona_analysis_prompt(persona_info, website_text, file_texts, perplexity_text, selected_url, all_urls)
+        openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.7
+        )
+        return persona_key, response.choices[0].message.content, True
+    except Exception as e:
+        return persona_key, f"오류: {str(e)}", False
+
+def ceo_synthesis_prompt(persona_results, website_text, file_texts, perplexity_text, selected_url, all_urls):
+    summary = "\n\n".join([
+        f"--- {PERSONAS[k]['emoji']} {PERSONAS[k]['name']} ---\n{v['result']}" for k, v in persona_results.items() if v['success']
+    ])
+    return f"""
+[CEO 종합 분석]
+
+1. 분석 대상 회사(웹사이트): {selected_url}
+2. 입력된 모든 회사(웹사이트): {', '.join(all_urls)}
+3. Perplexity 시장/경쟁사/제품 조사 결과:
+{perplexity_text[:2000]}
+4. 업로드 파일 주요 내용:
+{file_texts[:2000]}
+5. 웹사이트 주요 내용:
+{website_text[:2000]}
+6. 각 C-Level 임원진 분석 결과:
+{summary}
+
+[CEO 분석 요청]
+- 각 임원진 분석을 통합하여 최종 의사결정/실행계획/리스크/기회/시사점/Action Items를 제시
+- 표, 리스트, 마크다운, mermaid 차트 등 시각화 포함
+"""
+
+def analyze_ceo_synthesis(persona_results, website_text, file_texts, perplexity_text, selected_url, all_urls):
+    prompt = ceo_synthesis_prompt(persona_results, website_text, file_texts, perplexity_text, selected_url, all_urls)
+    try:
+        openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=3000,
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"CEO 분석 오류: {str(e)}"
+
+# --- Streamlit UI ---
+def main():
+    st.set_page_config(page_title="기업 비즈니스 분석 통합", layout="wide")
+    st.title("🏢 기업 비즈니스 분석 통합 시스템")
+    ensure_tables()
+    tab1, tab2 = st.tabs(["새 분석", "저장된 분석/파일 조회"])
+    with tab1:
+        st.header("1️⃣ 최대 3개 회사(웹사이트) 정보 입력 및 파일 업로드")
+        st.subheader("1️⃣ 분석할 회사(웹사이트) 최대 3개 입력")
+        url1 = st.text_input("웹사이트 URL 1", key="url1")
+        url2 = st.text_input("웹사이트 URL 2", key="url2")
+        url3 = st.text_input("웹사이트 URL 3", key="url3")
+        urls = [u for u in [url1, url2, url3] if u.strip()]
+        if not urls:
+            st.warning("최소 1개 이상의 웹사이트를 입력하세요.")
+            st.stop()
+        st.markdown("""
+        - 여러 웹사이트를 입력하면, 동일 회사의 다양한 사이트도 함께 분석할 수 있습니다.
+        - 아래에서 분석에 포함할 웹사이트를 1개 이상 선택하세요.
+        """)
+        selected_urls = st.multiselect(
+            "분석에 포함할 웹사이트를 선택하세요 (1개 이상)",
+            options=urls,
+            default=urls
+        )
+        if not selected_urls:
+            st.warning("분석할 회사를 1개 이상 선택하세요.")
+            st.stop()
+        uploaded_files = st.file_uploader(
+            "분석에 활용할 파일 업로드 (PDF, DOCX, PPTX, XLSX, 이미지, TXT, MD 등)",
+            type=["pdf", "docx", "pptx", "xlsx", "md", "txt", "jpg", "jpeg", "png", "gif"],
+            accept_multiple_files=True
+        )
+        # Perplexity 조사 실행
+        if st.button("Perplexity 시장/경쟁사/제품 조사 실행", type="secondary"):
+            if not urls:
+                st.warning("최소 1개 이상의 웹사이트를 입력하세요.")
+                st.stop()
+            api_key = os.environ.get('PERPLEXITY_API_KEY')
+            st.session_state['perplexity_results'] = {}
+            for url in urls:
+                with st.spinner(f"{url} 조사 중..."):
+                    result = get_perplexity_market_research(url, api_key)
+                    st.session_state['perplexity_results'][url] = result
+                    st.success(f"{url} 조사 완료!")
+            st.info("Perplexity 조사 결과가 저장되었습니다. 분석 시 자동 활용됩니다.")
+        if st.button("웹사이트+파일+시장조사 통합 분석 및 리포트 생성", type="primary"):
+            if not selected_urls:
+                st.warning("분석할 회사를 1개 이상 선택하세요.")
+                st.stop()
+            with st.spinner("웹사이트/파일/시장조사 멀티에이전트 동시 분석 중..."):
+                # 웹사이트 크롤링 (선택된 모든 웹사이트)
+                content_data_map = {}
+                for url in selected_urls:
+                    content_data_map[url] = scrape_website_content(url)
+                # DB 저장(웹사이트)
+                conn = connect_to_db()
+                cursor = conn.cursor()
+                for url in selected_urls:
+                    cursor.execute('''
+                        INSERT INTO business_website_analyses
+                        (url, title, meta_description, status_code, response_time)
+                        VALUES (%s, %s, %s, %s, %s)
+                    ''', (
+                        url,
+                        content_data_map[url].get('title', ''),
+                        content_data_map[url].get('meta_description', ''),
+                        content_data_map[url].get('status_code', 0),
+                        content_data_map[url].get('response_time', 0)
+                    ))
+                conn.commit()
+                analysis_id = cursor.lastrowid
+                cursor.close()
+                conn.close()
+                # 파일 저장
+                file_texts = ""
+                for file in uploaded_files:
+                    file_data = parse_uploaded_file(file)
+                    if file_data:
+                        file_texts += f"\n\n[{file_data['filename']}]:\n" + file_data['content'][:2000]
+                        save_uploaded_file(analysis_id, file_data)
+                # Perplexity 조사 결과 (선택된 모든 웹사이트)
+                perplexity_results = st.session_state.get('perplexity_results', {})
+                selected_perplexity = "\n\n".join([
+                    f"[{url}]\n{perplexity_results.get(url, '(조사 결과 없음)')}" for url in selected_urls
+                ])
+                # 웹사이트 텍스트 통합
+                website_text = "\n\n".join([
+                    f"[{url}]\n{content_data_map[url].get('text_content', '')}" for url in selected_urls
+                ])
+                # 멀티에이전트 동시 분석
+                persona_args = [
+                    (k, v, website_text, file_texts, selected_perplexity, ', '.join(selected_urls), urls)
+                    for k, v in PERSONAS.items()
+                ]
+                persona_results = {}
+                progress_bar = st.progress(0)  # 한 번만 생성
+                completed = 0
+                total = len(PERSONAS)
+                with ThreadPoolExecutor(max_workers=total) as executor:
+                    future_to_persona = {
+                        executor.submit(analyze_with_persona_concurrent, args): args[0]
+                        for args in persona_args
+                    }
+                    for future in as_completed(future_to_persona):
+                        persona_key, result, success = future.result()
+                        persona_results[persona_key] = {"result": result, "success": success}
+                        completed += 1
+                        progress_bar.progress(completed / total)  # 하나의 bar만 업데이트
+                        st.info(f"{PERSONAS[persona_key]['emoji']} {PERSONAS[persona_key]['name']} 분석 완료")
+                st.success("모든 C-Level 임원진 분석 완료!")
+                # 각 페르소나별 결과 표시
+                for k, v in persona_results.items():
+                    with st.expander(f"{PERSONAS[k]['emoji']} {PERSONAS[k]['name']} 분석 결과", expanded=True):
+                        st.markdown(v['result'])
+                # CEO 종합 분석
+                with st.spinner("최종 통합 분석 중..."):
+                    ceo_report = analyze_ceo_synthesis(persona_results, website_text, file_texts, selected_perplexity, ', '.join(selected_urls), urls)
+                    st.markdown("---")
+                    st.subheader("🧑‍💼 최종 통합 분석 리포트")
+                    st.markdown(ceo_report)
+                # DB 저장(리포트)
+                conn = connect_to_db()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO business_analysis_reports
+                    (analysis_id, report_type, report_content)
+                    VALUES (%s, %s, %s)
+                ''', (analysis_id, "분야별 전문가 통합리포트", ceo_report))
+                conn.commit()
+                cursor.close()
+                conn.close()
+                st.success("분석 및 리포트 생성/저장 완료!")
+                # (여기서 파일 미리보기/다운로드 UI는 표시하지 않음)
+
+    with tab2:
+        st.header("2️⃣ 저장된 분석/파일/리포트 조회")
+        conn = connect_to_db()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('''
+            SELECT * FROM business_website_analyses ORDER BY analysis_date DESC
+        ''')
+        analyses = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        for analysis in analyses:
+            with st.expander(f"{analysis['url']} ({analysis['analysis_date']})"):
+                st.write(f"**제목:** {analysis['title']}")
+                st.write(f"**상태코드:** {analysis['status_code']}, **응답시간:** {analysis['response_time']}s")
+                # 관련 파일 미리보기/다운로드
+                files = get_uploaded_files(analysis['analysis_id'])
+                if files:
+                    st.markdown("**업로드 파일 미리보기/다운로드**")
+                    for file in files:
+                        st.write(f"**{file['filename']}** ({file['file_type'].upper()}, {file['file_size']} bytes)")
+                        file_bin = get_file_binary(file['file_id'])
+                        if file_bin:
+                            col1, col2 = st.columns([1,1])
+                            with col1:
+                                st.download_button(
+                                    label="다운로드",
+                                    data=file_bin['file_binary_data'],
+                                    file_name=file_bin['filename'],
+                                    mime=get_file_mime_type(file_bin['file_type']),
+                                    key=f"download_{file['file_id']}"
+                                )
+                            with col2:
+                                if st.button("미리보기", key=f"preview_{file['file_id']}"):
+                                    st.session_state[f'preview_file_{file['file_id']}'] = not st.session_state.get(f'preview_file_{file['file_id']}', False)
+                            if st.session_state.get(f'preview_file_{file['file_id']}', False):
+                                display_file_preview(file_bin, file_bin['file_type'], file_bin['filename'])
+                                if st.button("미리보기 닫기", key=f"close_preview_{file['file_id']}"):
+                                    st.session_state[f'preview_file_{file['file_id']}'] = False
+                # 연결된 보고서(analysis report) 조회 및 표시
+                conn = connect_to_db()
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute('''
+                    SELECT * FROM business_analysis_reports WHERE analysis_id = %s ORDER BY created_at DESC
+                ''', (analysis['analysis_id'],))
+                reports = cursor.fetchall()
+                cursor.close()
+                conn.close()
+                if reports:
+                    for report in reports:
+                        st.markdown(f"**[보고서 유형]** {report['report_type']}")
+                        st.markdown(report['report_content'])
+                else:
+                    st.info("아직 생성된 분석 보고서가 없습니다.")
+
+if __name__ == "__main__":
+    main() 

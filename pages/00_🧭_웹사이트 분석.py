@@ -1,0 +1,2972 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+import anthropic
+import json
+import base64
+import requests
+import graphviz
+import plotly.express as px
+import plotly.graph_objects as go
+import mysql.connector
+import concurrent.futures
+import time
+import re
+from urllib.parse import urlparse, urljoin
+from bs4 import BeautifulSoup
+import requests
+from PIL import Image
+import io
+import hashlib
+import PyPDF2
+import docx
+from pptx import Presentation
+import openpyxl
+import pandas as pd
+from langchain_anthropic import ChatAnthropic
+import time
+import math
+from PyPDF2 import PdfReader, PdfWriter
+import tempfile
+
+# 환경 변수 로드
+load_dotenv()
+
+# 페이지 설정
+st.set_page_config(
+    page_title="🏢 웹사이트 비즈니스 분석",
+    page_icon="🏢",
+    layout="wide"
+)
+st.title("🎯 웹사이트 비즈니스 모델 및 제품 분석 시스템")
+
+# 인증 기능
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('환경변수(ADMIN_PASSWORD)가 설정되어 있지 않습니다.')
+    st.stop()
+
+if not st.session_state.authenticated:
+    password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    if password == admin_pw:
+        st.session_state.authenticated = True
+        st.rerun()
+    else:
+        if password:
+            st.error("관리자 권한이 필요합니다")
+        st.stop()
+
+# API 클라이언트 초기화
+openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+
+# MySQL Database configuration
+db_config = {
+    'user': os.getenv('SQL_USER'),
+    'password': os.getenv('SQL_PASSWORD'),
+    'host': os.getenv('SQL_HOST'),
+    'database': os.getenv('SQL_DATABASE_NEWBIZ'),
+    'charset': 'utf8mb4',
+    'collation': 'utf8mb4_general_ci'
+}
+
+# === 비즈니스 모델 및 제품 분석 전문가 에이전트 정의 ===
+BUSINESS_ANALYSIS_AGENTS = {
+    "business_model_analyzer": {
+        "name": "🏢 비즈니스 모델 분석가",
+        "emoji": "🏢",
+        "description": "회사의 비즈니스 모델과 수익 구조 분석",
+        "system_prompt": """당신은 15년 경력의 비즈니스 모델 분석 전문가입니다.
+
+**전문 분야:**
+- 비즈니스 모델 캔버스 분석
+- 수익 모델 및 가치 제안 분석
+- 고객 세그먼트 및 채널 분석
+- 핵심 파트너십 및 리소스 분석
+
+**분석 관점:**
+- 수익원 및 수익 구조
+- 고객 가치 제안 (CVP)
+- 비용 구조 및 핵심 활동
+- 경쟁 우위 및 차별화 요소
+- 시장 포지셔닝
+
+웹사이트 콘텐츠를 분석하여 회사의 비즈니스 모델을 파악해주세요."""
+    },
+    
+    "product_service_analyzer": {
+        "name": "📦 제품/서비스 분석가",
+        "emoji": "📦",
+        "description": "제품과 서비스 라인업 분석",
+        "system_prompt": """당신은 12년 경력의 제품/서비스 분석 전문가입니다.
+
+**전문 분야:**
+- 제품/서비스 포트폴리오 분석
+- 제품 특징 및 기능 분석
+- 가격 전략 및 가치 분석
+- 제품 라이프사이클 분석
+
+**분석 관점:**
+- 핵심 제품/서비스 식별
+- 제품 특징 및 혜택
+- 가격 정책 및 가치 제안
+- 제품 차별화 요소
+- 신제품 개발 방향
+
+웹사이트 콘텐츠를 분석하여 회사의 제품과 서비스를 파악해주세요."""
+    },
+    
+    "market_position_analyzer": {
+        "name": "🎯 시장 포지셔닝 분석가",
+        "emoji": "🎯",
+        "description": "시장에서의 위치와 경쟁 상황 분석",
+        "system_prompt": """당신은 10년 경력의 시장 포지셔닝 분석 전문가입니다.
+
+**전문 분야:**
+- 시장 포지셔닝 분석
+- 경쟁사 비교 분석
+- 타겟 시장 및 고객 분석
+- 시장 기회 및 위험 분석
+
+**분석 관점:**
+- 시장에서의 위치
+- 경쟁 우위 및 차별화
+- 타겟 고객 세그먼트
+- 시장 기회 및 위험 요소
+- 브랜드 포지셔닝
+
+웹사이트 콘텐츠를 분석하여 회사의 시장 포지셔닝을 파악해주세요."""
+    },
+    
+    "technology_stack_analyzer": {
+        "name": "⚙️ 기술 스택 분석가",
+        "emoji": "⚙️",
+        "description": "사용 기술과 기술적 역량 분석",
+        "system_prompt": """당신은 8년 경력의 기술 스택 분석 전문가입니다.
+
+**전문 분야:**
+- 기술 스택 및 플랫폼 분석
+- 개발 역량 및 기술적 특징
+- 기술적 차별화 요소
+- 기술적 제약 및 기회
+
+**분석 관점:**
+- 사용 기술 및 플랫폼
+- 기술적 특징 및 장점
+- 개발 역량 및 팀 구성
+- 기술적 차별화 요소
+- 기술적 제약 및 한계
+
+웹사이트 콘텐츠를 분석하여 회사의 기술적 특징을 파악해주세요."""
+    },
+    
+    "growth_strategy_analyzer": {
+        "name": "📈 성장 전략 분석가",
+        "emoji": "📈",
+        "description": "성장 전략과 비전 분석",
+        "system_prompt": """당신은 12년 경력의 성장 전략 분석 전문가입니다.
+
+**전문 분야:**
+- 성장 전략 및 비전 분석
+- 시장 확장 계획 분석
+- 투자 및 파이낸싱 분석
+- 미래 계획 및 로드맵 분석
+
+**분석 관점:**
+- 성장 전략 및 방향
+- 시장 확장 계획
+- 투자 유치 및 파이낸싱
+- 미래 비전 및 목표
+- 전략적 파트너십
+
+웹사이트 콘텐츠를 분석하여 회사의 성장 전략을 파악해주세요."""
+    },
+    
+    "financial_health_analyzer": {
+        "name": "💰 재무 상태 분석가",
+        "emoji": "💰",
+        "description": "재무 상태와 투자 정보 분석",
+        "system_prompt": """당신은 10년 경력의 재무 분석 전문가입니다.
+
+**전문 분야:**
+- 재무 상태 및 성과 분석
+- 투자 정보 및 파이낸싱 분석
+- 수익성 및 성장성 분석
+- 재무적 위험 요소 분석
+
+**분석 관점:**
+- 재무 성과 및 지표
+- 투자 유치 현황
+- 수익성 및 성장성
+- 재무적 위험 요소
+- 자본 구조 및 유동성
+
+웹사이트 콘텐츠를 분석하여 회사의 재무 상태를 파악해주세요."""
+    }
+}
+
+# === 웹사이트 스크래핑 함수들 ===
+def scrape_website_basic(url, max_pages=10):
+    """기본 웹사이트 스크래핑"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # 기본 정보 추출
+        data = {
+            'url': url,
+            'title': soup.title.string if soup.title else '',
+            'meta_description': '',
+            'meta_keywords': '',
+            'headings': [],
+            'links': [],
+            'images': [],
+            'text_content': '',
+            'html_structure': str(soup)[:5000],  # HTML 구조 (처음 5000자)
+            'status_code': response.status_code,
+            'response_time': response.elapsed.total_seconds(),
+            'content_length': len(response.content)
+        }
+        
+        # 메타 태그 추출
+        meta_tags = soup.find_all('meta')
+        for meta in meta_tags:
+            if meta.get('name') == 'description':
+                data['meta_description'] = meta.get('content', '')
+            elif meta.get('name') == 'keywords':
+                data['meta_keywords'] = meta.get('content', '')
+        
+        # 헤딩 태그 추출
+        for tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            headings = soup.find_all(tag)
+            for heading in headings:
+                data['headings'].append({
+                    'tag': tag,
+                    'text': heading.get_text(strip=True)
+                })
+        
+        # 링크 추출
+        links = soup.find_all('a', href=True)
+        for link in links[:50]:  # 처음 50개만
+            data['links'].append({
+                'text': link.get_text(strip=True),
+                'href': link['href'],
+                'title': link.get('title', '')
+            })
+        
+        # 이미지 추출
+        images = soup.find_all('img')
+        for img in images[:20]:  # 처음 20개만
+            data['images'].append({
+                'src': img.get('src', ''),
+                'alt': img.get('alt', ''),
+                'title': img.get('title', '')
+            })
+        
+        # 텍스트 콘텐츠 추출
+        text_content = soup.get_text()
+        data['text_content'] = ' '.join(text_content.split())[:10000]  # 처음 10000단어
+        
+        return data
+        
+    except Exception as e:
+        st.error(f"웹사이트 스크래핑 중 오류: {str(e)}")
+        return None
+
+def analyze_website_performance(url):
+    """웹사이트 성능 분석 (PageSpeed Insights API 사용)"""
+    try:
+        # Google PageSpeed Insights API 키가 있다면 사용
+        api_key = os.getenv('GOOGLE_PAGESPEED_API_KEY')
+        
+        if api_key:
+            api_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+            params = {
+                'url': url,
+                'key': api_key,
+                'strategy': 'mobile'  # 모바일 기준으로 분석
+            }
+            
+            response = requests.get(api_url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            return {
+                'performance_score': data.get('lighthouseResult', {}).get('categories', {}).get('performance', {}).get('score', 0) * 100,
+                'accessibility_score': data.get('lighthouseResult', {}).get('categories', {}).get('accessibility', {}).get('score', 0) * 100,
+                'best_practices_score': data.get('lighthouseResult', {}).get('categories', {}).get('best-practices', {}).get('score', 0) * 100,
+                'seo_score': data.get('lighthouseResult', {}).get('categories', {}).get('seo', {}).get('score', 0) * 100,
+                'first_contentful_paint': data.get('lighthouseResult', {}).get('audits', {}).get('first-contentful-paint', {}).get('numericValue', 0),
+                'largest_contentful_paint': data.get('lighthouseResult', {}).get('audits', {}).get('largest-contentful-paint', {}).get('numericValue', 0),
+                'cumulative_layout_shift': data.get('lighthouseResult', {}).get('audits', {}).get('cumulative-layout-shift', {}).get('numericValue', 0)
+            }
+        else:
+            # API 키가 없으면 기본 분석
+            return {
+                'performance_score': None,
+                'accessibility_score': None,
+                'best_practices_score': None,
+                'seo_score': None,
+                'note': 'Google PageSpeed Insights API 키가 필요합니다.'
+            }
+            
+    except Exception as e:
+        st.warning(f"성능 분석 중 오류: {str(e)}")
+        return None
+
+def analyze_website_security(url):
+    """웹사이트 보안 분석"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        security_data = {
+            'https_enabled': url.startswith('https://'),
+            'security_headers': {},
+            'ssl_certificate': None,
+            'content_security_policy': None,
+            'x_frame_options': None,
+            'x_content_type_options': None,
+            'x_xss_protection': None,
+            'strict_transport_security': None
+        }
+        
+        # 보안 헤더 분석
+        headers_to_check = [
+            'Content-Security-Policy',
+            'X-Frame-Options',
+            'X-Content-Type-Options',
+            'X-XSS-Protection',
+            'Strict-Transport-Security'
+        ]
+        
+        for header in headers_to_check:
+            value = response.headers.get(header)
+            if value:
+                security_data['security_headers'][header] = value
+                if header == 'Content-Security-Policy':
+                    security_data['content_security_policy'] = value
+                elif header == 'X-Frame-Options':
+                    security_data['x_frame_options'] = value
+                elif header == 'X-Content-Type-Options':
+                    security_data['x_content_type_options'] = value
+                elif header == 'X-XSS-Protection':
+                    security_data['x_xss_protection'] = value
+                elif header == 'Strict-Transport-Security':
+                    security_data['strict_transport_security'] = value
+        
+        return security_data
+        
+    except Exception as e:
+        st.warning(f"보안 분석 중 오류: {str(e)}")
+        return None
+
+# === 웹사이트 콘텐츠 스크래핑 함수들 ===
+def scrape_website_content(url, max_pages=20):
+    """웹사이트 전체 콘텐츠 스크래핑 (모든 페이지 포함)"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # 메인 페이지 스크래핑
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # 모든 내부 링크 수집
+        base_url = url.rstrip('/')
+        internal_links = set()
+        
+        # 링크 추출 - 제품/솔루션 관련 페이지 우선 수집
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            full_url = urljoin(base_url, href)
+            
+            # 같은 도메인의 내부 링크만 수집
+            if urlparse(full_url).netloc == urlparse(url).netloc:
+                # 불필요한 파라미터 제거
+                clean_url = urlparse(full_url)._replace(query='', fragment='').geturl()
+                internal_links.add(clean_url)
+        
+        # 제품/솔루션 관련 페이지 우선순위 부여
+        product_related_urls = []
+        other_urls = []
+        
+        for link_url in internal_links:
+            link_lower = link_url.lower()
+            # 제품/솔루션 관련 키워드가 포함된 URL 우선 수집
+            if any(keyword in link_lower for keyword in ['product', 'solution', 'service', '제품', '솔루션', '서비스', '기술', '기능', '특징']):
+                product_related_urls.append(link_url)
+            else:
+                other_urls.append(link_url)
+        
+        # 제품 관련 페이지를 먼저, 그 다음 다른 페이지들
+        links_to_scrape = product_related_urls[:max_pages//2] + other_urls[:max_pages//2]
+        if len(links_to_scrape) < max_pages:
+            remaining_urls = [url for url in internal_links if url not in links_to_scrape]
+            links_to_scrape.extend(remaining_urls[:max_pages - len(links_to_scrape)])
+        
+        # 전체 콘텐츠 데이터
+        all_content = {
+            'url': url,
+            'title': soup.title.string if soup.title else '',
+            'meta_description': '',
+            'headings': [],
+            'paragraphs': [],
+            'lists': [],
+            'text_content': '',
+            'word_count': 0,
+            'sentence_count': 0,
+            'paragraph_count': 0,
+            'status_code': response.status_code,
+            'response_time': response.elapsed.total_seconds(),
+            'scraped_pages': [],
+            'total_pages': len(links_to_scrape) + 1,
+            'product_info': [],  # 제품 정보 수집
+            'solution_info': [],  # 솔루션 정보 수집
+            'technical_specs': [],  # 기술 사양 수집
+            'pricing_info': [],  # 가격 정보 수집
+            'features_info': []  # 기능 정보 수집
+        }
+        
+        # 메인 페이지 메타 태그 추출
+        meta_tags = soup.find_all('meta')
+        for meta in meta_tags:
+            if meta.get('name') == 'description':
+                all_content['meta_description'] = meta.get('content', '')
+        
+        # 메인 페이지 콘텐츠 추출
+        main_page_content = extract_page_content(soup, url)
+        all_content['scraped_pages'].append(main_page_content)
+        
+        # 내부 페이지들 스크래핑
+        st.info(f"🔍 {len(links_to_scrape)}개의 내부 페이지를 스크래핑 중...")
+        
+        with st.spinner("내부 페이지들을 수집하고 있습니다..."):
+            progress_bar = st.progress(0)  # 하나의 프로그레스바만 사용
+            for i, link_url in enumerate(links_to_scrape):
+                try:
+                    page_response = requests.get(link_url, headers=headers, timeout=5)
+                    if page_response.status_code == 200:
+                        page_soup = BeautifulSoup(page_response.content, 'html.parser')
+                        page_content = extract_page_content(page_soup, link_url)
+                        all_content['scraped_pages'].append(page_content)
+                        
+                        # 제품/솔루션 관련 정보 추가 추출
+                        extract_product_solution_info(page_soup, link_url, all_content)
+                        
+                        # 진행률 표시 (하나의 프로그레스바만 갱신)
+                        progress = (i + 1) / len(links_to_scrape)
+                        progress_bar.progress(progress)
+                        
+                except Exception as e:
+                    st.warning(f"페이지 스크래핑 실패: {link_url} - {str(e)}")
+                    continue
+        
+        # 모든 페이지 콘텐츠 통합
+        all_content = merge_all_page_content(all_content)
+        
+        st.success(f"✅ 총 {len(all_content['scraped_pages'])}개 페이지 스크래핑 완료")
+        
+        return all_content
+        
+    except Exception as e:
+        st.error(f"웹사이트 콘텐츠 스크래핑 중 오류: {str(e)}")
+        return None
+
+def extract_page_content(soup, page_url):
+    """개별 페이지 콘텐츠 추출"""
+    # 불필요한 요소 제거
+    for script in soup(["script", "style", "nav", "footer", "header"]):
+        script.decompose()
+    
+    page_data = {
+        'url': page_url,
+        'title': soup.title.string if soup.title else '',
+        'headings': [],
+        'paragraphs': [],
+        'lists': [],
+        'text_content': ''
+    }
+    
+    # 헤딩 태그 추출
+    for tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+        headings = soup.find_all(tag)
+        for heading in headings:
+            text = heading.get_text(strip=True)
+            if text:
+                page_data['headings'].append({
+                    'tag': tag,
+                    'text': text,
+                    'level': int(tag[1])
+                })
+    
+    # 문단 추출
+    paragraphs = soup.find_all('p')
+    for p in paragraphs:
+        text = p.get_text(strip=True)
+        if text and len(text) > 10:  # 의미있는 문단만
+            page_data['paragraphs'].append(text)
+    
+    # 리스트 추출
+    lists = soup.find_all(['ul', 'ol'])
+    for lst in lists:
+        items = lst.find_all('li')
+        list_items = []
+        for item in items:
+            text = item.get_text(strip=True)
+            if text:
+                list_items.append(text)
+        if list_items:
+            page_data['lists'].append({
+                'type': lst.name,
+                'items': list_items
+            })
+    
+    # 전체 텍스트 콘텐츠 추출
+    text_content = soup.get_text()
+    text_content = ' '.join(text_content.split())
+    page_data['text_content'] = text_content
+    
+    return page_data
+
+def merge_all_page_content(all_content):
+    """모든 페이지 콘텐츠 통합"""
+    merged_content = all_content.copy()
+    
+    # 모든 페이지의 콘텐츠 통합
+    all_text = ""
+    all_headings = []
+    all_paragraphs = []
+    all_lists = []
+    
+    for page in all_content['scraped_pages']:
+        # 텍스트 콘텐츠 통합
+        if page['text_content']:
+            all_text += page['text_content'] + " "
+        
+        # 헤딩 통합
+        all_headings.extend(page['headings'])
+        
+        # 문단 통합
+        all_paragraphs.extend(page['paragraphs'])
+        
+        # 리스트 통합
+        all_lists.extend(page['lists'])
+    
+    # 중복 제거 및 정리
+    merged_content['text_content'] = all_text.strip()
+    merged_content['headings'] = all_headings
+    merged_content['paragraphs'] = list(set(all_paragraphs))  # 중복 제거
+    merged_content['lists'] = all_lists
+    
+    # 통계 재계산
+    merged_content['word_count'] = len(merged_content['text_content'].split())
+    merged_content['sentence_count'] = len(re.split(r'[.!?]+', merged_content['text_content']))
+    merged_content['paragraph_count'] = len(merged_content['paragraphs'])
+    
+    return merged_content
+
+def analyze_content_readability(text_content):
+    """콘텐츠 가독성 분석"""
+    try:
+        # 간단한 가독성 지수 계산
+        sentences = re.split(r'[.!?]+', text_content)
+        words = text_content.split()
+        
+        # 평균 문장 길이
+        avg_sentence_length = len(words) / len(sentences) if sentences else 0
+        
+        # 긴 문장 비율 (20단어 이상)
+        long_sentences = sum(1 for s in sentences if len(s.split()) > 20)
+        long_sentence_ratio = long_sentences / len(sentences) if sentences else 0
+        
+        # 가독성 등급
+        if avg_sentence_length < 10:
+            readability_grade = "매우 쉬움"
+        elif avg_sentence_length < 15:
+            readability_grade = "쉬움"
+        elif avg_sentence_length < 20:
+            readability_grade = "보통"
+        elif avg_sentence_length < 25:
+            readability_grade = "어려움"
+        else:
+            readability_grade = "매우 어려움"
+        
+        return {
+            'avg_sentence_length': round(avg_sentence_length, 2),
+            'long_sentence_ratio': round(long_sentence_ratio * 100, 2),
+            'readability_grade': readability_grade,
+            'total_sentences': len(sentences),
+            'total_words': len(words)
+        }
+        
+    except Exception as e:
+        st.warning(f"가독성 분석 중 오류: {str(e)}")
+        return None
+
+def get_ai_response(prompt, model_name="gpt-4o-mini", system_prompt="", enable_thinking=False):
+    """AI 응답 생성 함수"""
+    try:
+        if model_name.startswith("gpt"):
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            
+            response = openai.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=3000
+            )
+            
+            return {
+                'content': response.choices[0].message.content,
+                'success': True,
+                'error': None
+            }
+            
+        elif model_name.startswith("claude"):
+            response = anthropic_client.messages.create(
+                model=model_name,
+                max_tokens=3000,
+                temperature=0.7,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            return {
+                'content': response.content[0].text,
+                'success': True,
+                'error': None
+            }
+            
+    except Exception as e:
+        return {
+            'content': f"AI 응답 생성 중 오류: {str(e)}",
+            'success': False,
+            'error': str(e)
+        }
+
+def analyze_with_business_agent(args):
+    """비즈니스 분석 개별 에이전트 분석 함수"""
+    agent_key, agent_info, content_data, model_name, url, enable_thinking, custom_prompt = args
+    
+    try:
+        # 에이전트별 특화 JSON 차트 데이터 가이드
+        json_chart_guides = {
+            "business_model_analyzer": """
+**JSON 차트 데이터 요청:**
+분석 내용에 적절한 차트 데이터를 JSON 형태로 포함해주세요.
+
+예시:
+```json
+{
+  "type": "sankey",
+  "title": "비즈니스 모델 플로우",
+  "nodes": ["고객", "제품", "서비스", "수익"],
+  "source": [0, 1, 2],
+  "target": [1, 2, 3],
+  "value": [1, 1, 1]
+}
+```
+
+```json
+{
+  "type": "pie",
+  "title": "수익 모델 구성",
+  "labels": ["제품 판매", "서비스 수익", "라이센스"],
+  "values": [60, 30, 10]
+}
+```
+""",
+            "product_service_analyzer": """
+**JSON 차트 데이터 요청:**
+분석 내용에 적절한 차트 데이터를 JSON 형태로 포함해주세요.
+
+예시:
+```json
+{
+  "type": "pie",
+  "title": "제품 포트폴리오 분포",
+  "labels": ["LED 조명", "스마트 조명", "조명 제어 시스템"],
+  "values": [40, 35, 25]
+}
+```
+
+```json
+{
+  "type": "bar",
+  "title": "제품별 매출 비중",
+  "x": ["제품A", "제품B", "제품C"],
+  "y": [30, 45, 25],
+  "x_title": "제품",
+  "y_title": "매출 비중 (%)"
+}
+```
+""",
+            "market_position_analyzer": """
+**JSON 차트 데이터 요청:**
+분석 내용에 적절한 차트 데이터를 JSON 형태로 포함해주세요.
+
+예시:
+```json
+{
+  "type": "scatter",
+  "title": "시장 포지셔닝 맵",
+  "x": [0.8, 0.6, 0.9, 0.4],
+  "y": [0.7, 0.8, 0.5, 0.9],
+  "labels": ["우리회사", "경쟁사A", "경쟁사B", "경쟁사C"],
+  "x_title": "가격 경쟁력",
+  "y_title": "품질"
+}
+```
+""",
+            "technology_stack_analyzer": """
+**JSON 차트 데이터 요청:**
+분석 내용에 적절한 차트 데이터를 JSON 형태로 포함해주세요.
+
+예시:
+```json
+{
+  "type": "pie",
+  "title": "기술 투자 비중",
+  "labels": ["LED 기술", "IoT 기술", "AI 기술", "제어 시스템"],
+  "values": [35, 25, 20, 20]
+}
+```
+""",
+            "growth_strategy_analyzer": """
+**JSON 차트 데이터 요청:**
+분석 내용에 적절한 차트 데이터를 JSON 형태로 포함해주세요.
+
+예시:
+```json
+{
+  "type": "bar",
+  "title": "성장 단계별 목표",
+  "x": ["1단계", "2단계", "3단계", "4단계"],
+  "y": [100, 150, 200, 300],
+  "x_title": "성장 단계",
+  "y_title": "목표 매출 (백만원)"
+}
+```
+""",
+            "financial_health_analyzer": """
+**JSON 차트 데이터 요청:**
+분석 내용에 적절한 차트 데이터를 JSON 형태로 포함해주세요.
+
+예시:
+```json
+{
+  "type": "pie",
+  "title": "수익 구조 분석",
+  "labels": ["제품 매출", "서비스 매출", "라이센스 매출"],
+  "values": [70, 20, 10]
+}
+```
+
+```json
+{
+  "type": "line",
+  "title": "재무 성과 추이",
+  "x": ["2020", "2021", "2022", "2023"],
+  "y": [100, 120, 150, 180],
+  "x_title": "연도",
+  "y_title": "매출 (백만원)"
+}
+```
+"""
+        }
+        
+        # 에이전트별 특화 프롬프트 생성
+        if agent_key == "product_service_analyzer":
+            # 웹사이트 요약과 첨부 파일 요약을 분리하여 제공
+            website_summary = content_data.get('content_summary', 'N/A')
+            files_summary = content_data.get('files_summary', '')
+            
+            agent_prompt = f"""
+{agent_info['system_prompt']}
+
+다음은 {url} 웹사이트의 콘텐츠 분석 데이터입니다:
+
+**스크래핑된 페이지 수:** {len(content_data.get('scraped_pages', []))}개
+**총 단어 수:** {content_data.get('word_count', 0):,}개
+
+**🌐 웹사이트 콘텐츠 요약:**
+{website_summary}
+
+**📁 첨부 파일 요약:**
+{files_summary if files_summary else "첨부된 파일이 없습니다."}
+
+**중요: 웹사이트 요약과 첨부 파일 요약을 모두 참고하여 분석에 반영하세요. 첨부 파일에만 있는 정보도 반드시 포함하세요.**
+
+**제품/서비스 분석 요청사항:**
+
+1. **제품/서비스 카테고리 분류**
+   - 주요 제품 라인업 (카테고리별)
+   - 서비스 유형 (B2B, B2C, SaaS 등)
+   - 제품 포트폴리오 구조
+
+2. **제품 상세 분석**
+   - 각 제품의 구체적인 이름과 설명
+   - 제품별 주요 기능과 특징
+   - 제품별 가격 정책 (가능한 경우)
+   - 제품별 타겟 고객
+
+3. **서비스 분석**
+   - 제공하는 서비스 유형
+   - 서비스 특징과 혜택
+   - 서비스 가격 정책
+   - 서비스 이용 방법
+
+4. **제품/서비스 차별화 요소**
+   - 경쟁사 대비 장점
+   - 독자적 기술이나 특허
+   - 품질 보증 및 인증
+   - 고객 지원 서비스
+
+5. **제품 개발 현황**
+   - 신제품 개발 계획
+   - 제품 업데이트 및 개선
+   - 제품 라이프사이클 단계
+
+6. **제품 관련 데이터**
+   - 제품 수량 및 종류
+   - 제품별 인기도나 인지도
+   - 제품 관련 고객 피드백
+
+**중요**: 웹사이트 콘텐츠 요약과 첨부 파일 요약을 종합적으로 분석하여 누락된 제품이나 서비스가 없도록 해주세요.
+
+{json_chart_guides.get(agent_key, "")}
+
+**중요**: 분석 내용에 적절한 차트 데이터를 JSON 형태로 1-2개 포함해주세요. 차트는 ```json 코드블록으로 작성하고, 분석 내용과 잘 연계되도록 해주세요.
+
+구체적이고 실용적인 제품/서비스 분석을 제공해주세요.
+"""
+        else:
+            # 웹사이트 요약과 첨부 파일 요약을 분리하여 제공
+            website_summary = content_data.get('content_summary', 'N/A')
+            files_summary = content_data.get('files_summary', '')
+            
+            agent_prompt = f"""
+{agent_info['system_prompt']}
+
+다음은 {url} 웹사이트의 콘텐츠 분석 데이터입니다:
+
+**🌐 웹사이트 콘텐츠 요약:**
+{website_summary}
+
+**📁 첨부 파일 요약:**
+{files_summary if files_summary else "첨부된 파일이 없습니다."}
+
+**스크래핑된 페이지 수:** {len(content_data.get('scraped_pages', []))}개
+**총 단어 수:** {content_data.get('word_count', 0):,}개
+
+**중요: 웹사이트 요약과 첨부 파일 요약을 모두 참고하여 분석에 반영하세요. 첨부 파일에만 있는 정보도 반드시 포함하세요.**
+
+당신의 전문 분야인 {agent_info['description']} 관점에서 이 회사의 비즈니스 모델과 제품을 분석해주세요.
+
+**분석 요청사항:**
+1. 주요 비즈니스 발견사항 (3-5개)
+2. 비즈니스 모델의 강점과 우수한 점
+3. 개선이 필요한 비즈니스 영역
+4. 구체적인 비즈니스 개선 권고사항
+5. 비즈니스 잠재력 평가 (1-10점, 이유 포함)
+
+{json_chart_guides.get(agent_key, "")}
+
+**중요**: 분석 내용에 적절한 차트 데이터를 JSON 형태로 1-2개 포함해주세요. 차트는 ```json 코드블록으로 작성하고, 분석 내용과 잘 연계되도록 해주세요.
+
+구체적이고 실용적인 비즈니스 분석을 제시해주세요.
+"""
+        
+        # 사용자 정의 프롬프트가 있으면 추가
+        if custom_prompt and custom_prompt.strip():
+            agent_prompt += f"""
+
+**사용자 정의 분석 지시사항:**
+{custom_prompt}
+
+**중요**: 위의 사용자 정의 지시사항을 반드시 우선적으로 고려하여 분석을 수행해주세요.
+"""
+        
+        # AI 응답 생성
+        response = get_ai_response(
+            prompt=agent_prompt,
+            model_name=model_name,
+            system_prompt=agent_info['system_prompt'],
+            enable_thinking=enable_thinking
+        )
+        
+        return {
+            'agent_key': agent_key,
+            'agent_name': agent_info['name'],
+            'agent_emoji': agent_info['emoji'],
+            'analysis': response['content'],
+            'success': response['success'],
+            'error': response.get('error', None)
+        }
+        
+    except Exception as e:
+        return {
+            'agent_key': agent_key,
+            'agent_name': agent_info['name'], 
+            'agent_emoji': agent_info['emoji'],
+            'analysis': f"분석 중 오류가 발생했습니다: {str(e)}",
+            'success': False,
+            'error': str(e)
+        }
+
+def run_business_multi_agent_analysis(url, content_data, selected_agents, model_name, enable_thinking=False, custom_prompt=None):
+    """비즈니스 멀티 에이전트 분석 실행"""
+    
+    # 진행 상황 표시용 컨테이너
+    progress_container = st.container()
+    
+    with progress_container:
+        st.info("🚀 **비즈니스 멀티 에이전트 분석 시작**")
+        
+        # 에이전트별 상태 표시
+        agent_status = {}
+        agent_progress = {}
+        
+        cols = st.columns(len(selected_agents))
+        for i, agent_key in enumerate(selected_agents):
+            with cols[i]:
+                agent_info = BUSINESS_ANALYSIS_AGENTS[agent_key]
+                agent_status[agent_key] = st.empty()
+                agent_progress[agent_key] = st.progress(0)
+                
+                agent_status[agent_key].info(f"{agent_info['emoji']} {agent_info['name']}\n대기 중...")
+        
+        # 멀티프로세싱으로 에이전트 분석 실행
+        st.info("⚡ **병렬 분석 실행 중...**")
+        
+        # 분석 인자 준비
+        analysis_args = []
+        for agent_key in selected_agents:
+            agent_info = BUSINESS_ANALYSIS_AGENTS[agent_key]
+            args = (agent_key, agent_info, content_data, model_name, url, enable_thinking, custom_prompt)
+            analysis_args.append(args)
+        
+        # 병렬 실행
+        agent_analyses = []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected_agents)) as executor:
+            # 모든 에이전트 작업 제출
+            future_to_agent = {
+                executor.submit(analyze_with_business_agent, args): args[0] 
+                for args in analysis_args
+            }
+            
+            # 완료된 작업 처리
+            completed = 0
+            for future in concurrent.futures.as_completed(future_to_agent):
+                agent_key = future_to_agent[future]
+                
+                try:
+                    result = future.result()
+                    agent_analyses.append(result)
+                    
+                    # 진행 상황 업데이트
+                    completed += 1
+                    progress = completed / len(selected_agents)
+                    
+                    agent_progress[agent_key].progress(1.0)
+                    
+                    if result['success']:
+                        agent_status[agent_key].success(f"{result['agent_emoji']} {result['agent_name']}\n✅ 분석 완료")
+                    else:
+                        agent_status[agent_key].error(f"{result['agent_emoji']} {result['agent_name']}\n❌ 분석 실패")
+                    
+                except Exception as e:
+                    st.error(f"에이전트 {agent_key} 실행 중 오류: {str(e)}")
+        
+        st.success("✅ **모든 에이전트 분석 완료**")
+        
+        # 비즈니스 분석 종합 리포트
+        st.info("📊 **비즈니스 분석 종합 리포트 생성 중...**")
+        business_analysis = synthesize_business_analysis(url, agent_analyses, content_data, model_name, custom_prompt)
+        
+        if business_analysis['success']:
+            st.success("✅ **비즈니스 분석 종합 리포트 완료**")
+        else:
+            st.error("❌ **비즈니스 분석 종합 리포트 실패**")
+    
+    return agent_analyses, business_analysis
+
+def synthesize_business_analysis(url, agent_analyses, content_data, model_name="gpt-4o-mini", custom_prompt=None):
+    """비즈니스 분석 전문가가 모든 에이전트 분석을 종합하여 최종 리포트 제시"""
+    
+    # 에이전트 분석 결과 정리
+    agent_summaries = []
+    for analysis in agent_analyses:
+        if analysis['success']:
+            agent_summaries.append(f"""
+**{analysis['agent_name']} 분석:**
+{analysis['analysis']}
+""")
+    
+    # 웹사이트 요약과 첨부 파일 요약을 분리하여 제공
+    website_summary = content_data.get('content_summary', 'N/A')
+    files_summary = content_data.get('files_summary', '')
+    
+    business_prompt = f"""
+당신은 15년 경력의 비즈니스 분석 전문가입니다. 다양한 전문가들이 {url} 회사의 비즈니스 모델과 제품에 대해 분석한 결과를 종합하여 최종 비즈니스 분석 리포트를 제시해주세요.
+
+**🌐 웹사이트 콘텐츠 요약:**
+{website_summary}
+
+**📁 첨부 파일 요약:**
+{files_summary if files_summary else "첨부된 파일이 없습니다."}
+
+**웹사이트 콘텐츠 데이터:**
+- 스크래핑된 페이지 수: {len(content_data.get('scraped_pages', []))}개
+- 총 단어 수: {content_data.get('word_count', 0):,}개
+- 총 문장 수: {content_data.get('sentence_count', 0):,}개
+
+**중요: 웹사이트 요약과 첨부 파일 요약을 모두 참고하여 분석에 반영하세요. 첨부 파일에만 있는 정보도 반드시 포함하세요.**
+
+**전문가 분석 결과:**
+{''.join(agent_summaries)}
+
+**비즈니스 분석 종합 리포트 요청사항:**
+1. **Executive Summary** (실행 요약)
+2. **핵심 비즈니스 발견사항** (각 전문가 의견의 공통점과 차이점)
+3. **비즈니스 모델 평가** (전체적인 비즈니스 모델의 강점과 약점)
+4. **제품/서비스 분석** (핵심 제품과 서비스의 특징)
+5. **시장 포지셔닝 분석** (시장에서의 위치와 경쟁 상황)
+6. **성장 전략 제언** (구체적인 성장 방향)
+7. **투자 가치 평가** (1-10점, 상세 이유)
+
+**JSON 차트 데이터 필수 포함:**
+- **비즈니스 모델 캔버스**: Sankey 차트로 비즈니스 모델 구성요소 시각화
+- **제품 포트폴리오 분석**: Pie 차트로 제품별 매출 비중 표시
+- **시장 포지셔닝 맵**: Scatter 차트로 경쟁사 대비 위치 표시
+- **성장 로드맵**: Bar 차트로 단계별 성장 계획 표시
+
+**중요**: 반드시 2-3개의 차트 데이터를 ```json 코드블록으로 포함하여 시각적으로 이해하기 쉽게 제시해주세요.
+
+투자자와 경영진이 의사결정을 내릴 수 있도록 명확하고 실행 가능한 비즈니스 분석을 제시해주세요.
+"""
+    
+    # 사용자 정의 프롬프트가 있으면 추가
+    if custom_prompt and custom_prompt.strip():
+        business_prompt += f"""
+
+**사용자 정의 종합 분석 지시사항:**
+{custom_prompt}
+
+**중요**: 위의 사용자 정의 지시사항을 반드시 우선적으로 고려하여 종합 분석을 수행해주세요.
+"""
+    
+    try:
+        response = get_ai_response(
+            prompt=business_prompt,
+            model_name=model_name,
+            system_prompt="당신은 15년 경력의 비즈니스 분석 전문가입니다. 회사의 비즈니스 모델과 제품 분석에 대한 전문적인 종합 리포트를 제공해주세요.",
+            enable_thinking=False
+        )
+        
+        return {
+            'content': response['content'],
+            'success': response['success'],
+            'error': response.get('error', None)
+        }
+        
+    except Exception as e:
+        return {
+            'content': f"비즈니스 분석 종합 리포트 생성 중 오류가 발생했습니다: {str(e)}",
+            'error': str(e)
+        }
+
+def save_website_analysis(url, website_data, agent_analyses, cto_analysis, analysis_date, uploaded_files=None):
+    """웹사이트 분석 결과를 데이터베이스에 저장"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # 1. website_analyses 테이블에 기본 정보 저장
+        cursor.execute('''
+            INSERT INTO website_analyses 
+            (url, analysis_date, title, meta_description, status_code, response_time)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        ''', (
+            url,
+            analysis_date,
+            website_data.get('title', ''),
+            website_data.get('meta_description', ''),
+            website_data.get('status_code', 0),
+            website_data.get('response_time', 0)
+        ))
+        analysis_id = cursor.lastrowid
+
+        # 2. website_content_data 테이블에 콘텐츠 데이터 저장 (Perplexity 요약 포함)
+        cursor.execute('''
+            INSERT INTO website_content_data
+            (analysis_id, headings_count, links_count, images_count, text_content_length, perplexity_summary)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        ''', (
+            analysis_id,
+            len(website_data.get('headings', [])),
+            len(website_data.get('links', [])),
+            len(website_data.get('images', [])),
+            len(website_data.get('text_content', '')),
+            website_data.get('perplexity_summary', '')  # Perplexity 요약 정보 추가
+        ))
+
+        # 3. 업로드된 파일들 저장
+        if uploaded_files:
+            for file_data in uploaded_files:
+                cursor.execute('''
+                    INSERT INTO website_analysis_files 
+                    (analysis_id, filename, file_type, file_content, file_binary_data, file_size)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (
+                    analysis_id,
+                    file_data['filename'],
+                    file_data['file_type'],
+                    file_data['content'],
+                    file_data['binary_data'],
+                    file_data['size']
+                ))
+
+        # 4. website_agent_analyses 테이블에 AI 에이전트 분석 결과 저장
+        for agent_analysis in agent_analyses:
+            cursor.execute('''
+                INSERT INTO website_agent_analyses
+                (analysis_id, agent_type, analysis_content)
+                VALUES (%s, %s, %s)
+            ''', (
+                analysis_id,
+                agent_analysis['agent_key'],
+                agent_analysis['analysis']
+            ))
+
+        # 5. website_cto_analysis 테이블에 CTO 종합 분석 저장
+        cursor.execute('''
+            INSERT INTO website_cto_analysis
+            (analysis_id, cto_analysis_content)
+            VALUES (%s, %s)
+        ''', (
+            analysis_id,
+            cto_analysis['content']
+        ))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, analysis_id
+
+    except mysql.connector.Error as err:
+        st.error(f"데이터베이스 저장 중 오류 발생: {err}")
+        return False, None
+
+def migrate_website_content_data():
+    """기존 website_content_data 테이블에 Perplexity 요약 컬럼 추가"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        
+        # 기존 테이블에 perplexity_summary 컬럼이 있는지 확인
+        cursor.execute('''
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = %s 
+            AND TABLE_NAME = 'website_content_data' 
+            AND COLUMN_NAME = 'perplexity_summary'
+        ''', (db_config['database'],))
+        
+        column_exists = cursor.fetchone()
+        
+        if not column_exists:
+            # perplexity_summary 컬럼 추가
+            cursor.execute('''
+                ALTER TABLE website_content_data 
+                ADD COLUMN perplexity_summary LONGTEXT
+            ''')
+            conn.commit()
+            st.success("✅ Perplexity 요약 컬럼이 추가되었습니다.")
+        else:
+            st.info("ℹ️ Perplexity 요약 컬럼이 이미 존재합니다.")
+        
+        cursor.close()
+        conn.close()
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"마이그레이션 중 오류 발생: {err}")
+        return False
+
+def create_website_analysis_tables():
+    """웹사이트 분석을 위한 데이터베이스 테이블 생성"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # 1. 웹사이트 분석 기본 정보 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS website_analyses (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                url VARCHAR(500) NOT NULL,
+                analysis_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                title VARCHAR(500),
+                meta_description TEXT,
+                status_code INT,
+                response_time DECIMAL(10,3),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 2. 웹사이트 콘텐츠 데이터 테이블 (Perplexity 요약 정보 추가)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS website_content_data (
+                content_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT,
+                headings_count INT DEFAULT 0,
+                links_count INT DEFAULT 0,
+                images_count INT DEFAULT 0,
+                text_content_length INT DEFAULT 0,
+                perplexity_summary LONGTEXT,
+                FOREIGN KEY (analysis_id) REFERENCES website_analyses(analysis_id) ON DELETE CASCADE
+            )
+        ''')
+
+        # 3. 웹사이트 에이전트 분석 결과 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS website_agent_analyses (
+                agent_analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT,
+                agent_type VARCHAR(100),
+                analysis_content LONGTEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES website_analyses(analysis_id) ON DELETE CASCADE
+            )
+        ''')
+
+        # 4. CTO 종합 분석 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS website_cto_analysis (
+                cto_analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT,
+                cto_analysis_content LONGTEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES website_analyses(analysis_id) ON DELETE CASCADE
+            )
+        ''')
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+
+    except mysql.connector.Error as err:
+        st.error(f"테이블 생성 중 오류 발생: {err}")
+        return False
+
+def get_saved_website_analyses():
+    """저장된 웹사이트 분석 목록 조회"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute('''
+            SELECT 
+                wa.analysis_id,
+                wa.url,
+                wa.title,
+                wa.analysis_date,
+                wa.status_code,
+                wa.response_time,
+                wcd.headings_count,
+                wcd.links_count,
+                wcd.images_count
+            FROM website_analyses wa
+            LEFT JOIN website_content_data wcd ON wa.analysis_id = wcd.analysis_id
+            ORDER BY wa.analysis_date DESC
+        ''')
+        
+        results = cursor.fetchall()
+        return results
+    except mysql.connector.Error as err:
+        st.error(f"데이터 조회 중 오류 발생: {err}")
+        return []
+    finally:
+        if 'conn' in locals():
+            cursor.close()
+            conn.close()
+
+def get_analysis_detail(analysis_id):
+    """특정 분석의 상세 정보 조회"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor(dictionary=True)
+        # 1. 기본 정보
+        cursor.execute('''
+            SELECT * FROM website_analyses WHERE analysis_id = %s
+        ''', (analysis_id,))
+        base = cursor.fetchone()
+        # 2. 콘텐츠 데이터 (Perplexity 요약 포함)
+        cursor.execute('''
+            SELECT * FROM website_content_data WHERE analysis_id = %s
+        ''', (analysis_id,))
+        content = cursor.fetchone()
+        # 3. 에이전트 분석
+        cursor.execute('''
+            SELECT agent_type, analysis_content FROM website_agent_analyses WHERE analysis_id = %s
+        ''', (analysis_id,))
+        agents = cursor.fetchall()
+        # 4. 종합 리포트
+        cursor.execute('''
+            SELECT cto_analysis_content FROM website_cto_analysis WHERE analysis_id = %s
+        ''', (analysis_id,))
+        cto = cursor.fetchone()
+        
+        # 5. 첨부 파일 조회
+        cursor.execute('''
+            SELECT * FROM website_analysis_files WHERE analysis_id = %s
+        ''', (analysis_id,))
+        files = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        return {
+            'base': base,
+            'content': content,
+            'agents': agents,
+            'cto': cto['cto_analysis_content'] if cto else None,
+            'files': files
+        }
+    except Exception as e:
+        st.error(f"상세 정보 조회 오류: {e}")
+        return None
+
+def delete_analysis(analysis_id):
+    """특정 분석 삭제"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        
+        # 삭제 전 확인
+        cursor.execute('SELECT COUNT(*) FROM website_analyses WHERE analysis_id = %s', (analysis_id,))
+        before_count = cursor.fetchone()[0]
+        
+        if before_count == 0:
+            st.error(f"분석 ID {analysis_id}를 찾을 수 없습니다.")
+            return False
+        
+        # 삭제 실행
+        cursor.execute('DELETE FROM website_analyses WHERE analysis_id = %s', (analysis_id,))
+        deleted_rows = cursor.rowcount
+        
+        if deleted_rows == 0:
+            st.error("삭제할 데이터가 없습니다.")
+            return False
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        st.success(f"✅ 분석 ID {analysis_id} 삭제 완료 (삭제된 행: {deleted_rows})")
+        return True
+        
+    except mysql.connector.Error as err:
+        st.error(f"데이터베이스 오류: {err}")
+        return False
+    except Exception as e:
+        st.error(f"삭제 중 오류 발생: {e}")
+        return False
+
+# === 웹사이트 콘텐츠 요약 분석 함수들 ===
+def create_content_summary_agent():
+    """웹사이트 콘텐츠 요약 전문가 에이전트"""
+    return {
+        "name": "📋 웹사이트 콘텐츠 요약 전문가",
+        "emoji": "📋",
+        "description": "웹사이트의 모든 콘텐츠를 종합하여 회사의 비즈니스와 제품에 대한 실제적인 요약 제공",
+        "system_prompt": """당신은 10년 경력의 웹사이트 콘텐츠 분석 전문가입니다.
+
+**전문 분야:**
+- 웹사이트 콘텐츠 종합 분석
+- 회사 비즈니스 모델 파악
+- 제품/서비스 라인업 정리
+- 회사 정보 및 특징 요약
+
+**분석 관점:**
+- 회사가 하는 비즈니스의 본질
+- 주요 제품과 서비스
+- 회사의 특징과 차별화 요소
+- 고객 대상 및 시장 포지셔닝
+- 회사의 비전과 미션
+
+웹사이트의 모든 페이지 콘텐츠를 종합하여 회사에 대한 실제적이고 정확한 요약을 제공해주세요."""
+    }
+
+def extract_mermaid_charts(text):
+    """텍스트에서 Mermaid 차트 코드를 추출"""
+    import re
+    mermaid_pattern = r'```mermaid\s*\n(.*?)\n```'
+    matches = re.findall(mermaid_pattern, text, re.DOTALL)
+    return matches
+
+def extract_chart_data(text):
+    """텍스트에서 차트 데이터를 추출"""
+    import re
+    import json
+    
+    # JSON 차트 데이터 패턴 찾기
+    json_pattern = r'```json\s*\n(.*?)\n```'
+    matches = re.findall(json_pattern, text, re.DOTALL)
+    
+    chart_data = []
+    for match in matches:
+        try:
+            data = json.loads(match)
+            chart_data.append(data)
+        except:
+            continue
+    
+    return chart_data
+
+def create_plotly_chart_from_data(chart_data):
+    """차트 데이터로부터 Plotly 차트 생성"""
+    try:
+        chart_type = chart_data.get('type', '').lower()
+        
+        if chart_type == 'pie':
+            return create_pie_chart_from_data(chart_data)
+        elif chart_type == 'bar':
+            return create_bar_chart_from_data(chart_data)
+        elif chart_type == 'scatter':
+            return create_scatter_chart_from_data(chart_data)
+        elif chart_type == 'sankey':
+            return create_sankey_chart_from_data(chart_data)
+        elif chart_type == 'line':
+            return create_line_chart_from_data(chart_data)
+        else:
+            return None
+    except Exception as e:
+        st.warning(f"차트 생성 중 오류: {str(e)}")
+        return None
+
+def create_pie_chart_from_data(chart_data):
+    """Pie 차트 생성"""
+    try:
+        labels = chart_data.get('labels', [])
+        values = chart_data.get('values', [])
+        title = chart_data.get('title', 'Pie Chart')
+        
+        if not labels or not values:
+            return None
+        
+        fig = go.Figure(data=[go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.3
+        )])
+        
+        fig.update_layout(
+            title_text=title,
+            height=400
+        )
+        
+        return fig
+    except Exception as e:
+        st.warning(f"Pie 차트 생성 중 오류: {str(e)}")
+        return None
+
+def create_bar_chart_from_data(chart_data):
+    """Bar 차트 생성"""
+    try:
+        x = chart_data.get('x', [])
+        y = chart_data.get('y', [])
+        title = chart_data.get('title', 'Bar Chart')
+        x_title = chart_data.get('x_title', 'X축')
+        y_title = chart_data.get('y_title', 'Y축')
+        
+        if not x or not y:
+            return None
+        
+        fig = go.Figure(data=[go.Bar(
+            x=x,
+            y=y,
+            text=y,
+            textposition='auto'
+        )])
+        
+        fig.update_layout(
+            title_text=title,
+            xaxis_title=x_title,
+            yaxis_title=y_title,
+            height=400
+        )
+        
+        return fig
+    except Exception as e:
+        st.warning(f"Bar 차트 생성 중 오류: {str(e)}")
+        return None
+
+def create_scatter_chart_from_data(chart_data):
+    """Scatter 차트 생성"""
+    try:
+        x = chart_data.get('x', [])
+        y = chart_data.get('y', [])
+        labels = chart_data.get('labels', [])
+        title = chart_data.get('title', 'Scatter Chart')
+        x_title = chart_data.get('x_title', 'X축')
+        y_title = chart_data.get('y_title', 'Y축')
+        
+        if not x or not y:
+            return None
+        
+        fig = go.Figure(data=[go.Scatter(
+            x=x,
+            y=y,
+            mode='markers+text',
+            text=labels if labels else None,
+            textposition="top center",
+            marker=dict(size=15, color='blue')
+        )])
+        
+        fig.update_layout(
+            title_text=title,
+            xaxis_title=x_title,
+            yaxis_title=y_title,
+            height=400
+        )
+        
+        return fig
+    except Exception as e:
+        st.warning(f"Scatter 차트 생성 중 오류: {str(e)}")
+        return None
+
+def create_sankey_chart_from_data(chart_data):
+    """Sankey 차트 생성"""
+    try:
+        nodes = chart_data.get('nodes', [])
+        source = chart_data.get('source', [])
+        target = chart_data.get('target', [])
+        value = chart_data.get('value', [])
+        title = chart_data.get('title', 'Sankey Chart')
+        
+        if not nodes or not source or not target:
+            return None
+        
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=nodes,
+                color="blue"
+            ),
+            link=dict(
+                source=source,
+                target=target,
+                value=value if value else [1] * len(source)
+            )
+        )])
+        
+        fig.update_layout(
+            title_text=title,
+            font_size=10,
+            height=400
+        )
+        
+        return fig
+    except Exception as e:
+        st.warning(f"Sankey 차트 생성 중 오류: {str(e)}")
+        return None
+
+def create_line_chart_from_data(chart_data):
+    """Line 차트 생성"""
+    try:
+        x = chart_data.get('x', [])
+        y = chart_data.get('y', [])
+        title = chart_data.get('title', 'Line Chart')
+        x_title = chart_data.get('x_title', 'X축')
+        y_title = chart_data.get('y_title', 'Y축')
+        
+        if not x or not y:
+            return None
+        
+        fig = go.Figure(data=[go.Scatter(
+            x=x,
+            y=y,
+            mode='lines+markers'
+        )])
+        
+        fig.update_layout(
+            title_text=title,
+            xaxis_title=x_title,
+            yaxis_title=y_title,
+            height=400
+        )
+        
+        return fig
+    except Exception as e:
+        st.warning(f"Line 차트 생성 중 오류: {str(e)}")
+        return None
+
+def display_analysis_with_plots(analysis_text, title="분석 결과", unique_id=None):
+    """분석 텍스트를 Plotly 차트와 함께 표시 (Streamlit key 중복 방지)"""
+    st.markdown(f"### {title}")
+    # 차트 데이터 추출 및 변환
+    chart_data_list = extract_chart_data(analysis_text)
+    plotly_charts = []
+    for chart_data in chart_data_list:
+        plotly_chart = create_plotly_chart_from_data(chart_data)
+        if plotly_chart:
+            plotly_charts.append(plotly_chart)
+    # JSON 코드를 제거한 텍스트 생성
+    clean_text = analysis_text
+    import re
+    json_pattern = r'```json\s*\n.*?\n```'
+    clean_text = re.sub(json_pattern, '', clean_text, flags=re.DOTALL)
+    # 텍스트 표시
+    st.markdown(clean_text)
+    # Plotly 차트 표시
+    if plotly_charts:
+        st.markdown("### 📊 시각화 차트")
+        for i, chart in enumerate(plotly_charts):
+            # 고유 키 생성: title, i, unique_id, chart_data 해시
+            chart_hash = hashlib.md5(str(chart_data_list[i]).encode('utf-8')).hexdigest()[:8]
+            key_parts = ["plotly_chart", str(title), str(i)]
+            if unique_id is not None:
+                key_parts.append(str(unique_id))
+            key_parts.append(chart_hash)
+            chart_key = "_".join(key_parts)
+            st.plotly_chart(chart, use_container_width=True, key=chart_key)
+            if i < len(plotly_charts) - 1:
+                st.markdown("---")
+
+def analyze_website_content_summary(url, content_data, model_name="gpt-4o-mini", custom_prompt=None):
+    """웹사이트 콘텐츠 종합 요약 분석 (웹사이트와 첨부 파일 분리)"""
+    
+    summary_agent = create_content_summary_agent()
+    
+    # 스크래핑된 페이지 정보 정리
+    pages_info = []
+    for i, page in enumerate(content_data.get('scraped_pages', [])):
+        pages_info.append(f"""
+**페이지 {i+1}: {page['url']}**
+- 제목: {page['title']}
+- 헤딩 수: {len(page['headings'])}
+- 문단 수: {len(page['paragraphs'])}
+- 주요 헤딩: {', '.join([h['text'] for h in page['headings'][:5]])}
+- 콘텐츠 샘플: {page['text_content'][:200]}...
+""")
+    
+    # 제품 및 솔루션 정보 정리
+    product_info_summary = ""
+    if content_data.get('product_info'):
+        product_info_summary = "\n**제품 정보 상세:**\n"
+        for i, product in enumerate(content_data['product_info']):
+            product_info_summary += f"""
+**제품 {i+1}:**
+- 제품명: {product.get('product_name', 'N/A')}
+- 설명: {product.get('product_description', 'N/A')}
+- 기능: {', '.join(product.get('product_features', []))}
+- 기술사양: {', '.join([f"{k}: {v}" for k, v in product.get('product_specs', {}).items()])}
+- URL: {product.get('url', 'N/A')}
+"""
+    
+    solution_info_summary = ""
+    if content_data.get('solution_info'):
+        solution_info_summary = "\n**솔루션 정보 상세:**\n"
+        for i, solution in enumerate(content_data['solution_info']):
+            solution_info_summary += f"""
+**솔루션 {i+1}:**
+- 솔루션명: {solution.get('solution_name', 'N/A')}
+- 설명: {solution.get('solution_description', 'N/A')}
+- 혜택: {', '.join(solution.get('solution_benefits', []))}
+- URL: {solution.get('url', 'N/A')}
+"""
+    
+    pricing_info_summary = ""
+    if content_data.get('pricing_info'):
+        pricing_info_summary = "\n**가격 정보:**\n"
+        for price in content_data['pricing_info']:
+            pricing_info_summary += f"- {price.get('price_text', 'N/A')} (컨텍스트: {price.get('context', 'N/A')})\n"
+    
+    technical_specs_summary = ""
+    if content_data.get('technical_specs'):
+        technical_specs_summary = "\n**기술 사양:**\n"
+        for spec in content_data['technical_specs']:
+            technical_specs_summary += f"- URL: {spec.get('url', 'N/A')}\n"
+            for key, value in spec.get('specs', {}).items():
+                technical_specs_summary += f"  - {key}: {value}\n"
+    
+    features_info_summary = ""
+    if content_data.get('features_info'):
+        features_info_summary = "\n**기능 정보:**\n"
+        for feature in content_data['features_info']:
+            features_info_summary += f"- URL: {feature.get('url', 'N/A')}\n"
+            for func in feature.get('features', []):
+                features_info_summary += f"  - {func}\n"
+    
+    # 1. 웹사이트 콘텐츠 요약 생성
+    website_prompt = f"""
+{summary_agent['system_prompt']}
+
+다음은 {url} 웹사이트의 콘텐츠 분석 데이터입니다:
+
+**스크래핑 개요:**
+- 총 스크래핑된 페이지: {len(content_data.get('scraped_pages', []))}개
+- 총 단어 수: {content_data.get('word_count', 0):,}개
+- 총 문장 수: {content_data.get('sentence_count', 0):,}개
+- 총 문단 수: {content_data.get('paragraph_count', 0):,}개
+
+**스크래핑된 페이지 상세 정보:**
+{''.join(pages_info)}
+
+**통합 콘텐츠 (모든 페이지 종합):**
+{content_data.get('text_content', 'N/A')}
+
+**주요 헤딩 구조 (전체 페이지 통합):**
+{chr(10).join([f"- {h['text']}" for h in content_data.get('headings', [])[:20]])}
+
+{product_info_summary}
+{solution_info_summary}
+{pricing_info_summary}
+{technical_specs_summary}
+{features_info_summary}
+
+**웹사이트 콘텐츠 요약 요청사항:**
+
+1. **회사 기본 정보 (상세)**
+   - 회사명 및 주요 브랜드 (정확한 명칭)
+   - 회사의 핵심 비즈니스 영역 (구체적인 업무 내용)
+   - 회사 설립 배경 및 역사 (가능한 한 상세하게)
+   - 회사 규모 및 조직 구조 (직원 수, 지점, 조직도 등)
+   - 회사 위치 및 연락처 정보
+
+2. **비즈니스 모델 요약 (상세)**
+   - 회사가 하는 일의 본질 (구체적인 비즈니스 방식)
+   - 주요 수익원 및 비즈니스 방식 (매출 구조, 수익 모델)
+   - 고객 대상 및 시장 (타겟 고객층, 시장 규모)
+   - 핵심 가치 제안 (고객에게 제공하는 가치)
+   - 경쟁 우위 및 차별화 요소
+
+3. **제품/서비스 라인업 (매우 상세)**
+   - 주요 제품 카테고리별 분류
+   - 각 제품의 구체적인 이름과 상세 설명
+   - 제품별 주요 기능과 특징 (기술적 특징 포함)
+   - 제품별 가격 정책 (가능한 경우 구체적인 가격)
+   - 제품별 타겟 고객 및 사용 사례
+   - 제품별 기술 사양 및 성능 지표
+   - 제품별 인증 및 품질 보증 정보
+
+4. **솔루션 및 서비스 (상세)**
+   - 제공하는 솔루션 유형 및 이름
+   - 각 솔루션의 상세 설명 및 특징
+   - 솔루션별 주요 혜택 및 효과
+   - 솔루션별 적용 분야 및 사용 사례
+   - 솔루션별 가격 정책 및 계약 조건
+   - 솔루션별 기술적 특징 및 구현 방식
+
+5. **회사 특징 및 차별화 요소 (상세)**
+   - 경쟁사 대비 장점 및 차별화 요소
+   - 독자적 기술이나 특허 정보
+   - 품질 보증 및 인증 정보
+   - 회사의 비전과 미션
+   - 회사의 핵심 가치 및 문화
+
+6. **고객 및 시장 정보 (상세)**
+   - 주요 고객층 및 타겟 시장
+   - 서비스 지역 및 글로벌 진출 현황
+   - 시장에서의 포지셔닝
+   - 파트너십 및 협력 관계
+   - 고객 지원 및 서비스 체계
+
+7. **연락처 및 서비스 정보 (상세)**
+   - 고객 문의 방법 및 연락처
+   - 서비스 이용 방법 및 프로세스
+   - 구매/계약 프로세스
+   - 고객 지원 서비스 및 A/S 정보
+   - 온라인/오프라인 서비스 채널
+
+**중요**: 
+- 웹사이트에 실제로 나와있는 정보만을 바탕으로 정확하고 상세한 요약을 제공해주세요.
+- 제품과 솔루션 정보는 가능한 한 구체적이고 상세하게 기술해주세요.
+- 추측이나 가정은 하지 말고, 콘텐츠에서 확인된 사실만을 기반으로 작성해주세요.
+- 정보가 부족한 부분은 "정보 없음"으로 표시해주세요.
+- 요약이라고 해서 간단하게 하지 말고, 모든 중요한 정보를 포함하여 상세하게 작성해주세요.
+
+웹사이트의 모든 페이지를 종합하여 이 회사에 대한 실제적이고 상세한 요약을 제공해주세요.
+"""
+    
+    # 사용자 정의 프롬프트가 있으면 웹사이트 요약에 추가
+    if custom_prompt and custom_prompt.strip():
+        website_prompt += f"""
+
+**사용자 정의 웹사이트 분석 지시사항:**
+{custom_prompt}
+
+**중요**: 위의 사용자 정의 지시사항을 반드시 우선적으로 고려하여 웹사이트 분석을 수행해주세요.
+"""
+    
+    # 2. 첨부 파일 요약 생성
+    files_summary = ""
+    if content_data.get('uploaded_files'):
+        files_prompt = f"""
+{summary_agent['system_prompt']}
+
+다음은 {url} 회사와 관련된 첨부 파일들의 내용입니다:
+
+**첨부 파일 정보:**
+"""
+        for i, file_data in enumerate(content_data['uploaded_files']):
+            files_prompt += f"""
+**파일 {i+1}: {file_data['filename']} ({file_data['file_type'].upper()})**
+- 파일 크기: {file_data['size']:,} bytes
+- 파일 내용: {file_data['content']}
+"""
+        
+        files_prompt += f"""
+
+**첨부 파일 상세 분석 요청사항:**
+
+1. **회사 기본 정보 (파일에서 발견)**
+   - 회사명 및 주요 브랜드 (정확한 명칭)
+   - 회사의 핵심 비즈니스 영역 (구체적인 업무 내용)
+   - 회사 설립 배경 및 역사 (가능한 한 상세하게)
+   - 회사 규모 및 조직 구조 (직원 수, 지점, 조직도 등)
+   - 회사 위치 및 연락처 정보
+
+2. **비즈니스 모델 상세 분석**
+   - 회사가 하는 일의 본질 (구체적인 비즈니스 방식)
+   - 주요 수익원 및 비즈니스 방식 (매출 구조, 수익 모델)
+   - 고객 대상 및 시장 (타겟 고객층, 시장 규모)
+   - 핵심 가치 제안 (고객에게 제공하는 가치)
+   - 경쟁 우위 및 차별화 요소
+
+3. **제품/서비스 상세 정보**
+   - 주요 제품 카테고리별 분류
+   - 각 제품의 구체적인 이름과 상세 설명
+   - 제품별 주요 기능과 특징 (기술적 특징 포함)
+   - 제품별 가격 정책 (가능한 경우 구체적인 가격)
+   - 제품별 타겟 고객 및 사용 사례
+   - 제품별 기술 사양 및 성능 지표
+   - 제품별 인증 및 품질 보증 정보
+
+4. **솔루션 및 서비스 상세 분석**
+   - 제공하는 솔루션 유형 및 이름
+   - 각 솔루션의 상세 설명 및 특징
+   - 솔루션별 주요 혜택 및 효과
+   - 솔루션별 적용 분야 및 사용 사례
+   - 솔루션별 가격 정책 및 계약 조건
+   - 솔루션별 기술적 특징 및 구현 방식
+
+5. **기술적 특징 및 혁신 요소**
+   - 독자적 기술이나 특허 정보 (특허 수, 기술 분야)
+   - 핵심 기술 스택 및 플랫폼
+   - 기술적 차별화 요소
+   - R&D 투자 및 개발 현황
+   - 기술 파트너십 및 협력 관계
+
+6. **시장 및 경영 정보**
+   - 주요 고객층 및 타겟 시장
+   - 서비스 지역 및 글로벌 진출 현황 (진출 국가 수, 주요 시장)
+   - 시장에서의 포지셔닝
+   - 파트너십 및 협력 관계
+   - 시장 점유율 및 경쟁 상황
+
+7. **재무 및 경영 성과**
+   - 매출 규모 및 성장률
+   - 주요 고객 및 계약 정보
+   - 투자 유치 현황
+   - 수익성 및 재무 건전성
+   - 성장 전략 및 계획
+
+8. **조직 및 인력 정보**
+   - 조직 구조 및 부서별 역할
+   - 주요 경영진 정보
+   - 직원 수 및 인력 구성
+   - 조직 문화 및 가치관
+   - 인재 채용 및 육성 방안
+
+9. **품질 및 인증 정보**
+   - 품질 보증 및 인증 정보
+   - 안전성 및 규정 준수
+   - 환경 친화적 요소
+   - 고객 만족도 및 서비스 품질
+
+10. **미래 전략 및 계획**
+    - 신제품 개발 계획
+    - 시장 확장 전략
+    - 기술 개발 로드맵
+    - 투자 및 성장 계획
+
+**중요**: 
+- 첨부 파일에만 있는 정보를 중점적으로 분석해주세요.
+- 웹사이트에서 확인되지 않은 추가 정보가 있다면 특히 강조해주세요.
+- 각 파일의 특성에 맞는 정보를 체계적으로 정리해주세요.
+- 추측이나 가정은 하지 말고, 파일에서 확인된 사실만을 기반으로 작성해주세요.
+- 구체적인 수치, 명칭, 기술 사양 등이 있다면 반드시 포함해주세요.
+- 파일에서 발견되는 모든 중요한 비즈니스 정보를 누락 없이 포함해주세요.
+
+첨부 파일들의 내용을 종합하여 이 회사에 대한 상세하고 포괄적인 분석을 제공해주세요.
+"""
+        
+        # 첨부 파일 요약 생성
+        try:
+            files_response = get_ai_response(
+                prompt=files_prompt,
+                model_name=model_name,
+                system_prompt=summary_agent['system_prompt'],
+                enable_thinking=False
+            )
+            
+            if files_response['success']:
+                files_summary = files_response['content']
+            else:
+                files_summary = f"첨부 파일 요약 생성 실패: {files_response.get('error', '알 수 없는 오류')}"
+        except Exception as e:
+            files_summary = f"첨부 파일 요약 생성 중 오류: {str(e)}"
+    
+    # 3. 웹사이트 요약 생성
+    try:
+        website_response = get_ai_response(
+            prompt=website_prompt,
+            model_name=model_name,
+            system_prompt=summary_agent['system_prompt'],
+            enable_thinking=False
+        )
+        
+        if website_response['success']:
+            website_summary = website_response['content']
+        else:
+            website_summary = f"웹사이트 요약 생성 실패: {website_response.get('error', '알 수 없는 오류')}"
+    except Exception as e:
+        website_summary = f"웹사이트 요약 생성 중 오류: {str(e)}"
+    
+    # 4. 최종 통합 요약 생성
+    final_summary = f"""
+# 📋 웹사이트 콘텐츠 및 첨부 파일 종합 요약
+
+## 🌐 웹사이트 콘텐츠 요약
+{website_summary}
+
+"""
+    
+    if files_summary:
+        final_summary += f"""
+## 📁 첨부 파일 요약
+{files_summary}
+
+"""
+    
+    final_summary += f"""
+## 🔗 정보 출처 구분
+
+**웹사이트 콘텐츠**: 위의 "웹사이트 콘텐츠 요약" 섹션은 {url} 웹사이트에서 스크래핑된 모든 페이지의 내용을 기반으로 작성되었습니다.
+
+**첨부 파일**: 위의 "첨부 파일 요약" 섹션은 사용자가 업로드한 파일들의 내용을 기반으로 작성되었습니다.
+
+**종합 분석**: 비즈니스 종합 분석 시에는 웹사이트 요약과 첨부 파일 요약을 모두 참고하여 분석이 진행됩니다.
+"""
+    
+    return {
+        'content': final_summary,
+        'website_summary': website_summary,
+        'files_summary': files_summary,
+        'success': website_response.get('success', False),
+        'error': website_response.get('error', None)
+    }
+
+def analyze_content_structure(content_data):
+    """콘텐츠 구조 분석"""
+    try:
+        structure_analysis = {
+            'total_pages': len(content_data.get('scraped_pages', [])),
+            'pages_by_type': {},
+            'content_distribution': {},
+            'key_topics': [],
+            'content_quality': {}
+        }
+        
+        # 페이지별 콘텐츠 분포 분석
+        for page in content_data.get('scraped_pages', []):
+            page_url = page['url']
+            page_title = page['title']
+            
+            # 페이지 유형 분류
+            if 'about' in page_url.lower() or '회사' in page_title or 'about' in page_title.lower():
+                structure_analysis['pages_by_type']['회사소개'] = structure_analysis['pages_by_type'].get('회사소개', 0) + 1
+            elif 'product' in page_url.lower() or '제품' in page_title or 'product' in page_title.lower():
+                structure_analysis['pages_by_type']['제품/서비스'] = structure_analysis['pages_by_type'].get('제품/서비스', 0) + 1
+            elif 'contact' in page_url.lower() or '문의' in page_title or 'contact' in page_title.lower():
+                structure_analysis['pages_by_type']['연락처'] = structure_analysis['pages_by_type'].get('연락처', 0) + 1
+            elif 'news' in page_url.lower() or '뉴스' in page_title or 'news' in page_title.lower():
+                structure_analysis['pages_by_type']['뉴스/소식'] = structure_analysis['pages_by_type'].get('뉴스/소식', 0) + 1
+            else:
+                structure_analysis['pages_by_type']['기타'] = structure_analysis['pages_by_type'].get('기타', 0) + 1
+        
+        # 콘텐츠 분포 분석
+        total_words = content_data.get('word_count', 0)
+        total_headings = len(content_data.get('headings', []))
+        total_paragraphs = len(content_data.get('paragraphs', []))
+        
+        structure_analysis['content_distribution'] = {
+            '평균 페이지당 단어': total_words // len(content_data.get('scraped_pages', [])),
+            '평균 페이지당 헤딩': total_headings // len(content_data.get('scraped_pages', [])),
+            '평균 페이지당 문단': total_paragraphs // len(content_data.get('scraped_pages', []))
+        }
+        
+        # 주요 토픽 추출 (헤딩 기반)
+        all_headings = [h['text'] for h in content_data.get('headings', [])]
+        topic_keywords = ['제품', '서비스', '솔루션', '기술', '회사', '고객', '시장', '비즈니스', '혁신', '품질']
+        
+        for keyword in topic_keywords:
+            count = sum(1 for heading in all_headings if keyword in heading)
+            if count > 0:
+                structure_analysis['key_topics'].append({
+                    'topic': keyword,
+                    'frequency': count
+                })
+        
+        # 콘텐츠 품질 평가
+        avg_words_per_page = total_words // len(content_data.get('scraped_pages', []))
+        if avg_words_per_page > 500:
+            quality_grade = "우수"
+        elif avg_words_per_page > 200:
+            quality_grade = "보통"
+        else:
+            quality_grade = "부족"
+        
+        structure_analysis['content_quality'] = {
+            '평균 페이지당 단어': avg_words_per_page,
+            '품질 등급': quality_grade,
+            '콘텐츠 완성도': f"{len(content_data.get('scraped_pages', []))}개 페이지 스크래핑 완료"
+        }
+        
+        return structure_analysis
+        
+    except Exception as e:
+        st.warning(f"콘텐츠 구조 분석 중 오류: {str(e)}")
+        return None
+
+def extract_product_solution_info(soup, page_url, all_content):
+    """제품 및 솔루션 관련 상세 정보 추출"""
+    try:
+        # 제품 관련 키워드들
+        product_keywords = ['product', '제품', '상품', 'item', 'goods', 'solution', '솔루션', 'service', '서비스']
+        tech_keywords = ['technology', '기술', 'tech', 'specification', '사양', '기능', 'feature', '특징']
+        price_keywords = ['price', '가격', 'cost', '비용', 'pricing', '요금', 'quote', '견적']
+        
+        # 페이지 URL과 제목에서 제품/솔루션 관련성 확인
+        page_lower = page_url.lower()
+        page_title = soup.title.string.lower() if soup.title else ""
+        
+        # 제품 정보 추출
+        product_info = {
+            'url': page_url,
+            'title': soup.title.string if soup.title else '',
+            'product_name': '',
+            'product_description': '',
+            'product_features': [],
+            'product_specs': {},
+            'product_category': '',
+            'target_audience': ''
+        }
+        
+        # 제품명 추출 (h1, h2 태그에서)
+        for tag in ['h1', 'h2']:
+            headings = soup.find_all(tag)
+            for heading in headings:
+                heading_text = heading.get_text(strip=True)
+                if any(keyword in heading_text.lower() for keyword in product_keywords):
+                    product_info['product_name'] = heading_text
+                    break
+            if product_info['product_name']:
+                break
+        
+        # 제품 설명 추출 (p 태그에서)
+        paragraphs = soup.find_all('p')
+        product_descriptions = []
+        for p in paragraphs:
+            text = p.get_text(strip=True)
+            if len(text) > 20 and any(keyword in text.lower() for keyword in product_keywords):
+                product_descriptions.append(text)
+        
+        if product_descriptions:
+            product_info['product_description'] = ' '.join(product_descriptions[:3])  # 처음 3개 문단
+        
+        # 제품 기능 추출 (li 태그에서)
+        lists = soup.find_all(['ul', 'ol'])
+        for lst in lists:
+            items = lst.find_all('li')
+            for item in items:
+                text = item.get_text(strip=True)
+                if any(keyword in text.lower() for keyword in tech_keywords + ['기능', 'feature', '특징']):
+                    product_info['product_features'].append(text)
+        
+        # 기술 사양 추출 (테이블이나 특정 형식에서)
+        tables = soup.find_all('table')
+        for table in tables:
+            rows = table.find_all('tr')
+            for row in rows:
+                cells = row.find_all(['td', 'th'])
+                if len(cells) >= 2:
+                    key = cells[0].get_text(strip=True)
+                    value = cells[1].get_text(strip=True)
+                    if any(keyword in key.lower() for keyword in tech_keywords):
+                        product_info['product_specs'][key] = value
+        
+        # 가격 정보 추출
+        price_elements = soup.find_all(text=re.compile(r'[\$€¥₩]?\d+[,\d]*\.?\d*'))
+        for element in price_elements:
+            if any(keyword in str(element).lower() for keyword in price_keywords):
+                all_content['pricing_info'].append({
+                    'url': page_url,
+                    'price_text': str(element),
+                    'context': element.parent.get_text(strip=True) if element.parent else ''
+                })
+        
+        # 제품 정보가 있는 경우만 추가
+        if (product_info['product_name'] or product_info['product_description'] or 
+            product_info['product_features'] or product_info['product_specs']):
+            all_content['product_info'].append(product_info)
+        
+        # 솔루션 정보 추출
+        solution_info = {
+            'url': page_url,
+            'title': soup.title.string if soup.title else '',
+            'solution_name': '',
+            'solution_description': '',
+            'solution_benefits': [],
+            'use_cases': [],
+            'target_industry': ''
+        }
+        
+        # 솔루션명 추출
+        for tag in ['h1', 'h2', 'h3']:
+            headings = soup.find_all(tag)
+            for heading in headings:
+                heading_text = heading.get_text(strip=True)
+                if any(keyword in heading_text.lower() for keyword in ['solution', '솔루션', 'service', '서비스']):
+                    solution_info['solution_name'] = heading_text
+                    break
+            if solution_info['solution_name']:
+                break
+        
+        # 솔루션 설명 추출
+        solution_descriptions = []
+        for p in paragraphs:
+            text = p.get_text(strip=True)
+            if len(text) > 20 and any(keyword in text.lower() for keyword in ['solution', '솔루션', 'service', '서비스']):
+                solution_descriptions.append(text)
+        
+        if solution_descriptions:
+            solution_info['solution_description'] = ' '.join(solution_descriptions[:3])
+        
+        # 솔루션 혜택 추출
+        for lst in lists:
+            items = lst.find_all('li')
+            for item in items:
+                text = item.get_text(strip=True)
+                if any(keyword in text.lower() for keyword in ['benefit', '혜택', 'advantage', '장점', '효과']):
+                    solution_info['solution_benefits'].append(text)
+        
+        # 솔루션 정보가 있는 경우만 추가
+        if (solution_info['solution_name'] or solution_info['solution_description'] or 
+            solution_info['solution_benefits']):
+            all_content['solution_info'].append(solution_info)
+        
+        # 기술 사양 정보 추가
+        if product_info['product_specs']:
+            all_content['technical_specs'].append({
+                'url': page_url,
+                'specs': product_info['product_specs']
+            })
+        
+        # 기능 정보 추가
+        if product_info['product_features']:
+            all_content['features_info'].append({
+                'url': page_url,
+                'features': product_info['product_features']
+            })
+            
+    except Exception as e:
+        st.warning(f"제품/솔루션 정보 추출 중 오류: {str(e)}")
+
+def extract_page_content(soup, page_url):
+    """개별 페이지 콘텐츠 추출"""
+    # 불필요한 요소 제거
+    for script in soup(["script", "style", "nav", "footer", "header"]):
+        script.decompose()
+    
+    page_data = {
+        'url': page_url,
+        'title': soup.title.string if soup.title else '',
+        'headings': [],
+        'paragraphs': [],
+        'lists': [],
+        'text_content': ''
+    }
+    
+    # 헤딩 태그 추출
+    for tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+        headings = soup.find_all(tag)
+        for heading in headings:
+            text = heading.get_text(strip=True)
+            if text:
+                page_data['headings'].append({
+                    'tag': tag,
+                    'text': text,
+                    'level': int(tag[1])
+                })
+    
+    # 문단 추출
+    paragraphs = soup.find_all('p')
+    for p in paragraphs:
+        text = p.get_text(strip=True)
+        if text and len(text) > 10:  # 의미있는 문단만
+            page_data['paragraphs'].append(text)
+    
+    # 리스트 추출
+    lists = soup.find_all(['ul', 'ol'])
+    for lst in lists:
+        items = lst.find_all('li')
+        list_items = []
+        for item in items:
+            text = item.get_text(strip=True)
+            if text:
+                list_items.append(text)
+        if list_items:
+            page_data['lists'].append({
+                'type': lst.name,
+                'items': list_items
+            })
+    
+    # 전체 텍스트 콘텐츠 추출
+    text_content = soup.get_text()
+    text_content = ' '.join(text_content.split())
+    page_data['text_content'] = text_content
+    
+    return page_data
+
+def display_file_preview(file_data, file_type, filename):
+    """파일 미리보기 표시 (PDF 페이징 포함)"""
+    import base64
+    import tempfile
+    from PyPDF2 import PdfReader, PdfWriter
+    import os
+    try:
+        file_type_lower = file_type.lower()
+        if file_type_lower in ['jpg', 'jpeg', 'png', 'gif']:
+            if file_data.get('binary_data'):
+                st.image(
+                    file_data['binary_data'],
+                    caption=f"🖼️ {filename}",
+                    use_container_width=True
+                )
+                return True
+        elif file_type_lower == 'pdf':
+            if file_data.get('binary_data'):
+                key = f"pdf_preview_page_start_{filename}"
+                # PDF 전체 페이지 수 구하기
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                    tmp_in.write(file_data['binary_data'])
+                    tmp_in_path = tmp_in.name
+                reader = PdfReader(tmp_in_path)
+                total_pages = len(reader.pages)
+                os.unlink(tmp_in_path)
+                if key not in st.session_state:
+                    st.session_state[key] = 0  # 0-based index
+                page_start = st.session_state[key]
+                page_end = min(page_start + 1, total_pages)
+                col_prev, col_next = st.columns([1, 1])
+                with col_prev:
+                    if st.button("⬅️ 이전", disabled=page_start == 0, key=f"prev_{filename}"):
+                        st.session_state[key] = max(0, page_start - 1)
+                        st.rerun()
+                with col_next:
+                    if st.button("다음 ➡️", disabled=page_end >= total_pages, key=f"next_{filename}"):
+                        st.session_state[key] = min(total_pages - 1, page_start + 1)
+                        st.rerun()
+                # 미리보기 PDF 생성 (1페이지)
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                        tmp_in.write(file_data['binary_data'])
+                        tmp_in_path = tmp_in.name
+                    reader = PdfReader(tmp_in_path)
+                    writer = PdfWriter()
+                    for i in range(page_start, page_end):
+                        writer.add_page(reader.pages[i])
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_out:
+                        writer.write(tmp_out)
+                        tmp_out_path = tmp_out.name
+                    with open(tmp_out_path, "rb") as f:
+                        preview_pdf_bytes = f.read()
+                    os.unlink(tmp_in_path)
+                    os.unlink(tmp_out_path)
+                    st.markdown(f"**페이지 {page_start+1} / {total_pages}**")
+                    pdf_base64 = base64.b64encode(preview_pdf_bytes).decode('utf-8')
+                    pdf_display = f"""
+                    <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                            width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                        <p>PDF를 표시할 수 없습니다. 
+                        <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                        여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                    </iframe>
+                    """
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"PDF 미리보기 생성 중 오류: {e}")
+                st.download_button(
+                    label="💾 전체 PDF 다운로드",
+                    data=file_data['binary_data'],
+                    file_name=filename,
+                    mime="application/pdf"
+                )
+                return True
+        elif file_type_lower in ['txt', 'md']:
+            if file_data.get('binary_data'):
+                try:
+                    text_content = file_data['binary_data'].decode('utf-8')
+                    st.subheader(f"📄 텍스트 파일 미리보기: {filename}")
+                    st.text_area(
+                        "파일 내용",
+                        value=text_content,
+                        height=400,
+                        disabled=True
+                    )
+                    return True
+                except Exception as e:
+                    st.error(f"텍스트 파일을 읽는 중 오류 발생: {str(e)}")
+                    return False
+        else:
+            st.info(f"{file_type.upper()} 파일 미리보기는 지원되지 않습니다. 다운로드 후 확인하세요.")
+            return False
+    except Exception as e:
+        st.error(f"파일 미리보기 오류: {str(e)}")
+        return False
+
+def main():
+    # 데이터베이스 테이블 생성
+    create_website_analysis_tables()
+    
+    # 탭 생성
+    tab1, tab2 = st.tabs(["새 비즈니스 분석", "저장된 분석 조회"])
+    
+    with tab1:
+        st.header("🏢 웹사이트 비즈니스 모델 분석")
+        
+        # URL 입력
+        url = st.text_input("분석할 웹사이트 URL을 입력하세요", placeholder="https://example.com")
+        
+        # 파일 업로드 섹션
+        st.subheader("📁 관련 파일 업로드 (선택사항)")
+        st.info("웹사이트 분석과 함께 참고할 파일들을 업로드할 수 있습니다.")
+        
+        uploaded_files = st.file_uploader(
+            "📁 파일 선택 (PDF, DOCX, PPTX, XLSX, Markdown, txt, jpeg, png)",
+            type=['pdf', 'docx', 'pptx', 'xlsx', 'md', 'txt', 'jpg', 'jpeg', 'png'],
+            accept_multiple_files=True,
+            help="웹사이트 분석과 함께 참고할 파일들을 업로드하세요. 최대 10개 파일까지 업로드 가능합니다."
+        )
+        
+        # 업로드된 파일 미리보기 및 파싱
+        if uploaded_files:
+            st.write(f"**📁 업로드된 파일 ({len(uploaded_files)}개):**")
+            files_content = []
+            for i, uploaded_file in enumerate(uploaded_files):
+                st.write(f"{i+1}. {uploaded_file.name} ({uploaded_file.size:,} bytes)")
+                file_data = parse_uploaded_file(uploaded_file)
+                if file_data:
+                    files_content.append(file_data)
+            st.session_state['uploaded_files_data'] = files_content
+        else:
+            st.session_state['uploaded_files_data'] = []
+        
+        if url:
+            # 웹사이트 콘텐츠 스크래핑
+            with st.spinner("웹사이트 콘텐츠를 수집하고 있습니다..."):
+                content_data = scrape_website_content(url)
+                
+                # 항상 첨부 파일을 content_data에 포함
+                content_data['uploaded_files'] = st.session_state.get('uploaded_files_data', [])
+                
+                if content_data:
+                    st.success("✅ 웹사이트 콘텐츠 수집 완료")
+                    
+                    # 기본 정보 표시
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("제목", content_data['title'][:50] + "..." if len(content_data['title']) > 50 else content_data['title'])
+                        st.metric("스크래핑된 페이지", f"{len(content_data['scraped_pages'])}개")
+                        st.metric("단어 수", f"{content_data['word_count']:,}")
+                    with col2:
+                        st.metric("문장 수", f"{content_data['sentence_count']:,}")
+                        st.metric("문단 수", f"{content_data['paragraph_count']:,}")
+                        st.metric("헤딩 수", len(content_data['headings']))
+                    with col3:
+                        st.metric("리스트 수", len(content_data['lists']))
+                        st.metric("응답 시간", f"{content_data['response_time']:.2f}초")
+                        st.metric("상태 코드", content_data['status_code'])
+                    with col4:
+                        st.metric("총 페이지", content_data['total_pages'])
+                        st.metric("평균 페이지당 단어", f"{content_data['word_count'] // len(content_data['scraped_pages']):,}")
+                        st.metric("데이터 품질", "🟢 우수" if content_data['word_count'] > 1000 else "🟡 보통" if content_data['word_count'] > 500 else "🔴 부족")
+                    
+                    # 콘텐츠 구조 분석
+                    structure_analysis = analyze_content_structure(content_data)
+                    if structure_analysis:
+                        st.subheader("📊 콘텐츠 구조 분석")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("페이지 유형 분포", f"{len(structure_analysis['pages_by_type'])}개 유형")
+                            for page_type, count in structure_analysis['pages_by_type'].items():
+                                st.write(f"• {page_type}: {count}개")
+                        with col2:
+                            st.metric("평균 페이지당 단어", f"{structure_analysis['content_distribution']['평균 페이지당 단어']:,}개")
+                            st.metric("평균 페이지당 헤딩", f"{structure_analysis['content_distribution']['평균 페이지당 헤딩']}개")
+                        with col3:
+                            st.metric("콘텐츠 품질", structure_analysis['content_quality']['품질 등급'])
+                            st.metric("주요 토픽", f"{len(structure_analysis['key_topics'])}개")
+                    
+                    # 가독성 분석
+                    readability_data = analyze_content_readability(content_data['text_content'])
+                    if readability_data:
+                        st.subheader("📖 가독성 분석")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("평균 문장 길이", f"{readability_data['avg_sentence_length']:.1f}단어")
+                        with col2:
+                            st.metric("긴 문장 비율", f"{readability_data['long_sentence_ratio']}%")
+                        with col3:
+                            st.metric("가독성 등급", readability_data['readability_grade'])
+                    
+                    # 웹사이트 콘텐츠 요약 분석
+                    st.subheader("📋 웹사이트 콘텐츠 및 첨부 파일 요약")
+                    
+                    # 첨부 파일 정보 표시
+                    if uploaded_files:
+                        st.info(f"🔍 웹사이트의 모든 페이지와 첨부된 {len(uploaded_files)}개 파일을 종합하여 회사의 비즈니스와 제품에 대한 실제적인 요약을 생성합니다.")
+                    else:
+                        st.info("🔍 웹사이트의 모든 페이지를 종합하여 회사의 비즈니스와 제품에 대한 실제적인 요약을 생성합니다.")
+                    
+                    # 사용자 정의 요약 프롬프트 입력
+                    st.markdown("### 📝 사용자 정의 요약 프롬프트 (선택사항)")
+                    summary_custom_prompt = st.text_area(
+                        "요약 생성 시 참고할 추가 지시사항을 입력하세요",
+                        placeholder="예시: 특정 제품에 대해 더 자세히 분석해주세요. 가격 정보를 중점적으로 찾아주세요.",
+                        height=100,
+                        help="이 프롬프트가 입력되면 기본 요약 프롬프트보다 우선적으로 적용됩니다. 비워두면 기본 프롬프트가 사용됩니다."
+                    )
+                    
+                    # 요약 분석 실행 버튼
+                    if st.button("📋 웹사이트 콘텐츠 및 첨부 파일 요약 생성", type="primary"):
+                        with st.spinner("웹사이트 콘텐츠와 첨부 파일을 종합하여 요약을 생성하고 있습니다..."):
+                            # 항상 첨부 파일을 content_data에 포함
+                            content_data['uploaded_files'] = st.session_state.get('uploaded_files_data', [])
+                            # 콘텐츠 요약 분석 실행 (사용자 정의 프롬프트 전달)
+                            content_summary = analyze_website_content_summary(url, content_data, "gpt-4o-mini", custom_prompt=summary_custom_prompt)
+                            
+                            if content_summary['success']:
+                                st.success("✅ 웹사이트 콘텐츠 요약 완료")
+                                
+                                # 요약 결과를 세션에 저장
+                                st.session_state['content_summary'] = content_summary
+                                
+                                # 웹사이트 요약과 첨부 파일 요약을 별도로 저장
+                                content_data['content_summary'] = content_summary.get('website_summary', '')
+                                content_data['files_summary'] = content_summary.get('files_summary', '')
+                                content_data['perplexity_summary'] = content_summary['content']
+                            else:
+                                st.error(f"❌ 웹사이트 콘텐츠 요약 실패: {content_summary['error']}")
+                    
+                    # 이전에 생성된 요약이 있으면 표시
+                    if 'content_summary' in st.session_state and st.session_state['content_summary']['success']:
+                        st.markdown("## 📋 **웹사이트 콘텐츠 종합 요약**")
+                        st.markdown(st.session_state['content_summary']['content'])
+                        
+                        # 웹사이트 요약과 첨부 파일 요약을 별도로 저장
+                        content_data['content_summary'] = st.session_state['content_summary'].get('website_summary', '')
+                        content_data['files_summary'] = st.session_state['content_summary'].get('files_summary', '')
+                        content_data['perplexity_summary'] = st.session_state['content_summary']['content']
+                    
+                    # 콘텐츠 미리보기
+                    with st.expander("📋 콘텐츠 미리보기", expanded=False):
+                        st.write("**메타 설명:**")
+                        st.write(content_data['meta_description'] if content_data['meta_description'] else "메타 설명이 없습니다.")
+                        
+                        # 스크래핑된 페이지 목록
+                        st.write("**스크래핑된 페이지 목록:**")
+                        for i, page in enumerate(content_data['scraped_pages'][:10]):  # 처음 10개만
+                            st.write(f"{i+1}. {page['url']} - {page['title'][:50]}...")
+                        
+                        if len(content_data['scraped_pages']) > 10:
+                            st.write(f"... 외 {len(content_data['scraped_pages']) - 10}개 페이지")
+                        
+                        # 제품 정보 표시
+                        if content_data.get('product_info'):
+                            st.write("**🔍 발견된 제품 정보:**")
+                            for i, product in enumerate(content_data['product_info'][:5]):  # 처음 5개만
+                                st.write(f"**제품 {i+1}:** {product.get('product_name', 'N/A')}")
+                                if product.get('product_description'):
+                                    st.write(f"  설명: {product['product_description'][:100]}...")
+                                if product.get('product_features'):
+                                    st.write(f"  기능: {', '.join(product['product_features'][:3])}")
+                        
+                        # 솔루션 정보 표시
+                        if content_data.get('solution_info'):
+                            st.write("**🔍 발견된 솔루션 정보:**")
+                            for i, solution in enumerate(content_data['solution_info'][:5]):  # 처음 5개만
+                                st.write(f"**솔루션 {i+1}:** {solution.get('solution_name', 'N/A')}")
+                                if solution.get('solution_description'):
+                                    st.write(f"  설명: {solution['solution_description'][:100]}...")
+                                if solution.get('solution_benefits'):
+                                    st.write(f"  혜택: {', '.join(solution['solution_benefits'][:3])}")
+                        
+                        # 가격 정보 표시
+                        if content_data.get('pricing_info'):
+                            st.write("**💰 발견된 가격 정보:**")
+                            for price in content_data['pricing_info'][:5]:  # 처음 5개만
+                                st.write(f"- {price.get('price_text', 'N/A')}")
+                        
+                        st.write("**주요 헤딩 (전체 페이지 통합):**")
+                        for heading in content_data['headings'][:15]:  # 처음 15개만
+                            st.write(f"{'  ' * (heading['level'] - 1)}• {heading['text']}")
+                        
+                        st.write("**콘텐츠 샘플 (전체 페이지 통합, 처음 1000자):**")
+                        st.write(content_data['text_content'][:1000] + "..." if len(content_data['text_content']) > 1000 else content_data['text_content'])
+                        
+                        # 제품/서비스 관련 키워드 하이라이트
+                        product_keywords = ['제품', '서비스', '솔루션', '상품', '기능', '특징', '가격', '구매', '주문', '문의']
+                        highlighted_content = content_data['text_content'][:2000]
+                        for keyword in product_keywords:
+                            if keyword in highlighted_content:
+                                st.write(f"**🔍 발견된 키워드:** {keyword}")
+                        
+                        st.write("**📊 데이터 품질 분석:**")
+                        st.write(f"- 총 스크래핑된 페이지: {len(content_data['scraped_pages'])}개")
+                        st.write(f"- 평균 페이지당 단어 수: {content_data['word_count'] // len(content_data['scraped_pages']):,}개")
+                        st.write(f"- 제품/서비스 관련 헤딩: {len([h for h in content_data['headings'] if any(kw in h['text'] for kw in product_keywords)])}개")
+                        st.write(f"- 발견된 제품 수: {len(content_data.get('product_info', []))}개")
+                        st.write(f"- 발견된 솔루션 수: {len(content_data.get('solution_info', []))}개")
+                        st.write(f"- 발견된 가격 정보: {len(content_data.get('pricing_info', []))}개")
+                    
+                    # AI 에이전트 설정
+                    st.header("🤖 AI 비즈니스 분석 전문가")
+                    st.subheader("활성화할 전문가")
+                    
+                    # 콘텐츠 요약이 완료되었는지 확인
+                    content_summary_available = 'content_summary' in st.session_state and st.session_state['content_summary']['success']
+                    
+                    if not content_summary_available:
+                        st.warning("⚠️ 먼저 위의 '웹사이트 콘텐츠 요약 생성' 버튼을 클릭하여 콘텐츠 요약을 완료해주세요.")
+                        st.info("📋 콘텐츠 요약이 완료되면 비즈니스 분석을 진행할 수 있습니다.")
+                    else:
+                        st.success("✅ 콘텐츠 요약이 완료되어 비즈니스 분석을 진행할 수 있습니다.")
+                        
+                        # 사용자 정의 비즈니스 분석 프롬프트 입력
+                        st.markdown("### 📝 사용자 정의 비즈니스 분석 프롬프트 (선택사항)")
+                        business_custom_prompt = st.text_area(
+                            "비즈니스 분석 시 참고할 추가 지시사항을 입력하세요",
+                            placeholder="예시: 경쟁사 분석을 중점적으로 해주세요. 수익 모델에 대해 더 자세히 분석해주세요.",
+                            height=100,
+                            help="이 프롬프트가 입력되면 기본 비즈니스 분석 프롬프트보다 우선적으로 적용됩니다. 비워두면 기본 프롬프트가 사용됩니다.",
+                            key="business_custom_prompt"
+                        )
+                        
+                        default_agents = ["business_model_analyzer", "product_service_analyzer", "market_position_analyzer"]
+                        selected_agents = []
+                        
+                        cols = st.columns(3)
+                        for i, (agent_key, agent_info) in enumerate(BUSINESS_ANALYSIS_AGENTS.items()):
+                            with cols[i % 3]:
+                                is_selected = st.checkbox(
+                                    f"{agent_info['emoji']} **{agent_info['name']}**",
+                                    value=(agent_key in default_agents),
+                                    help=agent_info['description'],
+                                    key=f"business_agent_{agent_key}"
+                                )
+                                if is_selected:
+                                    selected_agents.append(agent_key)
+                        
+                        if len(selected_agents) == 0:
+                            st.warning("⚠️ 최소 1명의 전문가를 선택해주세요.")
+                        else:
+                            st.success(f"✅ {len(selected_agents)}명의 전문가가 선택되었습니다.")
+                            
+                            # 모델 선택
+                            model_name = st.selectbox(
+                                "사용할 AI 모델",
+                                ["gpt-4o-mini", "gpt-4", "claude-3-5-sonnet-20241022"],
+                                index=0
+                            )
+                            
+                            # 분석 실행 버튼
+                            if st.button("🏢 비즈니스 종합 분석 실행", type="primary"):
+                                if not selected_agents:
+                                    st.error("최소 1명 이상의 전문가를 선택해주세요.")
+                                else:
+                                    with st.spinner("AI 전문가들이 비즈니스 모델을 분석하고 있습니다..."):
+                                        # 가독성 데이터 추가
+                                        if readability_data:
+                                            content_data['readability'] = readability_data
+                                        
+                                        # 콘텐츠 요약 데이터 추가
+                                        content_data['content_summary'] = st.session_state['content_summary']['content']
+                                        
+                                        # 멀티에이전트 분석 실행 (사용자 정의 프롬프트 전달)
+                                        agent_analyses, business_analysis = run_business_multi_agent_analysis(
+                                            url, 
+                                            content_data, 
+                                            selected_agents, 
+                                            model_name,
+                                            custom_prompt=business_custom_prompt
+                                        )
+                                        
+                                        # 분석 결과 표시
+                                        st.success("✅ **비즈니스 종합 분석 완료**")
+                                        
+                                        # 에이전트별 분석 결과 표시
+                                        st.markdown("## 📋 전문가별 분석 결과")
+                                        
+                                        for analysis in agent_analyses:
+                                            if analysis['success']:
+                                                with st.expander(f"{analysis['agent_emoji']} {analysis['agent_name']} 분석", expanded=False):
+                                                    display_analysis_with_plots(analysis['analysis'], f"{analysis['agent_emoji']} {analysis['agent_name']} 분석", unique_id=analysis['agent_key'])
+                                            else:
+                                                st.error(f"❌ {analysis['agent_emoji']} {analysis['agent_name']}: {analysis['error']}")
+                                        
+                                        # 비즈니스 분석 종합 리포트 표시
+                                        st.markdown("## 📊 비즈니스 분석 종합 리포트")
+                                        
+                                        if business_analysis['success']:
+                                            display_analysis_with_plots(business_analysis['content'], "📊 비즈니스 분석 종합 리포트", unique_id="business_report")
+                                        else:
+                                            st.error(f"종합 분석 실패: {business_analysis['error']}")
+                                        
+                                        # 분석 결과 저장
+                                        analysis_date = datetime.now()
+                                        
+                                        # 업로드된 파일들 가져오기
+                                        uploaded_files_data = st.session_state.get('uploaded_files_data', [])
+                                        
+                                        save_success, analysis_id = save_website_analysis(
+                                            url, content_data, agent_analyses, business_analysis, analysis_date, uploaded_files_data
+                                        )
+                                        
+                                        if save_success:
+                                            st.success(f"✅ 분석 결과가 저장되었습니다. (ID: {analysis_id})")
+                                        else:
+                                            st.warning("⚠️ 분석 결과 저장에 실패했습니다.")
+                else:
+                    st.error("❌ 웹사이트 콘텐츠 수집에 실패했습니다.")
+        else:
+            st.info("분석할 웹사이트 URL을 입력해주세요.")
+    
+    with tab2:
+        st.header("저장된 비즈니스 분석 조회")
+        
+        # 저장된 분석 목록 가져오기
+        saved_analyses = get_saved_website_analyses()
+        
+        if saved_analyses:
+            for analysis in saved_analyses:
+                # 상세보기 상태를 세션에 저장
+                if f"show_detail_{analysis['analysis_id']}" not in st.session_state:
+                    st.session_state[f"show_detail_{analysis['analysis_id']}"] = False
+                
+                # 상세보기가 활성화된 경우 전체 화면으로 표시
+                if st.session_state[f"show_detail_{analysis['analysis_id']}"]:
+                    # 전체 화면 상세보기
+                    st.markdown("---")
+                    st.markdown("## 📊 **전체 화면 상세 분석**")
+                    
+                    # 분석 정보 요약
+                    col_info1, col_info2, col_info3 = st.columns(3)
+                    with col_info1:
+                        st.metric("분석 ID", analysis['analysis_id'])
+                        st.metric("상태 코드", analysis['status_code'])
+                    with col_info2:
+                        st.metric("응답 시간", f"{analysis['response_time']:.2f}초")
+                        st.metric("헤딩 수", analysis['headings_count'])
+                    with col_info3:
+                        st.metric("링크 수", analysis['links_count'])
+                        st.metric("분석 날짜", analysis['analysis_date'].strftime('%Y-%m-%d %H:%M'))
+                    
+                    detail = get_analysis_detail(analysis['analysis_id'])
+                    if detail:
+                        # 탭으로 구분하여 표시
+                        tab_basic, tab_content, tab_agents, tab_report, tab_files = st.tabs([
+                            "📋 기본 정보", 
+                            "📄 콘텐츠 데이터", 
+                            "🤖 AI 분석 결과", 
+                            "📈 종합 리포트",
+                            "📁 첨부 파일"
+                        ])
+                        
+                        with tab_basic:
+                            st.markdown("### 📋 기본 정보")
+                            st.json(detail['base'])
+                        
+                        with tab_content:
+                            st.markdown("### 📄 콘텐츠 데이터")
+                            st.json(detail['content'])
+                            
+                            # 웹사이트 콘텐츠 요약 정보 표시
+                            if detail['content'] and detail['content'].get('perplexity_summary'):
+                                st.markdown("### 📋 웹사이트 콘텐츠 종합 요약")
+                                st.info("🔍 AI가 생성한 웹사이트 콘텐츠 종합 요약")
+                                st.markdown(detail['content']['perplexity_summary'])
+                            else:
+                                st.info("📝 웹사이트 콘텐츠 요약이 없습니다.")
+                        
+                        with tab_agents:
+                            st.markdown("### 🤖 **AI 에이전트별 분석 결과**")
+                            for i, agent in enumerate(detail['agents']):
+                                agent_name = agent['agent_type'].replace('_', ' ').title()
+                                st.markdown(f"#### 🔍 {agent_name} 분석")
+                                display_analysis_with_plots(agent['analysis_content'], f"🔍 {agent_name} 분석", unique_id=agent['agent_type'])
+                                if i < len(detail['agents']) - 1:
+                                    st.markdown("---")
+                        
+                        with tab_report:
+                            st.markdown("### 📈 **종합 비즈니스 분석 리포트**")
+                            if detail['cto']:
+                                display_analysis_with_plots(detail['cto'], "📈 종합 비즈니스 분석 리포트", unique_id=detail['base']['analysis_id'])
+                            else:
+                                st.info("종합 리포트가 없습니다.")
+                        
+                        with tab_files:
+                            st.markdown("### 📁 **첨부 파일**")
+                            if detail.get('files'):
+                                st.write(f"**총 {len(detail['files'])}개의 파일이 첨부되어 있습니다.**")
+                                
+                                for i, file_info in enumerate(detail['files']):
+                                    col1, col2, col3 = st.columns([3, 1, 1])
+                                    
+                                    with col1:
+                                        st.write(f"**{i+1}. {file_info['filename']}** ({file_info['file_type'].upper()})")
+                                        st.caption(f"크기: {file_info['file_size']:,} bytes")
+                                    
+                                    with col2:
+                                        if st.button(f"👁️ 미리보기", key=f"detail_preview_{file_info['file_id']}"):
+                                            st.session_state.preview_file_id = file_info['file_id']
+                                            st.session_state.preview_filename = file_info['filename']
+                                            st.session_state.preview_file_type = file_info['file_type']
+                                    
+                                    with col3:
+                                        file_data = get_file_binary_data(file_info['file_id'])
+                                        if file_data:
+                                            mime_type = get_file_mime_type(file_data['file_type'])
+                                            st.download_button(
+                                                label="💾 다운로드",
+                                                data=file_data['binary_data'],
+                                                file_name=file_data['filename'],
+                                                mime=mime_type,
+                                                key=f"detail_download_{file_info['file_id']}"
+                                            )
+                                
+                                # 전체 화면 파일 미리보기
+                                if st.session_state.get('preview_file_id'):
+                                    st.markdown("---")
+                                    st.markdown("## �� 파일 미리보기 (전체 화면)")
+                                    file_id = st.session_state.preview_file_id
+                                    col_preview_1, col_preview_2 = st.columns([10, 1])
+                                    with col_preview_2:
+                                        if st.button("❌ 닫기", key=f"close_detail_preview_{file_id}"):
+                                            del st.session_state.preview_file_id
+                                            del st.session_state.preview_filename
+                                            del st.session_state.preview_file_type
+                                            st.rerun()
+                                    with col_preview_1:
+                                        file_data = get_file_binary_data(file_id)
+                                        if file_data:
+                                            display_file_preview(
+                                                file_data, 
+                                                st.session_state.preview_file_type, 
+                                                st.session_state.preview_filename
+                                            )
+                                        else:
+                                            st.error("파일 데이터를 불러올 수 없습니다.")
+                            else:
+                                st.info("첨부된 파일이 없습니다.")
+                        
+                        # 닫기 버튼
+                        if st.button("❌ 상세보기 닫기", key=f"close_detail_{analysis['analysis_id']}"):
+                            st.session_state[f"show_detail_{analysis['analysis_id']}"] = False
+                            st.rerun()
+                
+                else:
+                    # 일반 목록 표시
+                    with st.expander(f"📄 {analysis['url']} - {analysis['analysis_date']}", expanded=False):
+                        col1, col2 = st.columns([3, 1])
+                        
+                        with col1:
+                            st.write(f"**제목:** {analysis['title']}")
+                            st.write(f"**상태 코드:** {analysis['status_code']}")
+                            st.write(f"**응답 시간:** {analysis['response_time']:.2f}초")
+                            st.write(f"**헤딩 수:** {analysis['headings_count']}")
+                            st.write(f"**링크 수:** {analysis['links_count']}")
+                            
+                        with col2:
+                            detail_btn = st.button("📋 상세보기", key=f"detail_{analysis['analysis_id']}")
+                            
+                            if detail_btn:
+                                st.session_state[f"show_detail_{analysis['analysis_id']}"] = True
+                                st.rerun()
+                        # 삭제 기능 - 회의록 방식으로 수정
+                        st.markdown("### ⚠️ 분석 관리")
+                        delete_button_key = f"delete_button_{analysis['analysis_id']}"
+                        
+                        # 삭제 확인을 위한 체크박스
+                        confirm_delete = st.checkbox(f"삭제 확인", key=f"confirm_{analysis['analysis_id']}")
+                        
+                        if confirm_delete:
+                            if st.button("🗑️ 분석 삭제", key=delete_button_key, type="primary", use_container_width=True):
+                                if delete_analysis(analysis['analysis_id']):
+                                    st.success("✅ 분석이 성공적으로 삭제되었습니다.")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ 분석 삭제에 실패했습니다.")
+                        else:
+                            st.button("🗑️ 분석 삭제", key=delete_button_key, disabled=True, use_container_width=True)
+                            st.caption("삭제하려면 먼저 '삭제 확인' 체크박스를 선택하세요.")
+        else:
+            st.info("저장된 콘텐츠 분석이 없습니다.")
+
+def parse_uploaded_file(uploaded_file):
+    """업로드된 파일 파싱"""
+    try:
+        file_extension = uploaded_file.name.split('.')[-1].lower()
+        content = ""
+        
+        uploaded_file.seek(0)
+        binary_data = uploaded_file.read()
+        binary_base64 = base64.b64encode(binary_data).decode('utf-8')
+        
+        uploaded_file.seek(0)
+        
+        if file_extension == 'pdf':
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            for page in pdf_reader.pages:
+                content += page.extract_text() + "\n"
+                
+        elif file_extension == 'docx':
+            doc = docx.Document(uploaded_file)
+            for paragraph in doc.paragraphs:
+                content += paragraph.text + "\n"
+        
+        elif file_extension == 'pptx':
+            prs = Presentation(uploaded_file)
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        content += shape.text + "\n"
+        
+        elif file_extension == 'xlsx':
+            workbook = openpyxl.load_workbook(uploaded_file, data_only=True)
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                content += f"=== {sheet_name} ===\n"
+                for row in sheet.iter_rows(values_only=True):
+                    row_text = '\t'.join([str(cell) if cell is not None else '' for cell in row])
+                    if row_text.strip():
+                        content += row_text + "\n"
+                content += "\n"
+                
+        elif file_extension in ['txt', 'md']:
+            uploaded_file.seek(0)
+            content = uploaded_file.read().decode('utf-8')
+            
+        elif file_extension in ['jpg', 'jpeg', 'png', 'gif']:
+            content = f"[{file_extension.upper()} 이미지 파일 - {uploaded_file.name}]"
+            
+        else:
+            try:
+                uploaded_file.seek(0)
+                content = uploaded_file.read().decode('utf-8', errors='ignore')
+                if not content.strip():
+                    content = f"[{file_extension.upper()} 파일 - 텍스트 추출 불가]"
+            except:
+                content = f"[{file_extension.upper()} 파일 - 텍스트 추출 불가]"
+            
+        return {
+            'filename': uploaded_file.name,
+            'file_type': file_extension,
+            'content': content,
+            'binary_data': binary_base64,
+            'size': len(binary_data)
+        }
+        
+    except Exception as e:
+        st.error(f"파일 파싱 오류: {str(e)}")
+        return None
+
+def get_file_mime_type(file_type):
+    """파일 타입에 따른 MIME 타입 반환"""
+    mime_types = {
+        'pdf': 'application/pdf',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'txt': 'text/plain',
+        'md': 'text/markdown',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif'
+    }
+    return mime_types.get(file_type.lower(), 'application/octet-stream')
+
+def get_file_binary_data(file_id):
+    """파일의 원본 바이너리 데이터 조회"""
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            '''
+            SELECT filename, file_type, file_binary_data, file_size
+            FROM website_analysis_files
+            WHERE file_id = %s
+            ''',
+            (file_id,)
+        )
+        result = cursor.fetchone()
+        if result and result['file_binary_data']:
+            binary_data = base64.b64decode(result['file_binary_data'])
+            return {
+                'filename': result['filename'],
+                'file_type': result['file_type'],
+                'binary_data': binary_data,
+                'file_size': result['file_size']
+            }
+        return None
+    except mysql.connector.Error as err:
+        st.error(f"파일 데이터 조회 오류: {err}")
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+if __name__ == "__main__":
+    main() 

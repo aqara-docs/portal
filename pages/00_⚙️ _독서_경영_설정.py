@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import re
 from datetime import datetime
 import mysql.connector
 from dotenv import load_dotenv
@@ -440,6 +441,88 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
             "아래 요약 내용을 바탕으로 주역(易經) 스타일의 1분 30초 분량 대화체 이야기를 만들어 주세요. "
             "중요: 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다."
         ),
+        "제자백가": (
+            "아래 요약 내용을 바탕으로 제자백가 스타일의 1분 30초 분량 대화체 이야기를 만들어 주세요. "
+            "중요: 반드시 요약 내용의 핵심 주제, 상황, 문제점, 해결방안을 세밀하게 분석한 후, "
+            "그 내용에 가장 적합한 제자백가 철학자를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. "
+            "주요 제자백가 철학자: 공자, 맹자, 순자(유교), 노자, 장자, 열자(도교), 묵자(묵가), 한비자, 상앙(법가), 관자(관학), 신불해(술가) 등 "
+            "선정 과정: 1) 요약 내용의 핵심 키워드 추출 2) 해당 상황에 맞는 철학 사상 분석 3) 가장 적합한 철학자 선정 4) 선정 이유 간략히 설명 "
+            "선택한 철학자의 이름, 사상, 그리고 왜 이 철학자가 요약 내용과 일치하는지 명확히 설명해 주세요. "
+            "선택한 철학자와 그의 제자들, 또는 다른 사상가들과의 깊이 있는 대화로 구성해 주세요. "
+            "해당 철학자의 핵심 사상과 가르침을 대화에 자연스럽게 담아내고, 현대적 적용 방안도 제시해 주세요. "
+            "이야기 마지막에는 선택한 철학자의 사상과 관련된 '오늘의 명언'을 한글과 영어로 작성해 주세요."
+        ),
+        "피터 드러커, 이나모리 가즈오, 데일 카네기 (기업 및 인재 경영의 대가들)": (
+            "아래 요약 내용을 바탕으로 피터 드러커, 이나모리 가즈오, 데일 카네기가 대화하는 1분 30초 분량의 우화를 만들어 주세요. "
+            "각 인물의 고유한 경영 철학과 인재 경영, 자기계발, 리더십에 대한 관점을 반영한 생생한 대화로 구성해야 합니다.\n"
+            "- 드러커님: 경영의 본질, 목표 설정, 자기관리, 사회적 책임 강조\n"
+            "- 이나모리 님: 인생관, 인격경영, 사명감, 인간 존중의 경영 강조\n"
+            "- 카네기 님: 인간관계, 동기부여, 긍정적 사고, 실천적 조언 강조\n"
+            "중요: 각 인물을 반드시 '드러커님', '이나모리 님', '카네기 님'으로 호칭해 주세요.\n"
+            "각자의 관점에서 주제에 대해 대화하며, 서로 다른 접근법으로 경영과 인재 성장의 본질을 탐구하는 과정을 보여주세요. "
+            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
+        ),
+        "마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨 (경영전략의 대가들)": (
+            "아래 요약 내용을 바탕으로 마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨이 대화하는 1분 30초 분량의 우화를 만들어 주세요. "
+            "각 인물의 고유한 전략 이론과 혁신, 경쟁, 변화 관리에 대한 관점을 반영한 생생한 대화로 구성해야 합니다.\n"
+            "- 포터님: 경쟁 전략, 산업구조, 차별화와 원가우위\n"
+            "- 민츠버그님: 전략의 형성 과정, 조직문화, 실천적 통찰\n"
+            "- 하멜 님: 혁신, 미래경영, 경영 패러다임 전환\n"
+            "- 크리스텐슨 님: 파괴적 혁신, 기술 변화, 시장 재편\n"
+            "중요: 각 인물을 반드시 '포터님', '민츠버그님', '하멜 님', '크리스텐슨 님'으로 호칭해 주세요.\n"
+            "각자의 관점에서 주제에 대해 대화하며, 서로 다른 전략적 접근법과 혁신의 본질을 탐구하는 과정을 보여주세요. "
+            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
+        ),
+        "존 폰노이만, 존 내쉬, 토마스 셀링, 애덤 브랜드버거 (게임이론의 대가들)": (
+            "아래 요약 내용을 바탕으로 존 폰노이만, 존 내쉬, 토마스 셀링, 애덤 브랜드버거가 대화하는 1분 30초 분량의 우화를 만들어 주세요. "
+            "각 인물의 고유한 게임이론, 협상, 전략적 사고, 협력과 경쟁에 대한 관점을 반영한 생생한 대화로 구성해야 합니다.\n"
+            "- 폰노이만님: 게임이론의 창시자, 수리적 분석, 전략적 합리성\n"
+            "- 내쉬님: 내쉬 균형, 협력과 경쟁의 균형\n"
+            "- 셀링님: 협상 이론, 갈등 해결, 신뢰 구축\n"
+            "- 브랜드버거님: 협력적 게임, 가치 창출, 파트너십\n"
+            "중요: 각 인물을 반드시 '폰노이만님', '내쉬님', '셀링님', '브랜드버거님'으로 호칭해 주세요.\n"
+            "각자의 관점에서 주제에 대해 대화하며, 서로 다른 게임이론적 접근법과 전략적 통찰을 탐구하는 과정을 보여주세요. "
+            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
+        ),
+        "제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응 (AI 4대 석학)": (
+            "아래 요약 내용을 바탕으로 AI 4대 석학인 제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응이 대화하는 1분 30초 분량의 우화를 만들어 주세요. "
+            "각 인물의 고유한 딥러닝 철학, AI 연구 접근 방식, 혁신적 사고를 반영한 생생한 대화로 구성해야 합니다.\n"
+            "- 힌튼님: 딥러닝의 창시자, 역전파 알고리즘의 선구자, 노벨 물리학상 수상자, 신경망 기반 AI의 이론적 토대 구축\n"
+            "- 르쿤님: 합성곱 신경망(CNN)의 혁신가, Meta 최고 AI 과학자, 컴퓨터 비전 분야의 석학, 현재 AI 기술 한계에 대한 솔직한 평가\n"
+            "- 벤지오님: 순환 신경망(RNN)과 딥러닝 발전의 기여자, Turing Award 수상자, AI 안전성과 윤리에 대한 깊은 관심\n"
+            "- 응님: Google Brain 창립 멤버, 머신러닝 대중화의 선구자, Coursera를 통한 AI 교육 혁신, 실용적 AI 적용의 전문가\n"
+            "중요: 각 인물을 반드시 '힌튼님', '르쿤님', '벤지오님', '응님'으로 호칭해 주세요.\n"
+            "각자의 관점에서 주제에 대해 대화하며, 서로 다른 딥러닝 접근법과 AI의 미래, 기술의 사회적 영향에 대한 통찰을 탐구하는 과정을 보여주세요. "
+            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
+        ),
+        "삼국지의 제갈량": (
+            "아래 요약 내용을 바탕으로 삼국지의 제갈량이 등장하는 1분 30초 분량 대화체 이야기를 만들어 주세요. "
+            "제갈량과 유비, 관우, 장비, 조조, 주유 등 삼국지 등장인물들의 생생한 대화로 구성하고, "
+            "제갈량의 뛰어난 지략과 충의, 인재 경영과 전략적 사고를 반영해 주세요. "
+            "천하삼분지계, 출사표의 정신, 충성과 의리의 가치를 대화를 통해 전달하고, "
+            "현대 비즈니스와 리더십에 적용할 수 있는 지혜를 담아주세요. "
+            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
+        ),
+        "초한지의 장량": (
+            "아래 요약 내용을 바탕으로 초한지의 장량(장자방)이 등장하는 1분 30초 분량 대화체 이야기를 만들어 주세요. "
+            "장량과 유방(한고조), 소하, 한신, 항우, 범증 등 초한지 등장인물들의 생생한 대화로 구성하고, "
+            "장량의 탁월한 모략과 지략, 은인자중의 지혜, 때를 아는 통찰력을 반영해 주세요. "
+            "사면초가, 배수진, 명장암도 등의 전략적 사고와 인간관계의 묘수를 대화로 표현하고, "
+            "현대의 경영전략과 협상술에 적용할 수 있는 지혜를 담아주세요. "
+            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
+        ),
+        "손자병법의 손무": (
+            "아래 요약 내용을 바탕으로 손자병법의 손무가 등장하는 1분 30초 분량 대화체 이야기를 만들어 주세요. "
+            "손무와 오자서, 오왕 합려, 손빈 등 손자병법 관련 인물들의 생생한 대화로 구성하고, "
+            "손무의 뛰어난 전략과 지혜, 용병술과 리더십, 승리를 위한 통찰력을 반영해 주세요. "
+            "지피지기(知彼知己), 군형(軍形), 허실(虛實), 기정(奇正) 등 손자병법의 핵심 원리를 대화로 표현하고, "
+            "현대의 경영전략과 리더십에 적용할 수 있는 지혜를 담아주세요. "
+            "이야기 마지막에는 '오늘의 명언'으로 요약 내용과 관련된 1줄 명언을 한글과 영어로 작성해 주세요."
+        ),
+        "주역": (
+            "아래 요약 내용을 바탕으로 주역(易經) 스타일의 1분 30초 분량 대화체 이야기를 만들어 주세요. "
+            "중요: 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다."
+        ),
         "예수님과 12사도": (
             "제공된 요약 내용의 핵심 주제, 문제점, 해결방안을 철저히 분석한 후, "
             "그 내용을 예수님과 12사도의 스타일로 재해석하여 1분 30초 분량의 대화체 우화를 만들어 주세요. "
@@ -492,7 +575,7 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
                 "각 인물의 고유한 철학과 사상을 정확히 반영하여 존댓말로 대화를 구성하고, "
                 "서로를 반드시 '님'을 붙여 호칭하며(예: '공자님', '드러커님'), "
                 "대화 시작 시 '참석자: [선택된 인물] ([분야])' 형태로 간략하게 소개해 주세요. "
-                "예: '참석자: 예수님 (4대 성인), 맹자님 (동양 사상가), 제갈량님 (고대 전략가), 이나모리 가즈오님 (회사/인간 경영의 대가), 마이클 포터님 (경영 전략가), 존 내쉬님 (게임이론가)'\n"
+                "예: '참석자: 예수님 (4대 성인), 맹자님 (동양 사상가), 제갈량님 (고대 전략가), 이나모리 가즈오님 (회사/인간 경영의 대가), 마이클 포터님 (경영 전략가), 존 내쉬님 (게임이론가), 제프리 힌튼님 (AI 석학)'\n"
                 "각 인물의 주요 사상과 특징을 반영하여 대화를 구성해 주세요.\n"
                 "대화가 끝난 후, 요약 내용의 핵심 주제와 관련된 '오늘의 명언'을 한글과 영어로 제시해 주세요.\n"
                 "- 맹자님: 성선설, 왕도정치\n"
@@ -500,9 +583,29 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
                 "- 묵자님: 겸애(兼愛)와 비공(非攻)\n"
                 "- 한비자님: 법가사상, 법치주의\n"
                 "- 공손룡님: 명가(名家), 논리철학\n"
-                "매번 새로운 대화를 생성할 때마다 각 그룹에서 다른 인물을 선택하여 다양한 조합의 대화가 만들어지도록 해주세요."
+                "- 예수님: 사랑, 용서, 구원\n"
+                "- 부처님: 중도, 연기, 해탈\n"
+                "- 공자님: 인(仁), 예(禮), 도덕\n"
+                "- 소크라테스님: 문답법, 덕의 추구\n"
+                "- 제갈량님: 지략, 충의, 인재경영\n"
+                "- 장량님: 모략, 은인자중\n"
+                "- 손무님: 군사전략, 승리의 지혜\n"
+                "- 드러커님: 현대경영이론, 자기관리\n"
+                "- 이나모리님: 경영철학, 인간존중\n"
+                "- 카네기님: 인간관계, 리더십\n"
+                "- 포터님: 경쟁전략, 가치사슬\n"
+                "- 민츠버그님: 전략형성, 조직설계\n"
+                "- 하멜님: 혁신, 핵심역량\n"
+                "- 크리스텐슨님: 파괴적 혁신\n"
+                "- 폰노이만님: 게임이론 기초, 수학적 접근\n"
+                "- 내쉬님: 균형이론, 협상전략\n"
+                "- 셀링님: 갈등해결, 전략적 사고\n"
+                "- 브랜드버거님: 게임이론 응용, 경쟁전략\n"
+                "- 힌튼님: 딥러닝의 창시자, 역전파 알고리즘, 신경망 기반 AI\n"
+                "- 르쿤님: 합성곱 신경망(CNN), 컴퓨터 비전, AI 기술 한계 평가\n"
+                "- 벤지오님: 순환 신경망(RNN), Turing Award, AI 안전성과 윤리\n"
+                "- 응님: Google Brain, 머신러닝 대중화, AI 교육 혁신"
             ),
-            "예수님과 12사도": "당신은 요약 내용을 정확히 분석하여 예수님과 12사도 스타일의 우화로 재해석하는 전문가입니다. 반드시 제공된 요약의 핵심 메시지와 교훈을 유지한 채, 예수님의 가르침 방식과 12사도들의 다양한 성격을 통해 1분 30초 분량의 성경 시대 맥락의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "이솝우화": "당신은 이솝우화 전문 스토리텔러입니다. 동물들이 주인공인 1분 30초 분량의 생생한 대화체 우화를 만들어 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "탈무드": "당신은 탈무드 지혜 전달자입니다. 랍비와 제자들의 생생한 대화를 통해 1분 30초 분량의 실용적이고 철학적인 교훈을 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "성경이야기": "당신은 성경 비유 이야기 전문가입니다. 사랑, 용서, 겸손의 가치를 담은 1분 30초 분량의 감동적인 대화체 비유를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
@@ -513,10 +616,10 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
             "초한지의 장량": "당신은 요약 내용을 정확히 분석하여 초한지 장량 스타일의 우화로 재해석하는 전문가입니다. 반드시 제공된 요약의 핵심 메시지와 교훈을 유지한 채, 장량의 모략과 지략, 은인자중의 지혜를 통해 1분 30초 분량의 초한지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "손자병법의 손무": "당신은 손자병법 전문가입니다. 손무의 전략과 지혜, 용병술과 리더십을 담은 1분 30초 분량의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
             "주역": "당신은 주역(易經) 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다.",
-            "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자(공자, 맹자, 순자, 노자, 장자, 묵자, 한비자, 관자 등)를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다.",
+            "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다.",
             "피터 드러커, 이나모리 가즈오, 데일 카네기 (기업 및 인재 경영의 대가들)": "당신은 피터 드러커, 이나모리 가즈오, 데일 카네기의 경영 철학과 인재 경영, 자기계발, 리더십에 정통한 전문가입니다. 각 인물의 고유한 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '드러커님', '이나모리 님', '카네기 님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다.",
             "마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨 (경영전략의 대가들)": "당신은 마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨의 전략 이론과 혁신, 경쟁, 변화 관리에 정통한 전문가입니다. 각 인물의 고유한 전략적 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '포터님', '민츠버그님', '하멜 님', '크리스텐슨 님'으로 호칭해 주세요.\n",
-            "제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응 (AI 4대 석학)": "당신은 AI 4대 석학인 제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응의 딥러닝 철학과 AI 연구 접근 방식, 혁신적 사고에 정통한 전문가입니다. 각 인물의 고유한 딥러닝 관점과 기술 철학을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '힌튼님', '르쿤님', '벤지오님', '응님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다."
+            "제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응 (AI 4대 석학)": "당신은 AI 4대 석학인 제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응이 딥러닝 철학과 AI 연구 접근 방식, 혁신적 사고에 정통한 전문가입니다. 각 인물의 고유한 딥러닝 관점과 기술 철학을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '힌튼님', '르쿤님', '벤지오님', '응님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다."
         }
         
         system_prompt = system_prompts.get(fable_type, system_prompts["이솝우화"])
@@ -585,10 +688,10 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
                 "초한지의 장량": "당신은 요약 내용을 정확히 분석하여 초한지 장량 스타일의 우화로 재해석하는 전문가입니다. 반드시 제공된 요약의 핵심 메시지와 교훈을 유지한 채, 장량의 모략과 지략, 은인자중의 지혜를 통해 1분 30초 분량의 초한지 등장인물들 간의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "손자병법의 손무": "당신은 손자병법 전문가입니다. 손무의 전략과 지혜, 용병술과 리더십을 담은 1분 30초 분량의 생생한 대화체 이야기를 존댓말로 전달하고, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "주역": "당신은 주역(易經) 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용과 정확히 일치하는 64괘 중 하나를 선정해야 합니다. 임의로 괘를 선택하지 마세요. 선정한 괘의 철학과 음양의 조화, 변화의 이치를 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 괘 선정 이유와 함께 마지막에 선택한 괘와 관련된 명언을 한글과 영어로 제시합니다.",
-                "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자(공자, 맹자, 순자, 노자, 장자, 묵자, 한비자, 관자 등)를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다.",
+                "제자백가": "당신은 제자백가 전문가입니다. 반드시 요약 내용을 철저히 분석하여 그 내용에 가장 적합한 제자백가 철학자를 선정해야 합니다. 임의로 철학자를 선택하지 마세요. 선정한 철학자의 사상과 가르침을 담은 1분 30초 분량의 깊이 있는 대화체 이야기를 존댓말로 전달하고, 철학자 선정 이유와 함께 마지막에 선택한 철학자와 관련된 명언을 한글과 영어로 제시합니다.",
                 "피터 드러커, 이나모리 가즈오, 데일 카네기 (기업 및 인재 경영의 대가들)": "당신은 피터 드러커, 이나모리 가즈오, 데일 카네기의 경영 철학과 인재 경영, 자기계발, 리더십에 정통한 전문가입니다. 각 인물의 고유한 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '드러커님', '이나모리 님', '카네기 님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다.",
                 "마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨 (경영전략의 대가들)": "당신은 마이클 포터, 헨리 민츠버그, 게리 하멜, 클레이튼 크리스텐슨의 전략 이론과 혁신, 경쟁, 변화 관리에 정통한 전문가입니다. 각 인물의 고유한 전략적 관점과 사상을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '포터님', '민츠버그님', '하멜 님', '크리스텐슨 님'으로 호칭해 주세요.\n",
-                "제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응 (AI 4대 석학)": "당신은 AI 4대 석학인 제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응의 딥러닝 철학과 AI 연구 접근 방식, 혁신적 사고에 정통한 전문가입니다. 각 인물의 고유한 딥러닝 관점과 기술 철학을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '힌튼님', '르쿤님', '벤지오님', '응님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다."
+                "제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응 (AI 4대 석학)": "당신은 AI 4대 석학인 제프리 힌튼, 얀 르쿤, 요슈아 벤지오, 앤드류 응이 딥러닝 철학과 AI 연구 접근 방식, 혁신적 사고에 정통한 전문가입니다. 각 인물의 고유한 딥러닝 관점과 기술 철학을 반영한 1분 30초 분량의 생생한 대화체 우화를 존댓말로 구성하고, 서로를 반드시 '힌튼님', '르쿤님', '벤지오님', '응님'으로 호칭하며, 마지막에 명언을 한글과 영어로 제시합니다."
             }
             
             system_prompt = system_prompts.get(fable_type, system_prompts["이솝우화"])
@@ -615,9 +718,17 @@ def ai_generate_fable(text, fable_type, model_name, extra_prompt=None):
 # 요약 함수 (Claude/OpenAI 모두 지원)
 def ai_summarize(text, model_name, extra_prompt=None):
     summary_instruction = (
-        "아래 텍스트를 600~900자 내외, bullet point 10~15개로, 주제별로 제목(굵게)을 붙여 핵심만 간결하게 요약해 주세요. "
+        "아래 텍스트를 700자 이내로 요약해 주세요. "
+        "소제목 3~4개와 각 소제목당 2~3개의 bullet point로 구성해 주세요. "
         "각 항목은 '~함' 형태의 간결한 한글로 작성하고, 존댓말은 사용하지 마세요. "
-        "불필요한 설명은 생략하고, 꼭 필요한 핵심만 요약해 주세요."
+        "[중요] 글자 수 제한이 있지만 내용의 품질과 완성도가 최우선입니다. "
+        "원본 텍스트의 핵심 개념, 주요 인사이트, 실무 적용점을 빠짐없이 포함해야 합니다. "
+        "단순히 글자 수를 맞추기 위해 중요한 내용을 생략하거나 부실하게 작성하지 마세요. "
+        "각 bullet point는 구체적이고 실질적인 내용을 담아야 하며, 추상적이거나 모호한 표현은 피하세요. "
+        "핵심 내용을 압축하여 표현하되, 의미가 손실되지 않도록 주의해 주세요. "
+        "[최적화] 각 bullet point는 40~50자 내외로 핵심을 충실하게 작성하고, 불필요한 설명은 제거해 주세요. "
+        "[출력 형식] 제목은 **제목** 형태로, bullet point는 • 로 시작하도록 작성해 주세요. "
+        "[구조] 소제목 → bullet 2~3개 → 소제목 → bullet 2~3개 순서로 작성해 주세요."
     )
     if model_name.startswith('claude'):
         client = ChatAnthropic(model=model_name, api_key=os.getenv('ANTHROPIC_API_KEY'), temperature=0.3, max_tokens=4000)
@@ -629,7 +740,7 @@ def ai_summarize(text, model_name, extra_prompt=None):
         if extra_prompt and extra_prompt.strip():
             prompt += f"\n[참고 내용]\n{extra_prompt.strip()}\n"
         response = client.invoke([
-            {"role": "system", "content": "당신은 요약 전문가입니다. 항상 600~900자 내외, 10~15개 bullet point로, 주제별 제목과 함께 '~함' 형태의 간결체로 작성합니다. 존댓말은 사용하지 않습니다. 불필요한 설명 없이 꼭 필요한 핵심만 요약합니다."},
+            {"role": "system", "content": "당신은 요약 전문가입니다. 항상 700자 이내로 요약하며, 소제목 3~4개와 각 소제목당 2~3개의 bullet point로 구성합니다. 주제별 제목과 함께 '~함' 형태의 간결체로 작성합니다. 존댓말은 사용하지 않습니다. [중요] 글자 수 제한보다 내용의 품질과 완성도가 최우선입니다. 원본의 핵심 개념, 인사이트, 실무 적용점을 빠짐없이 포함하고, 구체적이고 실질적인 내용으로 작성해야 합니다. 핵심 내용을 압축하여 표현하되, 의미가 손실되지 않도록 주의합니다. [최적화] 각 bullet point는 40~50자 내외로 핵심을 충실하게 작성하고, 불필요한 설명은 제거합니다. [출력 형식] 제목은 **제목** 형태로, bullet point는 • 로 시작하도록 작성합니다. [구조] 소제목 → bullet 2~3개 → 소제목 → bullet 2~3개 순서로 작성합니다."},
             {"role": "user", "content": prompt}
         ])
         return response.content if hasattr(response, 'content') else str(response)
@@ -651,7 +762,7 @@ def ai_summarize(text, model_name, extra_prompt=None):
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[
-                    {"role": "system", "content": "당신은 요약 전문가입니다. 항상 600~900자 내외, 10~15개 bullet point로, 주제별 제목과 함께 '~함' 형태의 간결체로 작성합니다. 존댓말은 사용하지 않습니다. 불필요한 설명 없이 꼭 필요한 핵심만 요약합니다."},
+                    {"role": "system", "content": "당신은 요약 전문가입니다. 항상 700자 이내로 요약하며, 소제목 3~4개와 각 소제목당 2~3개의 bullet point로 구성합니다. 주제별 제목과 함께 '~함' 형태의 간결체로 작성합니다. 존댓말은 사용하지 않습니다. [중요] 글자 수 제한보다 내용의 품질과 완성도가 최우선입니다. 원본의 핵심 개념, 인사이트, 실무 적용점을 빠짐없이 포함하고, 구체적이고 실질적인 내용으로 작성해야 합니다. 핵심 내용을 압축하여 표현하되, 의미가 손실되지 않도록 주의합니다. [최적화] 각 bullet point는 40~50자 내외로 핵심을 충실하게 작성하고, 불필요한 설명은 제거합니다. [출력 형식] 제목은 **제목** 형태로, bullet point는 • 로 시작하도록 작성합니다. [구조] 소제목 → bullet 2~3개 → 소제목 → bullet 2~3개 순서로 작성합니다."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=4000,
@@ -894,7 +1005,30 @@ def get_obsidian_notification_js_scoped():
 
 def discussion_order_tab():
     # 캐릭터/상수 (함수 최상단에 위치)
-    CHARACTERS = {"현철님": "🧙‍♂️ 지혜의 현자", "창환님": "🚀 미래의 선구자", "성범님": "🎯 통찰의 대가", "상현님": "🎭 질문의 예술가", "성일님": "💡 혁신의 아이콘", "경호님": "🦾 전략의 마에스트로", "재원님": "⚡️ 기술영업의 달인"}
+    CHARACTERS = {
+        "현철님": "🧙‍♂️ 지혜의 현자", 
+        "상헌님": "🏢 경영의 대가", 
+        "창환님": "🚀 혁신의 선구자", 
+        "웅열님": "⚙️ 경영운영의 달인", 
+        "민우님": "🤝 B2B 마에스트로", 
+        "정화님": "🌐 파트너십 마스터", 
+        "경호님": "🏠 전략 아키텍트", 
+        "보명님": "🎨 브랜딩 아티스트",
+        "진순님": "🔍 품질관리 전문가"
+    }
+    
+    # 담당 업무 정보
+    ROLES = {
+        "현철님": "신사업 추진",
+        "상헌님": "회사 경영 전반 담당",
+        "창환님": "신벤더 & 신상품 발굴/기술검증/론칭전 PM",
+        "웅열님": "재무, 인사, 총무, 구매/발주, IT인프라 벨류업",
+        "민우님": "기업고객 사업 강화, IoT플랫폼 구축 B2B 사업",
+        "정화님": "파트너사 확대 및 전국 파트너사/리셀러 총괄",
+        "경호님": "CSO 겸 스마트홈 인테리어 사업 패키지 및 표준화",
+        "보명님": "스마트홈 브랜드 확립, 온라인몰 직접 운영",
+        "진순님": "전체 상품/제품 품질관리 및 보증"
+    }
     VALUES = [
         "Success is not the key to happiness. Happiness is the key to success.\n성공이 행복의 열쇠가 아니라, 행복이 성공의 열쇠다.",
         "I find that the harder I work, the more luck I seem to have. – Thomas Jefferson\n열심히 일 할수록 운이 더 좋아지는 것 같다. – 토머스 제퍼슨",
@@ -916,7 +1050,7 @@ def discussion_order_tab():
         'final_order': [],
         'order_timer_started': False,
         'order_start_time': None,
-        'order_duration': timedelta(minutes=15),
+        'order_duration': timedelta(minutes=12),
         'order_timer_finished': False,
         'order_alarm_enabled': True,
         'order_toast_enabled': True
@@ -932,7 +1066,7 @@ def discussion_order_tab():
         st.markdown("""
         <style>
         .order-tab-root .character-card { background-color: #f8f9fa; padding: 1rem; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 1rem; }
-        .order-tab-root .character-name { color: #0066cc; font-weight: bold; }
+        .order-tab-root .character-name { color: #13c26b !important; font-weight: bold; text-align: center; }
         .order-tab-root .timer-display { color: #1f1f1f; font-size: 4rem; font-weight: bold; text-align: center; }
         .order-tab-root .timer-status { font-size: 1.2rem; text-align: center; }
         .order-tab-root .intense-warning { background: linear-gradient(145deg, #ff4b4b, #ff6b6b); color: white; padding: 20px; border-radius: 15px; text-align: center; font-size: 28px; font-weight: bold; margin: 20px 0; animation: blink-intense 0.7s infinite; box-shadow: 0 4px 15px rgba(255, 75, 75, 0.5); }
@@ -966,10 +1100,19 @@ def discussion_order_tab():
     # 헤딩 색상 흰색으로 변경
     st.markdown('<h1 style="color: #fff;">🎯 독서토론 순서 정하기</h1>', unsafe_allow_html=True)
     st.markdown('<h3 style="color: #fff;">🎲 오늘의 토론 멤버를 확인하세요!</h3>', unsafe_allow_html=True)
+    
+    # 9명을 한 줄로 배치
     cols = st.columns(len(CHARACTERS))
     for i, (person, character) in enumerate(CHARACTERS.items()):
         with cols[i]:
-            st.markdown(f"<div class='character-card'><h3>{character}</h3><p class='character-name'>{person}</p></div>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class='character-card' style='display:flex; flex-direction:column; align-items:center; justify-content:center;'>
+                <div style='font-size:0.8rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:center; margin-bottom:2px;'>
+                    {character}
+                </div>
+                <p class='character-name' style='text-align:center; margin:0;'>{person}</p>
+            </div>
+            """, unsafe_allow_html=True)
     st.markdown("---")
     if not st.session_state.order_generated:
         if st.button("🎯 발표 순서 정하기!", key="order_btn", use_container_width=True):
@@ -979,22 +1122,29 @@ def discussion_order_tab():
                 participants = list(CHARACTERS.keys())
                 for _ in range(30):
                     random.shuffle(participants)
-                    display_text = "\n".join([f"<div style='font-size:28px; font-weight:bold; color:#0066cc;'>{CHARACTERS[p]} <span style='color:#fff;'>{p}</span></div>" for p in participants])
+                    display_text = "\n".join([f"<div style='font-size:28px; font-weight:bold; color:#0066cc;'>{CHARACTERS[p]} <span style='color:#13c26b;'>{p}</span></div>" for p in participants])
                     placeholder.markdown(f"<div class='order-tab-root'>{display_text}</div>", unsafe_allow_html=True)
                     time.sleep(0.08)
-                other_participants = [p for p in participants if p != "현철님"]
-                random.shuffle(other_participants)
-                st.session_state.final_order = other_participants + ["현철님"]
+                # 8명 모두 랜덤하게 순서 정하기
+                random.shuffle(participants)
+                st.session_state.final_order = participants
                 st.session_state.order_generated = True
                 st.balloons()
     if st.session_state.order_generated:
         col1, col2 = st.columns([1, 1], gap="large")
         with col1:
-            st.markdown('<h2 style="color: #fff; font-size: 24px; margin-bottom: 20px;">🎉 발표 순서</h2>', unsafe_allow_html=True)
+            st.markdown('<h2 style="color: #13c26b; font-size: 24px; margin-bottom: 20px;">🎉 발표 순서</h2>', unsafe_allow_html=True)
             for i, person in enumerate(st.session_state.final_order, 1):
-                st.markdown(f"<div style='background: linear-gradient(145deg, #ffffff, #f0f0f0); padding: 10px; border-radius: 8px; margin: 5px 0; box-shadow: 3px 3px 6px #d9d9d9, -3px -3px 6px #ffffff;'><div style='color: #0066cc; margin: 0; font-size: 16px; display: flex; align-items: center;'><span style='font-weight: bold; min-width: 24px;'>{i}.</span><span style='margin-left: 8px;'>{person}</span><span style='margin-left: 8px; opacity: 0.8;'>{CHARACTERS[person]}</span></div></div>", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='background: linear-gradient(145deg, #ffffff, #f0f0f0); padding: 12px; border-radius: 8px; margin: 6px 0; box-shadow: 3px 3px 6px #d9d9d9, -3px -3px 6px #ffffff;'>
+                    <div style='color: #13c26b; margin: 0; font-size: 15px; display: flex; align-items: center;'>
+                        <span style='font-weight: bold; min-width: 24px;'>{i}.</span>
+                        <span style='margin-left: 8px;'>{CHARACTERS[person]} {person}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
         with col2:
-            st.markdown('<h2 style="color: #fff; font-size: 24px; margin-bottom: 20px;">⏱️ 토론 타이머</h2>', unsafe_allow_html=True)
+            st.markdown('<h2 style="color: #13c26b; font-size: 24px; margin-bottom: 20px;">⏱️ 토론 타이머</h2>', unsafe_allow_html=True)
             
             # 타이머 시간 설정 슬라이더 (1~30분, 기본 15분)
             timer_duration = st.slider("⏰ 시간 (분)", min_value=1, max_value=30, value=int(st.session_state.order_duration.total_seconds() // 60), key="order_timer_duration")
@@ -1112,6 +1262,8 @@ def discussion_order_tab():
     st.markdown("</div>", unsafe_allow_html=True)
 
 def main():
+    import re
+    import base64 
     # 독서토론 검색/조회 탭의 세션 상태를 영구적으로 보호 - 더 강화된 보호
     protected_states = {
         'ai_summary_result': None,
@@ -1155,7 +1307,7 @@ def main():
         'final_order': [],
         'order_timer_started': False,
         'order_start_time': None,
-        'order_duration': timedelta(minutes=15),
+        'order_duration': timedelta(minutes=12),
         'order_timer_finished': False,
         'order_alarm_enabled': True,
         'order_toast_enabled': True
@@ -1181,7 +1333,7 @@ def main():
         # 책 제목 선택 (selectbox, 기본값: Good to Great)
         book_title = st.selectbox(
             "책 제목",
-            ["AX 100배의 법칙", "퍼스널 MBA", "레이달리오의 원칙", "Good to Great"],
+            ["AX 100배의 법칙", "성장의 묘약","퍼스널 MBA", "레이달리오의 원칙", "Good to Great"],
             index=0
         )
         material_type = st.selectbox("자료 유형", ["요약", "적용"])
@@ -1328,17 +1480,22 @@ def main():
     with tab2:
         st.header("적용 파일 생성")
         openai_api_key = os.getenv('OPENAI_API_KEY')
-        # 요약 파일, 기존 적용 파일 선택
-        summaries = get_materials("summary")
-        applications = get_materials("application")
+        # 요약/적용 파일 목록 불러오기 버튼
+        if st.button("요약/적용 파일 목록 불러오기", key="load_materials_btn"):
+            st.session_state['summaries'] = get_materials("summary")
+            st.session_state['applications'] = get_materials("application")
+        summaries = st.session_state.get('summaries', [])
+        applications = st.session_state.get('applications', [])
         summary_options = [f"{s['book_title']} - {s['file_name']}" for s in summaries]
         application_options = [f"{a['book_title']} - {a['file_name']}" for a in applications]
-        selected_summary = st.selectbox("요약 파일 선택", options=summary_options)
-        selected_application = st.selectbox("기존 적용 파일 선택", options=application_options)
+        selected_summary = st.selectbox("요약 파일 선택", options=summary_options, disabled=not summaries)
+        selected_application = st.selectbox("기존 적용 파일 선택", options=application_options, disabled=not applications)
         extra_prompt = st.text_area("AI 프롬프트에 추가로 참고할 내용(선택)", placeholder="특정 관점, 강조점, 추가 지시사항 등 자유롭게 입력하세요.", height=80)
         if st.button("AI 적용 파일 생성 및 저장"):
             if not openai_api_key:
                 st.error("OpenAI API 키가 설정되지 않았습니다.")
+            elif not summaries or not applications:
+                st.warning("먼저 요약/적용 파일 목록을 불러오세요.")
             else:
                 with st.spinner("AI가 적용 파일을 생성 중입니다..."):
                     try:
@@ -1358,28 +1515,24 @@ def main():
 
     with tab3:
         st.header("독서토론 검색/조회")
-        
         # 백업된 상태가 있다면 복원 (추가 보호)
         for key in protected_states.keys():
             backup_key = f"{key}_backup"
             permanent_backup_key = f"{key}_permanent_backup"
-            
-            # 영구 백업에서 복원 (최우선)
             if permanent_backup_key in st.session_state and st.session_state[permanent_backup_key] is not None:
                 if st.session_state[key] is None:
                     st.session_state[key] = st.session_state[permanent_backup_key]
-                    # 일반 백업도 동시에 복원
                     st.session_state[backup_key] = st.session_state[permanent_backup_key]
-            # 일반 백업에서 복원 (차선)
             elif backup_key in st.session_state and st.session_state[backup_key] is not None:
                 if st.session_state[key] is None:
                     st.session_state[key] = st.session_state[backup_key]
-        
-        subtab1, subtab2, subtab3 = st.tabs(["요약 파일", "적용 파일", "우화"])
+        subtab1, subtab2, subtab3, subtab4 = st.tabs(["요약 파일", "적용 파일", "우화", "요약 파일-전사"])
         with subtab1:
             st.markdown("<div class='order-tab-root'>", unsafe_allow_html=True)
             st.subheader("요약 파일 검색/AI 요약/음성 생성")
-            summaries = get_materials("summary")
+            if st.button("요약 파일 목록 불러오기", key="load_summaries_btn"):
+                st.session_state['summaries'] = get_materials("summary")
+            summaries = st.session_state.get('summaries', [])
             previous_topic = st.text_input("이전 토론 주제", placeholder="이전 독서 토론의 주제를 입력해주세요", key="prev_topic_tts")
             if summaries:
                 summary_options = [f"{s['book_title']} - {s['file_name']} ({s['created_at'].strftime('%Y-%m-%d')})" for s in summaries]
@@ -1394,19 +1547,14 @@ def main():
                         try:
                             ai_summary = ai_summarize_keypoints(selected_summary['content'], st.session_state.selected_model, extra_prompt_summary)
                             st.session_state['ai_summary_result'] = ai_summary
-                            # 백업도 함께 저장
                             st.session_state['ai_summary_result_backup'] = ai_summary
-                            # 영구 백업도 함께 저장
                             st.session_state['ai_summary_result_permanent_backup'] = ai_summary
-                            
                             st.success("AI 요약이 생성되었습니다! 음성 생성 버튼을 클릭하면 음성과 함께 DB에 저장됩니다.")
-                            
                         except Exception as e:
                             st.error(f"AI 요약 중 오류: {str(e)}")
                 if st.session_state['ai_summary_result']:
                     st.markdown("### 비즈니스 실전 적용 핵심")
                     st.markdown(format_bullet_points(st.session_state['ai_summary_result']))
-                    # Tiro 녹음기능 알림 (Streamlit 스타일, 항상 보이게)
                     st.markdown(
                         '''
                         <div style="background: linear-gradient(145deg, #0066cc, #0052a3); color: white; padding: 20px; border-radius: 15px; text-align: center; margin: 20px 0; font-size: 1.3rem; font-weight: bold;">
@@ -1430,21 +1578,14 @@ def main():
                             tts_audio = text_to_speech(summarized_text)
                             if tts_audio:
                                 st.session_state['tts_audio'] = tts_audio
-                                # 백업도 함께 저장
                                 st.session_state['tts_audio_backup'] = tts_audio
-                                # 영구 백업도 함께 저장
                                 st.session_state['tts_audio_permanent_backup'] = tts_audio
-                                
-                                # 음성 데이터를 base64에서 추출하여 DB 저장
                                 try:
-                                    # HTML에서 base64 데이터 추출
                                     import re
-                                    base64_match = re.search(r'data:audio/mp3;base64,([^"]+)', tts_audio)
+                                    base64_match = re.search(r'data:audio/mp3;base64,([^\"]+)', tts_audio)
                                     if base64_match:
                                         audio_base64 = base64_match.group(1)
                                         audio_binary = base64.b64decode(audio_base64)
-                                        
-                                        # DB에 음성 데이터와 함께 저장 (원본 + AI 요약 포함)
                                         ai_summary_content = st.session_state.get('ai_summary_result', '')
                                         combined_content = f"=== 📝 원본 요약 파일 ===\n{selected_summary['content']}\n\n=== 🤖 AI 생성 핵심 요약 ===\n{ai_summary_content}" if ai_summary_content else selected_summary['content']
                                         save_success = save_reading_discussion_record(
@@ -1465,7 +1606,6 @@ def main():
                             st.error(f"음성 생성 중 오류: {str(e)}")
                 if st.session_state['tts_audio']:
                     st.markdown(st.session_state['tts_audio'], unsafe_allow_html=True)
-                    # Tiro 녹음기능 알림 추가
                     st.markdown(get_obsidian_notification_js_scoped(), unsafe_allow_html=True)
                     st.markdown("<script>showObsidianNotification();</script>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -1474,7 +1614,9 @@ def main():
                 st.info("등록된 요약 파일이 없습니다.")
         with subtab2:
             st.subheader("적용 파일 검색/AI 요약/음성 생성")
-            applications = get_materials("application")
+            if st.button("적용 파일 목록 불러오기", key="load_applications_btn"):
+                st.session_state['applications'] = get_materials("application")
+            applications = st.session_state.get('applications', [])
             next_topic = st.text_input("다음 토론 주제", placeholder="다음 독서 토론의 주제를 입력해주세요", key="next_topic_tts")
             if applications:
                 application_options = [f"{a['book_title']} - {a['file_name']} ({a['created_at'].strftime('%Y-%m-%d')})" for a in applications]
@@ -1489,11 +1631,8 @@ def main():
                         try:
                             ai_app_summary = ai_summarize_application_summary(selected_application['content'], st.session_state.selected_model, extra_prompt_app)
                             st.session_state['ai_app_summary_result'] = ai_app_summary
-                            # 백업도 함께 저장
                             st.session_state['ai_app_summary_result_backup'] = ai_app_summary
-                            # 영구 백업도 함께 저장
                             st.session_state['ai_app_summary_result_permanent_backup'] = ai_app_summary
-                            
                             st.success("AI 적용 파일 요약이 생성되었습니다! 음성 생성 버튼을 클릭하면 음성과 함께 DB에 저장됩니다.")
                         except Exception as e:
                             st.error(f"AI 요약 중 오류: {str(e)}")
@@ -1510,24 +1649,16 @@ def main():
                             tts_app_audio = text_to_speech(summarized_text)
                             if tts_app_audio:
                                 st.session_state['tts_app_audio'] = tts_app_audio
-                                # 백업도 함께 저장
                                 st.session_state['tts_app_audio_backup'] = tts_app_audio
-                                # 영구 백업도 함께 저장
                                 st.session_state['tts_app_audio_permanent_backup'] = tts_app_audio
-                                
-                                # 적용 파일 음성 데이터를 base64에서 추출하여 DB 저장
                                 try:
                                     import re
-                                    base64_match = re.search(r'data:audio/mp3;base64,([^"]+)', tts_app_audio)
+                                    base64_match = re.search(r'data:audio/mp3;base64,([^\"]+)', tts_app_audio)
                                     if base64_match:
                                         audio_base64 = base64_match.group(1)
                                         audio_binary = base64.b64decode(audio_base64)
-                                        
-                                        # DB에 적용 파일 음성 데이터와 함께 저장
-                                        # 원본 적용 파일 + AI 요약을 함께 저장
                                         ai_app_content = st.session_state.get('ai_app_summary_result', '')
                                         combined_content = f"=== 📝 원본 적용 파일 ===\n{selected_application['content']}\n\n=== 🤖 AI 요약 및 총평 ===\n{ai_app_content}" if ai_app_content else selected_application['content']
-                                        
                                         save_success = save_reading_discussion_record(
                                             book_title=selected_application['book_title'],
                                             source_file_name=selected_application['file_name'],
@@ -1549,10 +1680,11 @@ def main():
                     st.markdown(st.session_state['tts_app_audio'], unsafe_allow_html=True)
             else:
                 st.info("등록된 적용 파일이 없습니다.")
-        
         with subtab3:
             st.subheader("우화 생성/음성 생성")
-            summaries = get_materials("summary")
+            if st.button("요약 파일 목록 불러오기 (우화)", key="load_summaries_fable_btn"):
+                st.session_state['summaries_fable'] = get_materials("summary")
+            summaries = st.session_state.get('summaries_fable', [])
             if summaries:
                 summary_options = [f"{s['book_title']} - {s['file_name']} ({s['created_at'].strftime('%Y-%m-%d')})" for s in summaries]
                 selected_idx = st.selectbox("요약 파일 선택 (최신순)", range(len(summary_options)), format_func=lambda i: summary_options[i], key="fable_summary_selectbox")
@@ -1666,6 +1798,181 @@ def main():
                     st.markdown(st.session_state['tts_fable_audio'], unsafe_allow_html=True)
             else:
                 st.info("등록된 요약 파일이 없습니다.")
+        with subtab4:
+            st.subheader("요약 파일-전사 검색/AI 요약/명언/음성 생성")
+            if st.button("요약 파일-전사 목록 불러오기", key="load_summaries_transcript_btn"):
+                st.session_state['summaries_transcript'] = get_materials("summary")
+            summaries_transcript = st.session_state.get('summaries_transcript', [])
+            previous_topic_trans = st.text_input("이전 토론 주제 (전사)", placeholder="이전 독서 토론의 주제를 입력해주세요", key="prev_topic_tts_trans")
+            if summaries_transcript:
+                summary_options_trans = [f"{s['book_title']} - {s['file_name']} ({s['created_at'].strftime('%Y-%m-%d')})" for s in summaries_transcript]
+                selected_idx_trans = st.selectbox("요약 파일-전사 선택 (최신순)", range(len(summary_options_trans)), format_func=lambda i: summary_options_trans[i], key="summary_transcript_selectbox")
+                selected_summary_trans = summaries_transcript[selected_idx_trans]
+                st.write(f"### {selected_summary_trans['file_name']}")
+                st.markdown(format_bullet_points(selected_summary_trans['content']))
+                st.write(f"*등록일: {selected_summary_trans['created_at'].strftime('%Y-%m-%d')}*")
+                extra_prompt_trans = st.text_area("AI 프롬프트에 추가로 참고할 내용(선택)", key="summary_transcript_extra_prompt", placeholder="특정 관점, 강조점, 추가 지시사항 등 자유롭게 입력하세요.", height=80)
+                # 명언 스타일/언어 선택 및 프롬프트
+                col_type, col_lang, col_prompt, col_button = st.columns([1, 1, 2, 1])
+                with col_type:
+                    quote_type_trans = st.selectbox(
+                        "명언 스타일",
+                        ["기본", "제프리 힌튼님", "얀 르쿤님", "요슈아 벤지오님", "앤드류 응님", "예수님", "부처님", "공자님", "소크라테스님", "장자님", "노자님", "제갈량님", "피터 드러커님", "마이클 포터님", "스티브 잡스님", "진지한", "감동적인", "유쾌한", "도전적인", "평화로운", "지혜로운", "희망적인", "실용적인", "영감적인"],
+                        index=0,
+                        key="quote_type_trans"
+                    )
+                with col_lang:
+                    language_option_trans = st.selectbox(
+                        "언어 선택",
+                        ["한국어+영어", "한국어", "한국어+영어+중국어", "한국어+영어+중국어+일본어"],
+                        index=1,
+                        key="language_option_trans"
+                    )
+                with col_prompt:
+                    user_prompt_trans = st.text_area(
+                        "추가 프롬프트 (선택사항)",
+                        placeholder="예: 동기부여가 되는 명언으로 만들어주세요, 리더십에 관한 명언으로 만들어주세요 등",
+                        height=68,
+                        key="quote_prompt_trans"
+                    )
+                with col_button:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("오늘의 명언", key="quote_btn_trans"):
+                        with st.spinner("명언을 생성하고 있습니다..."):
+                            quote_text_trans = generate_quote_from_content(
+                                selected_summary_trans['content'],
+                                selected_summary_trans['book_title'],
+                                quote_type_trans,
+                                user_prompt_trans,
+                                language_option_trans
+                            )
+                            if quote_text_trans:
+                                st.session_state['quote_text_trans'] = quote_text_trans
+                                st.success("명언이 생성되었습니다! 아래에서 확인하고 음성 생성을 할 수 있습니다.")
+                # 명언 결과 표시
+                if st.session_state.get('quote_text_trans'):
+                    st.markdown("#### 🎯 생성된 명언")
+                    quote_text = st.session_state['quote_text_trans']
+                    import re
+                    korean = None
+                    english = None
+                    # 한글 명언 추출
+                    match_kr = re.search(r'한글 명언:\s*["“]?(.+?)["”]?(?:\n|$)', quote_text)
+                    if match_kr:
+                        korean = match_kr.group(1).strip()
+                    else:
+                        # === 💡 오늘의 명언 === ... "..." 만 추출
+                        match2 = re.search(r'오늘의 명언[^\n:]*[:=\-]*\s*["“]?(.+?)["”]?(?:\n|$)', quote_text)
+                        if match2:
+                            korean = match2.group(1).strip()
+                        else:
+                            # === 💡 오늘의 명언 === ... 만 추출 (따옴표 없이)
+                            match3 = re.search(r'오늘의 명언[^\n:]*[:=\-]*\s*(.+)', quote_text)
+                            if match3:
+                                korean = match3.group(1).strip().strip('\"')
+                    # 영어 명언 추출
+                    match_en = re.search(r'영문 명언:\s*["“]?(.+?)["”]?(?:\n|$)', quote_text)
+                    if match_en:
+                        english = match_en.group(1).strip()
+                       # 후처리: 혹시라도 남아있는 '한글 명언:' 제거
+                    if korean and '한글 명언:' in korean:
+                        korean = korean.replace('한글 명언:', '').strip(' \"“”')
+                                    # 최종 표시
+                    if korean and english:
+                        combined_quote = f"오늘의 명언: {korean} \"{english}\""
+                        st.markdown(f"""
+                        <div style="
+                            background-color: #1e1e1e; 
+                            color: white; 
+                            padding: 20px; 
+                            border-radius: 10px; 
+                            font-family: 'Arial', sans-serif; 
+                            font-size: 16px; 
+                            line-height: 1.5; 
+                            text-align: left;
+                            margin: 10px 0;
+                        ">
+                            {combined_quote}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    elif korean:
+                        combined_quote = f"오늘의 명언: {korean}"
+                        st.markdown(f"""
+                        <div style="
+                            background-color: #1e1e1e; 
+                            color: white; 
+                            padding: 20px; 
+                            border-radius: 10px; 
+                            font-family: 'Arial', sans-serif; 
+                            font-size: 16px; 
+                            line-height: 1.5; 
+                            text-align: left;
+                            margin: 10px 0;
+                        ">
+                            {combined_quote}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(quote_text)
+                    if st.button("음성 생성", key="quote_audio_btn_trans"):
+                        with st.spinner("음성을 생성하고 있습니다..."):
+                            try:
+                                # 오프닝, 요약, 명언, 클로징 멘트 조합
+                                opening_ment = f"안녕하세요. 좋은 아침입니다. 지난번 주제는 {previous_topic_trans if previous_topic_trans else '이전 주제'}였습니다."
+                                summary_text = selected_summary_trans['content']
+                                quote_text = st.session_state['quote_text_trans']
+                                closing_ment = "즐거운 독서 토론 되세요."
+                                tts_full_text = f"{opening_ment}\n\n요약 내용입니다.\n{summary_text}\n\n오늘의 명언입니다.\n{quote_text}\n\n{closing_ment}"
+
+                                # 길이 제한 등 필요시 summarize_for_tts 사용
+                                summarized_text = summarize_for_tts(tts_full_text)
+                                tts_audio = text_to_speech(summarized_text)
+                                if tts_audio:
+                                    st.session_state['quote_audio_trans'] = tts_audio
+                                    st.success("명언+요약 음성이 생성되었습니다!")
+
+                                    # 음성 파일을 DB에 저장 (요약 파일 탭과 동일하게)
+                                    import re, base64
+                                    base64_match = re.search(r'data:audio/mp3;base64,([^\"]+)', tts_audio)
+                                    if base64_match:
+                                        audio_base64 = base64_match.group(1)
+                                        audio_binary = base64.b64decode(audio_base64)
+                                        # DB에 저장할 텍스트 조합
+                                        combined_content = f"=== 📝 원본 요약 파일 ===\n{summary_text}\n\n오늘의 명언:\n{quote_text}"
+                                        save_success = save_reading_discussion_record(
+                                            book_title=selected_summary_trans['book_title'],
+                                            source_file_name=selected_summary_trans['file_name'],
+                                            content_type='summary',
+                                            ai_content=combined_content,
+                                            audio_data=audio_binary,
+                                            audio_filename=f"summary_trans_{selected_summary_trans['book_title']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
+                                            model_used=st.session_state.selected_model,
+                                            previous_topic=previous_topic_trans
+                                        )
+                                        if save_success:
+                                            st.success("음성이 생성되고 요약+명언 텍스트와 함께 DB에 저장되었습니다!")
+                                    st.rerun()    
+                            except Exception as e:
+                                st.error(f"명언+요약 음성 생성/DB 저장 중 오류: {str(e)}")
+                    # 음성 재생 및 다운로드
+                    if st.session_state.get('quote_audio_trans'):
+                        # HTML 오디오 태그 그대로 렌더링
+                        st.markdown(st.session_state['quote_audio_trans'], unsafe_allow_html=True)
+                        # 다운로드 버튼 (base64에서 바이너리 추출)
+                        import re, base64
+                        base64_match = re.search(r'data:audio/mp3;base64,([^\"]+)', st.session_state['quote_audio_trans'])
+                        if base64_match:
+                            audio_base64 = base64_match.group(1)
+                            audio_binary = base64.b64decode(audio_base64)
+                            st.download_button(
+                                label="💾 음성 파일 다운로드",
+                                data=audio_binary,
+                                file_name=f"quote_trans_{selected_summary_trans['book_title']}_{selected_summary_trans['file_name']}.mp3",
+                                mime="audio/mp3",
+                                key="download_quote_trans"
+                            )
+            else:
+                st.info("등록된 요약 파일-전사 데이터가 없습니다.")
     
     with tab4:
         st.header("🎵 이야기 재생")
@@ -1682,12 +1989,9 @@ def main():
             )
         with col2:
             if st.button("🔄 새로고침", key="refresh_playback"):
-                st.rerun()
-        
-        # 최근 N개 데이터 가져오기
-        all_records = get_reading_discussion_records()
+                st.session_state['all_records'] = get_reading_discussion_records()[:st.session_state.get('record_count_playback', 10)]
+        all_records = st.session_state.get('all_records', [])
         filtered_records = all_records[:record_count]
-        
         if filtered_records:
             # 헤더와 일괄 삭제 기능
             col_header1, col_header2 = st.columns([3, 1])
@@ -1757,13 +2061,12 @@ def main():
                                 if len(parts) == 2:
                                     original_content = parts[0].replace("=== 📝 원본 요약 파일 ===", "").strip()
                                     ai_content = parts[1].strip()
-                                    
-                                    # 탭으로 구분하여 표시
-                                    sub_tab1, sub_tab2 = st.tabs(["📝 원본 요약", "🤖 AI 핵심 요약"])
-                                    with sub_tab1:
-                                        st.markdown(format_bullet_points(original_content))
-                                    with sub_tab2:
-                                        st.markdown(format_bullet_points(ai_content))
+                                    # 탭 없이 한 화면에 표시
+                                    st.markdown("##### 📝 원본 요약")
+                                    st.markdown(format_bullet_points(original_content))
+                                    st.markdown("---")
+                                    st.markdown("##### 🤖 비즈니스 실전 적용 핵심")
+                                    st.markdown(format_bullet_points(ai_content))
                                 else:
                                     st.markdown(format_bullet_points(content))
                             else:
@@ -1870,7 +2173,7 @@ def main():
                     # 구분선
                     st.markdown("---")
         else:
-            st.info("저장된 기록이 없습니다. AI 요약이나 우화를 생성하고 음성을 생성해보세요!")
+            st.info("새로 고침 눌러 주세요!")
         
         # 푸터
         st.markdown("---")
@@ -1888,23 +2191,202 @@ def main():
 def format_bullet_points(text):
     lines = text.split('\n')
     formatted = []
+    
     for line in lines:
-        # 제목(섹션) 강조: 굵게 처리
-        if line.strip().startswith('#') or line.strip().startswith('**') or (line.strip() and not line.strip().startswith('•') and not line.strip().startswith('-')):
-            formatted.append(f"**{line.strip().replace('#','').strip()}**")
-        # bullet point
-        elif '•' in line:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # *** 로 둘러싸인 제목 처리
+        if line.startswith('***') and line.endswith('***'):
+            title = line.replace('***', '').strip()
+            formatted.append(f"**{title}**")
+            continue
+            
+        # 일반 제목 처리 (굵게 처리할 조건들)
+        if (line.startswith('#') or 
+            line.startswith('**') or 
+            (line and not line.startswith('•') and not line.startswith('-') and 
+             not line.startswith('***') and len(line) < 100 and 
+             not line.endswith('함') and not line.endswith('임'))):
+            # 이미 **로 둘러싸여 있지 않은 경우에만 추가
+            if not (line.startswith('**') and line.endswith('**')):
+                formatted.append(f"**{line.replace('#','').strip()}**")
+            else:
+                formatted.append(line)
+            continue
+            
+        # bullet point 처리
+        if '•' in line:
             parts = line.split('•')
             new_line = parts[0]
             for part in parts[1:]:
                 if part.strip():
                     new_line += '\n• ' + part.strip()
             formatted.append(new_line)
-        else:
-            formatted.append(line)
+            continue
+            
+        # *** 로 둘러싸인 내용 처리 (제목이 아닌 경우)
+        if '***' in line:
+            # *** 제거하고 일반 텍스트로 처리
+            clean_line = line.replace('***', '').strip()
+            if clean_line:
+                formatted.append(clean_line)
+            continue
+            
+        # 일반 텍스트
+        formatted.append(line)
+    
     # 빈 줄 추가로 가독성 향상
-    return '\n\n'.join([l for l in formatted if l.strip()])
+    result = '\n\n'.join([l for l in formatted if l.strip()])
+    
+    # 마지막 정리: 연속된 빈 줄을 하나로 줄이기
+    import re
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    
+    return result
 
+def generate_quote_from_content(content, book_title, quote_type="기본", user_prompt=None, language_option="한국어+영어"):
+    """저장된 컨텐츠를 기반으로 명언을 생성"""
+    try:
+        if not content or content.strip() == "":
+            st.error("저장된 컨텐츠가 없어 명언을 생성할 수 없습니다.")
+            return None
+        content_summary = content[:4000] if content else ""
+        if len(content_summary.strip()) < 50:
+            st.error("저장된 콘텐츠가 너무 짧아 의미 있는 명언을 생성할 수 없습니다. 최소 50자 이상의 콘텐츠가 필요합니다.")
+            return None
+        quote_type_guides = {
+            "기본": {"description": "깊이 있고 영감을 주는 명언", "tone": "균형잡히고 통찰력 있는", "focus": "책의 핵심 메시지를 담은", "style_note": "일반적이면서도 깊이 있는 통찰을 담아주세요"},
+            "진지한": {"description": "진중하고 깊이 있는 철학적 명언", "tone": "무겁고 진중한", "focus": "인생의 근본적인 질문과 철학적 사고를 담은", "style_note": "무겁고 진중한 톤으로, 인생의 깊은 의미를 다루는 명언을 만들어주세요"},
+            "감동적인": {"description": "마음을 울리는 감동적이고 따뜻한 명언", "tone": "따뜻하고 감동적인", "focus": "마음을 울리고 감동을 주는", "style_note": "따뜻하고 감동적인 톤으로, 마음을 울리는 명언을 만들어주세요"},
+            "유쾌한": {"description": "재치 있고 유머러스한 명언", "tone": "재치 있고 유머러스한", "focus": "재미있으면서도 의미 있는", "style_note": "재치 있고 유머러스한 톤으로, 웃음을 자아내면서도 의미 있는 명언을 만들어주세요"},
+            "도전적인": {"description": "용기와 도전을 불러일으키는 명언", "tone": "강렬하고 도전적인", "focus": "용기와 도전 정신을 불러일으키는", "style_note": "강렬하고 도전적인 톤으로, 행동을 촉구하는 명언을 만들어주세요"},
+            "평화로운": {"description": "마음의 평화와 안정을 주는 명언", "tone": "차분하고 평화로운", "focus": "마음의 평화와 안정을 주는", "style_note": "차분하고 평화로운 톤으로, 마음을 진정시키는 명언을 만들어주세요"},
+            "지혜로운": {"description": "삶의 지혜와 통찰을 담은 명언", "tone": "현명하고 통찰력 있는", "focus": "삶의 지혜와 깊은 통찰을 담은", "style_note": "현명하고 통찰력 있는 톤으로, 삶의 지혜를 담은 명언을 만들어주세요"},
+            "희망적인": {"description": "희망과 긍정의 메시지를 담은 명언", "tone": "희망적이고 긍정적인", "focus": "희망과 긍정의 메시지를 담은", "style_note": "희망적이고 긍정적인 톤으로, 미래에 대한 희망을 주는 명언을 만들어주세요"},
+            "실용적인": {"description": "실생활에 바로 적용할 수 있는 실용적 명언", "tone": "실용적이고 구체적인", "focus": "실생활에 바로 적용할 수 있는", "style_note": "실용적이고 구체적인 톤으로, 바로 실천할 수 있는 명언을 만들어주세요"},
+            "영감적인": {"description": "창의성과 혁신을 자극하는 영감적인 명언", "tone": "영감적이고 창의적인", "focus": "창의성과 혁신을 자극하는", "style_note": "영감적이고 창의적인 톤으로, 새로운 아이디어를 자극하는 명언을 만들어주세요"},
+            # ... (유명 인사 스타일 등 추가)
+        }
+        style_guide = quote_type_guides.get(quote_type, quote_type_guides["기본"])
+        base_prompt = f"""
+다음은 '{book_title}' 책에서 추출된 실제 독서 내용입니다. 이 내용을 반드시 기반으로 하여 {style_guide['description']}을 만들어주세요.
+
+**📖 책 제목:** {book_title}
+
+**📝 저장된 독서 내용 (반드시 이 내용을 기반으로 명언을 만들어야 합니다):**
+{content_summary}
+
+**🎯 핵심 요청사항:** 
+- 위의 구체적인 독서 내용에서 나온 핵심 메시지와 인사이트를 바탕으로 {style_guide['description']}을 작성해주세요
+- 일반적인 명언이 아닌, 이 책의 내용과 직접적으로 연관된 명언이어야 합니다
+- 반드시 위에 제공된 독서 내용의 구체적인 개념, 아이디어, 메시지를 포함해야 합니다
+
+**🎨 명언 스타일 요구사항:**
+- **톤:** {style_guide['tone']} 톤으로 작성해주세요
+- **초점:** {style_guide['focus']} 명언이어야 합니다
+- **스타일:** {style_guide['style_note']}
+
+**⚠️ 중요:** 유명 인사 스타일을 선택했더라도, 반드시 위에 제공된 독서 내용의 구체적인 메시지와 인사이트를 기반으로 명언을 만들어야 합니다. 해당 인사의 일반적인 명언이 아닌, 이 책의 내용을 그 인사의 관점에서 해석한 명언이어야 합니다.
+"""
+        if user_prompt and user_prompt.strip():
+            base_prompt += f"""
+
+**💡 사용자 추가 요청:**
+{user_prompt.strip()}
+(단, 위의 독서 내용을 기반으로 하되 이 추가 요청을 반영해주세요)
+"""
+        language_formats = {
+            "한국어": "\"명언 내용\"",
+            "한국어+영어": "\"명언 내용\"\n\"Quote content\"",
+            "한국어+영어+중국어": "\"명언 내용\"\n\"Quote content\"\n\"中文名言\"\n\"zhōng wén míng yán\"",
+            "한국어+영어+중국어+일본어": "\"명언 내용\"\n\"Quote content\"\n\"中文名言\"\n\"zhōng wén míng yán\"\n\"日本語の名言\"\n\"ニホンゴノメイゲン\""
+        }
+        response_format = language_formats.get(language_option, language_formats["한국어+영어"])
+        language_descriptions = {
+            "한국어": "한국어로만 명언을 작성해주세요.",
+            "한국어+영어": "한국어와 영어로 명언을 작성해주세요.",
+            "한국어+영어+중국어": "한국어, 영어, 중국어로 명언을 작성해주세요. 중국어 명언 아래에는 한어병음을 함께 제공해주세요.",
+            "한국어+영어+중국어+일본어": "한국어, 영어, 중국어, 일본어로 명언을 작성해주세요. 중국어 명언 아래에는 한어병음을, 일본어 명언 아래에는 카타카나 독음을 함께 제공해주세요."
+        }
+        language_description = language_descriptions.get(language_option, language_descriptions["한국어+영어"])
+        final_prompt = base_prompt + f"""
+
+**📋 명언 작성 요구사항:**
+1. **반드시 위에 제공된 독서 내용의 핵심 메시지를 기반으로** 명언을 만들어주세요
+2. {language_description}
+3. 명언은 간결하면서도 깊이가 있어야 합니다
+4. 실제 삶에 적용할 수 있는 실용적인 지혜를 담아주세요
+5. **독서 내용에서 나온 구체적인 개념이나 아이디어를 반영해주세요**
+6. 사용자의 추가 요청이 있다면 그것을 반영하되, 반드시 독서 내용 기반을 유지해주세요
+7. **스타일 강조:** {style_guide['style_note']}
+8. **톤 유지:** 반드시 {style_guide['tone']} 톤으로 작성해주세요
+9. **초점 맞춤:** {style_guide['focus']} 명언이 되도록 해주세요
+10. **콘텐츠 기반 강화:** 유명 인사 스타일이어도 반드시 독서 내용의 구체적인 메시지를 그 인사의 관점에서 해석한 명언이어야 합니다
+11. **검증:** 생성된 명언이 위의 독서 내용과 직접적으로 연관되어 있는지 확인해주세요
+
+**📄 응답 형식:**
+{response_format}
+"""
+        from openai import OpenAI
+        import os
+        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": f"당신은 독서 내용을 분석하여 그 책의 핵심 메시지를 바탕으로 {style_guide['description']}을 만드는 전문가입니다. 반드시 제공된 독서 내용의 구체적인 인사이트와 개념을 기반으로 명언을 만들어야 하며, 일반적이거나 추상적인 명언이 아닌 해당 책의 내용과 직접 연관된 명언을 만들어주세요. 특히 {style_guide['tone']} 톤과 {style_guide['focus']} 스타일을 강력하게 반영해야 합니다. 절대로 독서 내용과 무관한 일반적인 명언을 생성하지 마세요."},
+                {"role": "user", "content": final_prompt}
+            ],
+            max_tokens=800,
+            temperature=0.7
+        )
+        quote_text = response.choices[0].message.content
+        return quote_text
+    except Exception as e:
+        st.error(f"명언 생성 중 오류: {e}")
+        return None
+
+def generate_quote_audio(quote_text, language_option="한국어+영어"):
+    """명언을 음성으로 변환"""
+    try:
+        lines = quote_text.split('\n')
+        quotes = {}
+        for line in lines:
+            if line.startswith('한글 명언:'):
+                quotes['korean'] = line.replace('한글 명언:', '').strip().strip('\"')
+            elif line.startswith('영문 명언:'):
+                quotes['english'] = line.replace('영문 명언:', '').strip().strip('\"')
+            elif line.startswith('중국어 명언:'):
+                quotes['chinese'] = line.replace('중국어 명언:', '').strip().strip('\"')
+            elif line.startswith('한어병음:'):
+                quotes['pinyin'] = line.replace('한어병음:', '').strip().strip('\"')
+            elif line.startswith('일본어 명언:'):
+                quotes['japanese'] = line.replace('일본어 명언:', '').strip().strip('\"')
+            elif line.startswith('카타카나:'):
+                quotes['katakana'] = line.replace('카타카나:', '').strip().strip('\"')
+        audio_texts = {
+            "한국어": f"오늘의 명언입니다. {quotes.get('korean', '')}",
+            "한국어+영어": f"오늘의 명언입니다. {quotes.get('korean', '')}. In English, {quotes.get('english', '')}",
+            "한국어+영어+중국어": f"오늘의 명언입니다. {quotes.get('korean', '')}. In English, {quotes.get('english', '')}. 中文, {quotes.get('chinese', '')}",
+            "한국어+영어+중국어+일본어": f"오늘의 명언입니다. {quotes.get('korean', '')}. In English, {quotes.get('english', '')}. 中文, {quotes.get('chinese', '')}. 日本語, {quotes.get('japanese', '')}"
+        }
+        full_text = audio_texts.get(language_option, audio_texts["한국어+영어"])
+        from openai import OpenAI
+        import os
+        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        response = client.audio.speech.create(
+            model="tts-1",
+            voice="nova",
+            input=full_text,
+            response_format="mp3"
+        )
+        audio_data = response.content
+        return audio_data, quotes
+    except Exception as e:
+        st.error(f"음성 생성 중 오류: {e}")
+        return None, None, None
+    
 def ai_summarize_keypoints(text, model_name, extra_prompt=None):
     summary_instruction = (
         "아래 텍스트에서 실제 비즈니스 업무 환경에 바로 적용할 수 있는 실전 핵심 내용 1~2가지만, 각 항목당 100자 이내의 bullet point(•)로 요약해 주세요. "
@@ -2010,7 +2492,6 @@ if __name__ == "__main__":
         try:
             from openai import OpenAI
             import base64, os
-            
             # OpenAI API 키 검증
             openai_key = os.getenv('OPENAI_API_KEY')
             if openai_key and openai_key.strip() != '' and openai_key != 'NA':
@@ -2019,8 +2500,7 @@ if __name__ == "__main__":
                 response = client.audio.speech.create(
                     model="tts-1",
                     voice="nova",
-                    input=tts_text,
-                    speed=0.9
+                    input=tts_text
                 )
                 audio_data = response.content
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
@@ -2031,15 +2511,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[ERROR] 타이머 종료 음성 생성 중 오류: {str(e)}")
             st.session_state['order_end_audio'] = ''
-    
-    # 핵심 보호된 상태들의 추가 백업 (앱 전체 실행 중 유지)
-    protected_session_keys = ['ai_summary_result', 'tts_audio', 'ai_app_summary_result', 'tts_app_audio', 'ai_fable_result', 'tts_fable_audio']
-    for key in protected_session_keys:
-        # 영구 백업 생성 (앱 전체 실행 중 유지)
-        if key in st.session_state and st.session_state[key] is not None:
-            st.session_state[f"{key}_permanent_backup"] = st.session_state[key]
-        # 영구 백업에서 복원 (값이 None이 되었을 때)
-        elif f"{key}_permanent_backup" in st.session_state and st.session_state[f"{key}_permanent_backup"] is not None:
-            st.session_state[key] = st.session_state[f"{key}_permanent_backup"]
-    
-    main() 
+    main()

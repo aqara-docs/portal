@@ -1,0 +1,1563 @@
+import streamlit as st
+import os
+from dotenv import load_dotenv
+import openai
+import numpy as np
+import time
+import json
+from datetime import datetime
+import hashlib
+import glob
+import requests
+from concurrent.futures import ThreadPoolExecutor
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+import io
+
+# langchain 및 FAISS 관련
+from langchain.vectorstores import FAISS
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.document_loaders import (
+    PyPDFLoader, UnstructuredPowerPointLoader, UnstructuredExcelLoader, 
+    UnstructuredWordDocumentLoader, UnstructuredMarkdownLoader
+)
+
+# 페이지 설정
+st.set_page_config(
+    page_title="Q-Li",
+    page_icon="🤔",
+    layout="wide"
+)
+
+load_dotenv()
+
+# ===== LLM 클라이언트 관리 =====
+class LLMClient:
+    """다양한 LLM 클라이언트를 관리하는 클래스"""
+    
+    def __init__(self):
+        self.clients = {}
+        self.models = {}
+        self.setup_clients()
+    
+    def setup_clients(self):
+        """사용 가능한 LLM 클라이언트들을 설정"""
+        # OpenAI 클라이언트 (기본)
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if openai_key:
+            try:
+                self.clients['openai'] = openai.OpenAI(api_key=openai_key)
+                self.models['openai'] = [
+                    'gpt-4o-mini',
+                    'gpt-4o',
+                    'gpt-4-turbo',
+                    'gpt-4',
+                    'gpt-3.5-turbo'
+                ]
+            except Exception as e:
+                st.warning(f"OpenAI 클라이언트 설정 실패: {e}")
+        
+        # Ollama 클라이언트 (로컬 LLM) - 선택적
+        try:
+            import requests
+            # Ollama 서버 연결 테스트 (짧은 타임아웃)
+            response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            if response.status_code == 200:
+                self.clients['ollama'] = requests
+                self.models['ollama'] = [
+                    'mistral:latest',
+                    'llama3.1:latest',
+                    'llama3.1:8b',
+                    'phi4:latest',
+                    'llama3.3:latest',
+                    'llama2:latest',
+                    'gemma2:latest',
+                    'gemma:latest',
+                    'llama3.2:latest',
+                    'deepseek-r1:32b',
+                    'deepseek-r1:70b',
+                    'deepseek-r1:14b',
+                    'nomic-embed-text:latest'
+                ]
+        except Exception as e:
+            # Ollama 연결 실패 시 조용히 무시 (경고 메시지 제거)
+            pass
+        
+        # Perplexity 클라이언트
+        perplexity_key = os.getenv('PERPLEXITY_API_KEY')
+        if perplexity_key:
+            try:
+                self.clients['perplexity'] = openai.OpenAI(
+                    api_key=perplexity_key,
+                    base_url="https://api.perplexity.ai"
+                )
+                self.models['perplexity'] = [
+                    'sonar-pro',
+                    'sonar-small-online',
+                    'llama-3.1-sonar-small-128k-online',
+                    'llama-3.1-sonar-medium-128k-online',
+                    'llama-3.1-sonar-large-128k-online'
+                ]
+            except Exception as e:
+                st.warning(f"Perplexity 클라이언트 설정 실패: {e}")
+        
+        # Anthropic 클라이언트 (Claude)
+        anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+        if anthropic_key:
+            try:
+                import anthropic
+                self.clients['anthropic'] = anthropic.Anthropic(api_key=anthropic_key)
+                self.models['anthropic'] = [
+                    'claude-3-7-sonnet-latest',
+                    'claude-3-5-sonnet-20241022',
+                    'claude-3-5-haiku-20241022',
+                    'claude-3-opus-20240229',
+                    'claude-3-sonnet-20240229',
+                    'claude-3-haiku-20240307'
+                ]
+            except Exception as e:
+                st.warning(f"Anthropic 클라이언트 설정 실패: {e}")
+        
+        # Google Gemini 클라이언트
+        google_key = os.getenv('GOOGLE_API_KEY')
+        if google_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=google_key)
+                self.clients['google'] = genai
+                self.models['google'] = [
+                    'gemini-1.5-pro',
+                    'gemini-1.5-flash',
+                    'gemini-pro',
+                    'gemini-pro-vision'
+                ]
+            except Exception as e:
+                st.warning(f"Google Gemini 클라이언트 설정 실패: {e}")
+    
+    def get_available_providers(self):
+        """사용 가능한 LLM 제공자 목록 반환"""
+        return list(self.clients.keys())
+    
+    def get_models_for_provider(self, provider):
+        """특정 제공자의 모델 목록 반환"""
+        return self.models.get(provider, [])
+    
+    def generate_response(self, provider, model, messages, temperature=0.7, max_tokens=2000):
+        """선택된 LLM으로 응답 생성"""
+        try:
+            if provider == 'ollama':
+                return self._generate_ollama_response(model, messages, temperature, max_tokens)
+            elif provider == 'openai':
+                return self._generate_openai_response(model, messages, temperature, max_tokens)
+            elif provider == 'perplexity':
+                return self._generate_perplexity_response(model, messages, temperature, max_tokens)
+            elif provider == 'anthropic':
+                return self._generate_anthropic_response(model, messages, temperature, max_tokens)
+            elif provider == 'google':
+                return self._generate_google_response(model, messages, temperature, max_tokens)
+            else:
+                return None, f"지원하지 않는 제공자: {provider}"
+        except Exception as e:
+            return None, f"응답 생성 오류: {str(e)}"
+    
+    def _generate_ollama_response(self, model, messages, temperature, max_tokens):
+        """Ollama 응답 생성"""
+        try:
+            # Ollama API 형식에 맞게 메시지 변환
+            ollama_messages = []
+            for msg in messages:
+                if msg['role'] == 'system':
+                    # 시스템 메시지는 프롬프트에 포함
+                    continue
+                elif msg['role'] == 'user':
+                    ollama_messages.append({
+                        'role': 'user',
+                        'content': msg['content']
+                    })
+                elif msg['role'] == 'assistant':
+                    ollama_messages.append({
+                        'role': 'assistant',
+                        'content': msg['content']
+                    })
+            
+            # 시스템 메시지가 있으면 첫 번째 사용자 메시지에 포함
+            system_content = ""
+            for msg in messages:
+                if msg['role'] == 'system':
+                    system_content = msg['content']
+                    break
+            
+            if system_content and ollama_messages:
+                ollama_messages[0]['content'] = f"{system_content}\n\n{ollama_messages[0]['content']}"
+            
+            # Ollama API 호출
+            response = self.clients['ollama'].post(
+                "http://localhost:11434/api/chat",
+                json={
+                    "model": model,
+                    "messages": ollama_messages,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": max_tokens
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result['message']['content'], None
+            else:
+                return None, f"Ollama API 오류: {response.status_code}"
+                
+        except Exception as e:
+            return None, f"Ollama 응답 생성 오류: {str(e)}"
+    
+    def _generate_openai_response(self, model, messages, temperature, max_tokens):
+        """OpenAI 응답 생성"""
+        response = self.clients['openai'].chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content, None
+    
+    def _generate_perplexity_response(self, model, messages, temperature, max_tokens):
+        """Perplexity 응답 생성"""
+        response = self.clients['perplexity'].chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content, None
+    
+    def _generate_anthropic_response(self, model, messages, temperature, max_tokens):
+        """Anthropic 응답 생성"""
+        # Anthropic은 다른 메시지 형식을 사용
+        system_message = ""
+        user_messages = []
+        
+        for msg in messages:
+            if msg['role'] == 'system':
+                system_message = msg['content']
+            else:
+                user_messages.append(msg['content'])
+        
+        user_content = "\n\n".join(user_messages)
+        
+        response = self.clients['anthropic'].messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_message,
+            messages=[{"role": "user", "content": user_content}]
+        )
+        return response.content[0].text, None
+    
+    def _generate_google_response(self, model, messages, temperature, max_tokens):
+        """Google Gemini 응답 생성"""
+        # Gemini는 다른 메시지 형식을 사용
+        user_content = ""
+        for msg in messages:
+            if msg['role'] == 'user':
+                user_content += msg['content'] + "\n\n"
+        
+        model_instance = self.clients['google'].GenerativeModel(model)
+        response = model_instance.generate_content(
+            user_content,
+            generation_config=self.clients['google'].types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens
+            )
+        )
+        return response.text, None
+
+# ===== FAISS 기반 파일시스템 RAGSystem =====
+class FileRAGSystem:
+    """FAISS + 파일시스템 기반 RAG 시스템"""
+    def __init__(self, base_folder_path="./pages/rag_files"):
+        self.base_folder_path = base_folder_path
+        self.current_folder_path = base_folder_path
+        self.vectorstore = None
+        self.docs = []
+        self.is_loaded = False
+        self.embeddings = OpenAIEmbeddings()
+        self.load_files_and_build_index()
+
+    def set_search_folder(self, folder_path):
+        """검색할 폴더 설정"""
+        self.current_folder_path = folder_path
+        self.load_files_and_build_index()
+
+    def load_files_and_build_index(self):
+        """폴더 내 모든 지원 파일을 읽어 벡터 인덱스 구축"""
+        loaders = [
+            ("*.pdf", PyPDFLoader),
+            ("*.pptx", UnstructuredPowerPointLoader),
+            ("*.xlsx", UnstructuredExcelLoader),
+            ("*.docx", UnstructuredWordDocumentLoader),
+            ("*.md", UnstructuredMarkdownLoader),
+        ]
+        all_docs = []
+        
+        # 전체 검색인 경우 finance 폴더 제외
+        if self.current_folder_path == "./pages/rag_files":
+            # 모든 하위 폴더를 검색하되 finance 폴더는 제외
+            for root, dirs, files in os.walk(self.current_folder_path):
+                # finance 폴더 제외
+                if "finance" in dirs:
+                    dirs.remove("finance")
+                
+                for pattern, loader_cls in loaders:
+                    for file in glob.glob(os.path.join(root, pattern)):
+                        try:
+                            loader = loader_cls(file)
+                            all_docs.extend(loader.load())
+                        except Exception as e:
+                            st.warning(f"{file} 로딩 실패: {e}")
+        else:
+            # 특정 폴더만 검색
+            for pattern, loader_cls in loaders:
+                for file in glob.glob(os.path.join(self.current_folder_path, pattern)):
+                    try:
+                        loader = loader_cls(file)
+                        all_docs.extend(loader.load())
+                    except Exception as e:
+                        st.warning(f"{file} 로딩 실패: {e}")
+        
+        self.docs = all_docs
+        if all_docs:
+            self.vectorstore = FAISS.from_documents(all_docs, self.embeddings)
+            self.is_loaded = True
+        else:
+            self.vectorstore = None
+            self.is_loaded = False
+
+    def search(self, query, k=5):
+        """쿼리와 유사한 문서 top-k 반환"""
+        if not self.is_loaded:
+            return []
+        try:
+            results = self.vectorstore.similarity_search(query, k=k)
+            return results
+        except Exception as e:
+            st.error(f"FAISS 검색 오류: {e}")
+            return []
+
+# ===== 챗봇 클래스 (FAISS 기반) =====
+class FileRAGChatbot:
+    def __init__(self):
+        self.llm_client = LLMClient()
+        self.rag_system = FileRAGSystem()
+        self.conversation_history = []
+
+    def generate_response(self, user_query, provider='openai', model=None, temperature=0.7):
+        try:
+            # 1. RAG를 통한 관련 문서 검색
+            relevant_docs = self.rag_system.search(user_query, k=5)
+            if not relevant_docs:
+                return "관련 정보를 찾을 수 없습니다. 파일을 확인해 주세요.", None
+            # 2. 컨텍스트 구성
+            context = self._build_context(relevant_docs)
+            # 3. 프롬프트 구성
+            prompt = self._build_prompt(user_query, context)
+            # 4. LLM 응답 생성
+            if model is None:
+                models = self.llm_client.get_models_for_provider(provider)
+                model = models[0] if models else None
+            if not model:
+                return "지원하는 모델이 없습니다.", None
+            response, error = self.llm_client.generate_response(
+                provider, model, prompt, temperature
+            )
+            if error:
+                return f"응답 생성 오류: {error}", None
+            # 5. 대화 기록 업데이트
+            self.conversation_history.append({
+                'user': user_query,
+                'assistant': response,
+                'timestamp': datetime.now(),
+                'provider': provider,
+                'model': model
+            })
+            return response, relevant_docs
+        except Exception as e:
+            return f"챗봇 오류: {str(e)}", None
+
+    def _build_context(self, relevant_docs):
+        context_parts = []
+        for i, doc in enumerate(relevant_docs, 1):
+            title = doc.metadata.get('source', f'문서 {i}')
+            content = doc.page_content[:1000]
+            context_parts.append(f"문서 {i} - {title}:\n{content}")
+        return "\n\n".join(context_parts)
+
+    def _build_prompt(self, user_query, context):
+        system_prompt = f"""당신은 아카라라이프의 사내 챗봇입니다.\n\n아래 문서 내용에 근거해서만 답변하세요.\n문서에 없는 정보는 '해당 정보가 문서에 없습니다'라고 답변하세요.\n\n아래는 관련 문서 내용입니다:\n{context}\n\n사용자 질문: {user_query}"""
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query}
+        ]
+
+    def clear_history(self):
+        self.conversation_history = []
+
+# ===== Perplexity API를 활용한 시장 조사 기능 =====
+def perform_perplexity_search(query, debug_mode=False):
+    """Perplexity API를 사용한 검색 수행"""
+    api_key = os.getenv('PERPLEXITY_API_KEY')
+    if not api_key:
+        st.error("Perplexity API 키가 설정되지 않았습니다.")
+        return None
+    
+    try:
+        url = "https://api.perplexity.ai/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": "sonar-pro",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"다음 주제에 대해 최신 정보를 바탕으로 상세히 조사해주세요: {query}"
+                }
+            ],
+            "max_tokens": 2000,
+            "temperature": 0.1
+        }
+        
+        if debug_mode:
+            st.write("=== Perplexity API 요청 디버그 정보 ===")
+            st.write(f"URL: {url}")
+            st.write(f"Headers: {headers}")
+            st.write(f"Data: {data}")
+        
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        
+        if debug_mode:
+            st.write("\n=== Perplexity API 응답 디버그 정보 ===")
+            st.write(f"Status Code: {response.status_code}")
+            st.write(f"Response Headers: {dict(response.headers)}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            if 'choices' in result and len(result['choices']) > 0:
+                content = result['choices'][0]['message']['content']
+                if debug_mode:
+                    st.write(f"Content: {content[:500]}...")
+                return content
+            else:
+                st.error("Perplexity API 응답에서 content를 찾을 수 없습니다.")
+                return None
+        else:
+            error_msg = f"Perplexity API 오류 (상태 코드: {response.status_code})"
+            if debug_mode:
+                st.write(f"Error Response: {response.text}")
+            st.error(error_msg)
+            return None
+            
+    except requests.exceptions.Timeout:
+        st.error("Perplexity API 요청 시간 초과")
+        return None
+    except requests.exceptions.RequestException as e:
+        st.error(f"Perplexity API 요청 실패: {str(e)}")
+        return None
+    except Exception as e:
+        st.error(f"Perplexity API 처리 중 오류: {str(e)}")
+        return None
+
+# ===== 멀티에이전트 분석 기능 =====
+def analyze_with_finance_persona(user_query, persona_key, persona_info, rag_context="", market_research="", model_name="claude-3-7-sonnet-latest"):
+    """재무 전문가 페르소나로 분석 수행"""
+    try:
+        # 기본 프롬프트 구성
+        analysis_prompt = f"""
+다음 주제/질문에 대해 {persona_info['role']} 관점에서 전문적으로 분석해주세요:
+
+【분석 대상】
+{user_query}
+
+【전문가 역할】
+{persona_info['name']} ({persona_info['emoji']})
+{persona_info['expertise']}
+
+【분석 관점】
+{persona_info['perspective']}
+
+"""
+
+        # RAG 컨텍스트 추가 (있는 경우)
+        if rag_context:
+            analysis_prompt += f"""
+【내부 재무 데이터】
+{rag_context}
+
+이 내부 재무 데이터를 반드시 활용하여 분석해주세요.
+
+"""
+
+        # 시장 조사 결과 추가 (있는 경우)
+        if market_research:
+            analysis_prompt += f"""
+【시장 조사 결과】
+{market_research}
+
+이 시장 조사 결과를 참고하여 분석해주세요.
+
+"""
+
+        analysis_prompt += f"""
+【전문가 수준 분석 요구사항】
+- {persona_info['perspective']}
+- 업계 최고 수준의 상세하고 깊이 있는 전문 분석 제공
+- 구체적인 수치, 지표, 데이터를 포함한 정량적 분석
+- 단계별 실행 계획과 타임라인을 포함한 실행 가능한 제안
+- 리스크 요인과 완화 전략을 구체적으로 분석
+- 성과 측정 지표(KPI)와 모니터링 방안 명시
+- 다른 부서와의 구체적 협업 방안과 역할 분담
+- 예상 비용, 리소스, 기간을 포함한 상세한 실행 계획
+{'- 제공된 내부 재무 데이터를 반드시 분석에 활용하고 인사이트 도출' if rag_context else ''}
+{'- 제공된 시장 조사 결과를 참고하여 외부 환경을 고려한 분석 수행' if market_research else ''}
+
+【응답 형식】
+## 핵심 분석
+(2-3줄로 핵심 포인트 요약)
+
+## 상세 분석
+(전문 분야 관점에서 상세한 분석)
+
+## 실행 제안
+(구체적이고 실행 가능한 액션 아이템들)
+
+## 다른 부서 협업 방안
+(다른 전문가와의 협업이 필요한 부분)
+
+## 리스크 및 고려사항
+(주의해야 할 점들)
+
+## 참고 자료
+(분석에 활용한 내부 데이터 및 시장 조사 결과 요약)
+"""
+
+        # 모델 정보 디버깅
+        st.info(f"{persona_key} 분석 시작 - 모델: {model_name}")
+        
+        result = get_ai_response(analysis_prompt, model_name, persona_info['system_prompt'])
+        
+        if result and not result.startswith("응답 생성 오류"):
+            return result
+        else:
+            st.error(f"❌ {persona_key} 분석 실패: {result}")
+            return None
+
+    except Exception as e:
+        st.error(f"❌ {persona_key} 분석 중 오류 발생: {str(e)}")
+        return None
+
+def analyze_persona_concurrent_finance(args):
+    """ThreadPoolExecutor 래퍼 함수"""
+    user_query, persona_key, persona_info, rag_context, market_research, model_name = args
+    try:
+        result = analyze_with_finance_persona(user_query, persona_key, persona_info, rag_context, market_research, model_name)
+        if result is None:
+            return persona_key, f"AI 응답이 None입니다. API 키나 모델 설정을 확인해주세요.", False
+        return persona_key, result, True
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return persona_key, f"오류 발생: {str(e)}\n상세: {error_details}", False
+
+def synthesize_finance_analysis(user_query, persona_analyses, rag_context="", market_research="", model_name="claude-3-7-sonnet-latest"):
+    """최종 보고서 작성자가 모든 분석을 종합"""
+    try:
+        synthesis_prompt = f"""
+다음은 우리 회사 재무 전문가들이 분석한 내용입니다. 
+최종 보고서 작성자로서 이들의 분석을 종합하여 실현 가능한 전략과 실행 계획을 제시해주세요.
+
+【원래 주제/질문】
+{user_query}
+
+【내부 재무 데이터】
+{rag_context if rag_context else "내부 재무 데이터 없음"}
+
+【시장 조사 결과】
+{market_research if market_research else "시장 조사 결과 없음"}
+
+【각 전문가 분석 결과】
+"""
+        
+        for persona_key, analysis in persona_analyses.items():
+            if analysis and analysis.get('result'):
+                persona_info = FINANCE_PERSONAS[persona_key]
+                synthesis_prompt += f"""
+--- {persona_info['emoji']} {persona_info['name']} 분석 ---
+{analysis['result']}
+
+"""
+        
+        synthesis_prompt += """
+【최종 보고서 작성 요구사항】
+- 각 전문가의 관점을 균형있게 고려
+- 실현 가능한 우선순위 설정
+- 구체적인 실행 계획과 타임라인 수립
+- 리스크와 기회 요인의 종합적 평가
+- 명확한 의사결정 방향 제시
+- 성과 측정 지표와 모니터링 방안 포함
+
+【응답 형식】
+## 🎯 핵심 결론 및 전략적 제안
+(최종 보고서 작성자로서의 핵심 판단과 제안사항)
+
+## 📊 전문가 분석 종합
+(각 전문가 의견의 핵심 포인트들)
+
+## 🚀 통합 실행 계획
+(단계별 실행 방안과 우선순위)
+
+## ⚖️ 리스크 vs 기회
+(종합적 리스크-기회 분석)
+
+## 📈 성과 지표 및 모니터링
+(성과 측정 방법과 KPI)
+
+## 💡 최종 메시지
+(조직에 전달할 핵심 메시지)
+
+## 📋 참고 자료
+(분석에 활용한 내부 데이터 및 시장 조사 결과)
+"""
+        
+        return get_ai_response(synthesis_prompt, model_name, REPORT_SYNTHESIZER['system_prompt'])
+
+    except Exception as e:
+        st.error(f"❌ 최종 보고서 작성 중 오류 발생: {str(e)}")
+        return None
+
+# ===== AI 응답 생성 함수 =====
+def get_ai_response(prompt, model_name, system_prompt=""):
+    """AI 응답 생성 (LLMClient 활용)"""
+    try:
+        # LLMClient 인스턴스 생성
+        llm_client = LLMClient()
+        
+        # 사용 가능한 제공자 확인
+        available_providers = llm_client.get_available_providers()
+        if not available_providers:
+            return "사용 가능한 LLM 제공자가 없습니다."
+        
+        # 모델 이름에서 제공자 추출
+        provider = None
+        if model_name:
+            # 모델 이름으로 제공자 판단
+            if model_name.startswith('gpt-'):
+                provider = 'openai'
+            elif model_name.startswith('claude-'):
+                provider = 'anthropic'
+            elif model_name.startswith('sonar-') or model_name.startswith('llama-'):
+                provider = 'perplexity'
+            elif model_name.startswith('gemini-'):
+                provider = 'google'
+            elif ':' in model_name:  # ollama 모델
+                provider = 'ollama'
+        
+        # 제공자를 찾지 못한 경우 기본값 사용
+        if not provider or provider not in available_providers:
+            # OpenAI를 우선으로, 없으면 첫 번째 사용 가능한 제공자
+            provider = 'openai' if 'openai' in available_providers else available_providers[0]
+        
+        # 모델 설정
+        if not model_name:
+            models = llm_client.get_models_for_provider(provider)
+            model_name = models[0] if models else None
+        
+        if not model_name:
+            return "지원하는 모델이 없습니다."
+        
+        # 메시지 구성
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        # 디버깅 정보
+        st.info(f"AI 응답 생성 - 제공자: {provider}, 모델: {model_name}")
+        
+        # 응답 생성
+        response, error = llm_client.generate_response(provider, model_name, messages, temperature=0.7)
+        
+        if error:
+            st.error(f"LLM 응답 오류: {error}")
+            return f"응답 생성 오류: {error}"
+        
+        return response
+        
+    except Exception as e:
+        return f"AI 응답 생성 중 오류: {str(e)}"
+
+# ===== PDF 생성 기능 =====
+def create_finance_analysis_pdf(user_query, persona_analyses, final_report, rag_context="", market_research=""):
+    """재무 분석 결과를 PDF로 생성"""
+    try:
+        # PDF 버퍼 생성
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+        
+        # 한글 폰트 문제 해결을 위한 대안적 접근
+        try:
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+            
+            # 방법 1: UnicodeCIDFont 사용 (한글 지원)
+            try:
+                pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
+                font_name = 'STSong-Light'
+                st.info("UnicodeCIDFont를 사용하여 한글을 지원합니다.")
+            except:
+                # 방법 2: 시스템 폰트 시도
+                import platform
+                system = platform.system()
+                font_paths = []
+                
+                if system == "Darwin":  # macOS
+                    font_paths = [
+                        '/System/Library/Fonts/Supplemental/Arial Unicode MS.ttf',
+                        '/System/Library/Fonts/AppleGothic.ttf',
+                        '/System/Library/Fonts/STHeiti Light.ttc',
+                        '/System/Library/Fonts/STHeiti Medium.ttc',
+                        '/Library/Fonts/Arial Unicode MS.ttf',
+                        '/Library/Fonts/AppleGothic.ttf',
+                        '/System/Library/Fonts/PingFang.ttc',
+                        '/System/Library/Fonts/Helvetica.ttc'
+                    ]
+                elif system == "Windows":
+                    font_paths = [
+                        'C:/Windows/Fonts/malgun.ttf',  # 맑은 고딕
+                        'C:/Windows/Fonts/NanumGothic.ttf',  # 나눔고딕
+                        'C:/Windows/Fonts/gulim.ttc',  # 굴림
+                        'C:/Windows/Fonts/batang.ttc',  # 바탕
+                        'C:/Windows/Fonts/Arial.ttf',
+                        'C:/Windows/Fonts/arial.ttf'
+                    ]
+                elif system == "Linux":
+                    font_paths = [
+                        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+                        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+                        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                        '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc'
+                    ]
+                else:  # 기타 (Android, iOS 등)
+                    font_paths = [
+                        '/system/fonts/DroidSansFallback.ttf',
+                        '/system/fonts/NotoSansCJK-Regular.ttc'
+                    ]
+                
+                # 폰트 등록 시도
+                font_registered = False
+                for font_path in font_paths:
+                    try:
+                        if os.path.exists(font_path):
+                            pdfmetrics.registerFont(TTFont('KoreanFont', font_path))
+                            font_name = 'KoreanFont'
+                            font_registered = True
+                            break
+                    except Exception as e:
+                        continue
+                
+                # 폰트 등록 실패 시 기본 폰트 사용
+                if not font_registered:
+                    font_name = 'Helvetica'
+                    st.warning(f"한글 폰트 등록 실패. 기본 폰트({font_name})를 사용합니다.")
+                    
+        except Exception as e:
+            font_name = 'Helvetica'
+            st.warning(f"폰트 설정 오류: {e}. 기본 폰트({font_name})를 사용합니다.")
+        
+        # 스타일 정의
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            spaceAfter=30,
+            alignment=TA_CENTER,
+            textColor=colors.darkblue,
+            fontName=font_name
+        )
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontSize=14,
+            spaceAfter=12,
+            spaceBefore=12,
+            textColor=colors.darkblue,
+            fontName=font_name
+        )
+        normal_style = ParagraphStyle(
+            'KoreanNormal',
+            parent=styles['Normal'],
+            fontName=font_name
+        )
+        
+        # 스토리 구성
+        story = []
+        
+        # 제목
+        story.append(Paragraph("🔍 멀티에이전트 재무 분석 보고서", title_style))
+        story.append(Spacer(1, 12))
+        
+        # 분석 요청
+        story.append(Paragraph("📋 분석 요청", heading_style))
+        story.append(Paragraph(user_query, normal_style))
+        story.append(Spacer(1, 12))
+        
+        # 분석 일시
+        story.append(Paragraph(f"📅 분석 일시: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M')}", normal_style))
+        story.append(Spacer(1, 20))
+        
+        # 내부 재무 데이터 (있는 경우)
+        if rag_context:
+            story.append(Paragraph("📊 내부 재무 데이터", heading_style))
+            story.append(Paragraph("분석에 활용된 내부 재무 데이터가 포함되었습니다.", normal_style))
+            story.append(Spacer(1, 12))
+        
+        # 시장 조사 결과 (있는 경우)
+        if market_research:
+            story.append(Paragraph("🌍 시장 조사 결과", heading_style))
+            # 시장 조사 결과를 여러 단락으로 분할
+            market_paragraphs = market_research.split('\n\n')
+            for para in market_paragraphs[:3]:  # 처음 3개 단락만 포함
+                if para.strip():
+                    story.append(Paragraph(para.strip(), normal_style))
+                    story.append(Spacer(1, 6))
+            story.append(Spacer(1, 12))
+        
+        # 전문가별 분석
+        story.append(Paragraph("👥 전문가별 분석", heading_style))
+        story.append(Spacer(1, 12))
+        
+        for persona_key, analysis in persona_analyses.items():
+            if analysis.get('success') and analysis.get('result'):
+                persona_info = FINANCE_PERSONAS[persona_key]
+                story.append(Paragraph(f"{persona_info['emoji']} {persona_info['name']}", heading_style))
+                
+                # 분석 결과를 여러 단락으로 분할
+                result_paragraphs = analysis['result'].split('\n\n')
+                for para in result_paragraphs:
+                    if para.strip():
+                        story.append(Paragraph(para.strip(), normal_style))
+                        story.append(Spacer(1, 6))
+                
+                story.append(Spacer(1, 12))
+        
+        # 최종 종합 보고서
+        if final_report:
+            story.append(Paragraph("📋 최종 종합 보고서", heading_style))
+            story.append(Spacer(1, 12))
+            
+            # 최종 보고서를 여러 단락으로 분할
+            final_paragraphs = final_report.split('\n\n')
+            for para in final_paragraphs:
+                if para.strip():
+                    story.append(Paragraph(para.strip(), normal_style))
+                    story.append(Spacer(1, 6))
+        
+        # PDF 생성
+        doc.build(story)
+        buffer.seek(0)
+        
+        return buffer
+        
+    except Exception as e:
+        st.error(f"PDF 생성 중 오류: {str(e)}")
+        return None
+
+def create_simple_analysis_pdf(user_query, response, relevant_docs=None):
+    """일반 챗봇 응답을 PDF로 생성"""
+    try:
+        # PDF 버퍼 생성
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+        
+        # 크로스 플랫폼 한글 폰트 설정
+        font_name = 'KoreanFont'
+        try:
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            import platform
+            
+            # 운영체제별 한글 폰트 경로
+            system = platform.system()
+            font_paths = []
+            
+            if system == "Darwin":  # macOS
+                font_paths = [
+                    '/System/Library/Fonts/Supplemental/Arial Unicode MS.ttf',
+                    '/System/Library/Fonts/AppleGothic.ttf',
+                    '/System/Library/Fonts/STHeiti Light.ttc',
+                    '/System/Library/Fonts/STHeiti Medium.ttc',
+                    '/Library/Fonts/Arial Unicode MS.ttf',
+                    '/Library/Fonts/AppleGothic.ttf',
+                    '/System/Library/Fonts/PingFang.ttc',
+                    '/System/Library/Fonts/Helvetica.ttc'
+                ]
+            elif system == "Windows":
+                font_paths = [
+                    'C:/Windows/Fonts/malgun.ttf',  # 맑은 고딕
+                    'C:/Windows/Fonts/NanumGothic.ttf',  # 나눔고딕
+                    'C:/Windows/Fonts/gulim.ttc',  # 굴림
+                    'C:/Windows/Fonts/batang.ttc',  # 바탕
+                    'C:/Windows/Fonts/Arial.ttf',
+                    'C:/Windows/Fonts/arial.ttf'
+                ]
+            elif system == "Linux":
+                font_paths = [
+                    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+                    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+                    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                    '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc'
+                ]
+            else:  # 기타 (Android, iOS 등)
+                font_paths = [
+                    '/system/fonts/DroidSansFallback.ttf',
+                    '/system/fonts/NotoSansCJK-Regular.ttc'
+                ]
+            
+            # 폰트 등록 시도
+            font_registered = False
+            for font_path in font_paths:
+                try:
+                    if os.path.exists(font_path):
+                        pdfmetrics.registerFont(TTFont(font_name, font_path))
+                        font_registered = True
+                        break
+                except Exception as e:
+                    continue
+            
+            # 폰트 등록 실패 시 기본 폰트 사용
+            if not font_registered:
+                font_name = 'Helvetica'
+                st.warning(f"한글 폰트 등록 실패. 기본 폰트({font_name})를 사용합니다.")
+                
+        except Exception as e:
+            font_name = 'Helvetica'
+            st.warning(f"폰트 설정 오류: {e}. 기본 폰트({font_name})를 사용합니다.")
+        
+        # 스타일 정의
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            spaceAfter=30,
+            alignment=TA_CENTER,
+            textColor=colors.darkblue,
+            fontName=font_name
+        )
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontSize=14,
+            spaceAfter=12,
+            spaceBefore=12,
+            textColor=colors.darkblue,
+            fontName=font_name
+        )
+        normal_style = ParagraphStyle(
+            'KoreanNormal',
+            parent=styles['Normal'],
+            fontName=font_name
+        )
+        
+        # 스토리 구성
+        story = []
+        
+        # 제목
+        story.append(Paragraph("🤔 Q-Li 챗봇 분석 보고서", title_style))
+        story.append(Spacer(1, 12))
+        
+        # 분석 요청
+        story.append(Paragraph("📋 분석 요청", heading_style))
+        story.append(Paragraph(user_query, normal_style))
+        story.append(Spacer(1, 12))
+        
+        # 분석 일시
+        story.append(Paragraph(f"📅 분석 일시: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M')}", normal_style))
+        story.append(Spacer(1, 20))
+        
+        # 챗봇 응답
+        story.append(Paragraph("🤖 챗봇 응답", heading_style))
+        
+        # 응답을 여러 단락으로 분할
+        response_paragraphs = response.split('\n\n')
+        for para in response_paragraphs:
+            if para.strip():
+                story.append(Paragraph(para.strip(), normal_style))
+                story.append(Spacer(1, 6))
+        
+        # 참고 문서 (있는 경우)
+        if relevant_docs:
+            story.append(Spacer(1, 12))
+            story.append(Paragraph("📚 참고 문서", heading_style))
+            for i, doc in enumerate(relevant_docs, 1):
+                title = doc.metadata.get('source', f'문서 {i}')
+                content = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+                story.append(Paragraph(f"**{title}**", normal_style))
+                story.append(Paragraph(content, normal_style))
+                story.append(Spacer(1, 6))
+        
+        # PDF 생성
+        doc.build(story)
+        buffer.seek(0)
+        
+        return buffer
+        
+    except Exception as e:
+        st.error(f"PDF 생성 중 오류: {str(e)}")
+        return None
+
+# ===== Streamlit UI =====
+if 'chatbot' not in st.session_state:
+    st.session_state.chatbot = FileRAGChatbot()
+if 'conversation' not in st.session_state:
+    st.session_state.conversation = []
+
+st.title("🤔 Q-Li (아카라라이프 사내 챗봇)")
+st.markdown("업무 문서, PDF, PPTX, XLSX, DOCX, MD 파일 기반 RAG 챗봇입니다.")
+
+# 폴더 옵션 정의
+folder_options = {
+    "전체 검색 (재무 정보 제외)": "./pages/rag_files",
+    "업무 프로세스": "./pages/rag_files/process",
+    "동료 정보": "./pages/rag_files/colleagues", 
+    "재무 정보": "./pages/rag_files/finance",
+    "재무 정보-고급": "./pages/rag_files/finance"
+}
+
+# 재무 전문가 페르소나 정의
+FINANCE_PERSONAS = {
+    "재무분석가": {
+        "name": "재무 분석가",
+        "emoji": "📊",
+        "role": "재무 데이터 분석 및 해석 전문가",
+        "expertise": "재무제표 분석, 재무 비율 분석, 현금흐름 분석, 투자 평가",
+        "perspective": "재무적 타당성, 수익성, 안정성, 성장성을 중심으로 분석",
+        "system_prompt": """당신은 15년 이상의 경험을 가진 최고 수준의 재무 분석가입니다.
+
+【전문 영역】
+- 재무제표 분석 및 재무 모델링
+- 재무 비율 분석 및 벤치마킹
+- 현금흐름 분석 및 유동성 관리
+- 투자 평가 및 자본 배분 최적화
+- 리스크 관리 및 내부통제
+- 재무 예측 및 시나리오 분석
+
+【분석 스타일】
+1. 재무 지표를 다각도로 분석하여 현황을 정확히 진단
+2. 수치적 근거를 바탕으로 한 객관적 분석 제공
+3. 업계 벤치마크와의 비교 분석 수행
+4. 재무적 리스크와 기회 요인을 정량화
+5. 구체적인 개선 방안과 실행 계획 제시
+6. 재무적 임팩트를 명확히 정량화
+
+【리포트 요구사항】
+- 주요 재무 비율과 업계 평균 비교 분석
+- 수익성, 안정성, 성장성 관점에서 종합 평가
+- 현금흐름 예측과 자금 조달 계획 수립
+- 재무적 리스크 요인과 완화 방안 제시
+- 구체적인 개선 목표와 실행 방안 제시
+- 재무적 성과 측정 지표(KPI) 설정"""
+    },
+    "시장분석가": {
+        "name": "시장 분석가",
+        "emoji": "🌍",
+        "role": "시장 동향 및 경쟁 환경 분석 전문가",
+        "expertise": "시장 분석, 경쟁사 분석, 산업 트렌드, 시장 기회 분석",
+        "perspective": "시장 기회, 경쟁 환경, 산업 트렌드, 시장 리스크를 중심으로 분석",
+        "system_prompt": """당신은 글로벌 시장 분석 경험을 가진 최고 수준의 시장 분석가입니다.
+
+【전문 영역】
+- 시장 규모 및 성장률 분석
+- 경쟁사 분석 및 포지셔닝 전략
+- 산업 트렌드 및 기술 동향 분석
+- 시장 기회 및 위험 요인 평가
+- 고객 세그먼트 분석
+- 시장 진입 및 확장 전략
+
+【분석 스타일】
+1. 정량적 시장 데이터와 정성적 트렌드 분석을 종합
+2. 경쟁 환경과 시장 포지셔닝을 객관적으로 평가
+3. 시장 기회와 위험 요인을 균형 있게 분석
+4. 구체적인 시장 진입 및 확장 전략 제시
+5. 시장 변화에 대한 대응 방안 수립
+6. 시장 기반의 수익성 분석 수행
+
+【리포트 요구사항】
+- 시장 규모, 성장률, 고객 세그먼트를 정량화
+- 경쟁사 대비 우위/열위 요소를 매트릭스로 분석
+- 시장 기회와 위험 요인을 정량적으로 평가
+- 구체적인 시장 진입 및 확장 전략 제시
+- 시장 변화에 대한 대응 방안 수립
+- 시장 기반의 수익성 개선 방안 도출"""
+    },
+    "마케팅전무": {
+        "name": "마케팅 전무",
+        "emoji": "📢",
+        "role": "마케팅 전략 및 브랜드 관리 전문가",
+        "expertise": "브랜드 전략, 고객 경험, 마케팅 채널, 수익성 분석",
+        "perspective": "고객 니즈, 브랜드 가치, 마케팅 ROI, 고객 생애가치를 중심으로 분석",
+        "system_prompt": """당신은 디지털 마케팅과 브랜드 전략 분야의 최고 전문가인 마케팅 전무입니다.
+
+【전문 영역】
+- 브랜드 포지셔닝 및 아이덴티티 구축
+- 고객 세그멘테이션 및 타겟팅 전략
+- 마케팅 채널 최적화 및 ROI 분석
+- 고객 경험 설계 및 개인화 전략
+- 마케팅 자동화 및 데이터 분석
+- 브랜드 가치 측정 및 관리
+
+【분석 스타일】
+1. 고객 데이터 기반의 객관적 분석 수행
+2. 마케팅 ROI와 수익성 중심의 전략 수립
+3. 브랜드 가치와 고객 생애가치 극대화 방안 제시
+4. 마케팅 채널별 성과 분석 및 최적화
+5. 경쟁사 마케팅 전략 벤치마킹
+6. 창의적 아이디어와 데이터 기반 접근법의 균형
+
+【리포트 요구사항】
+- 타겟 고객 세그먼트별 크기와 특성을 구체적으로 분석
+- 마케팅 채널별 ROI와 예산 배분 최적화 방안 제시
+- 브랜드 가치 증대를 위한 구체적 전략 수립
+- 고객 생애가치(CLV) 향상 방안 도출
+- 마케팅 성과 측정 지표(KPI) 설정
+- 경쟁사 대비 차별화 전략 제시"""
+    },
+    "사업전략가": {
+        "name": "사업 전략가",
+        "emoji": "🎯",
+        "role": "사업 모델 및 전략 수립 전문가",
+        "expertise": "사업 전략, 수익 모델, 성장 전략, 전략적 파트너십",
+        "perspective": "사업 모델 혁신, 수익성 개선, 성장 기회, 전략적 우선순위를 중심으로 분석",
+        "system_prompt": """당신은 다양한 산업의 사업 전략을 이끌어온 최고 수준의 사업 전략가입니다.
+
+【전문 영역】
+- 사업 모델 혁신 및 수익 다각화
+- 성장 전략 수립 및 실행 계획
+- 전략적 파트너십 및 M&A 기획
+- 시장 진입 및 확장 전략
+- 수익성 개선 및 비용 최적화
+- 전략적 우선순위 설정 및 자원 배분
+
+【분석 스타일】
+1. 사업 모델의 수익성과 지속가능성을 종합적으로 평가
+2. 성장 기회와 위험 요인을 균형 있게 분석
+3. 구체적인 실행 계획과 성과 측정 방안 제시
+4. 전략적 파트너십과 협력 기회 발굴
+5. 수익성 개선을 위한 구체적 액션 플랜 수립
+6. 장기적 관점에서의 전략적 방향성 제시
+
+【리포트 요구사항】
+- 사업 모델의 수익성과 지속가능성 분석
+- 성장 기회와 위험 요인을 정량적으로 평가
+- 구체적인 실행 계획과 성과 측정 지표 설정
+- 전략적 파트너십 기회 발굴 및 평가
+- 수익성 개선을 위한 구체적 방안 제시
+- 장기적 전략적 방향성과 로드맵 수립"""
+    },
+    "영업분석가": {
+        "name": "영업 분석가",
+        "emoji": "🤝",
+        "role": "영업 성과 및 고객 관계 분석 전문가",
+        "expertise": "영업 전략, 고객 관계 관리, 수익성 분석, 영업 프로세스 최적화",
+        "perspective": "영업 효율성, 고객 만족도, 수익 창출, 영업 생산성을 중심으로 분석",
+        "system_prompt": """당신은 B2B/B2C 영업 전략과 고객 관계 관리 분야의 최고 전문가인 영업 분석가입니다.
+
+【전문 영역】
+- 영업 프로세스 최적화 및 생산성 향상
+- 고객 세그멘테이션 및 관계 관리
+- 영업 성과 분석 및 예측
+- 수익성 분석 및 고객 생애가치 측정
+- 영업 채널 최적화 및 파트너십 관리
+- 고객 만족도 및 충성도 분석
+
+【분석 스타일】
+1. 영업 데이터 기반의 객관적 성과 분석
+2. 고객별 수익성과 성장 잠재력을 정량 평가
+3. 영업 프로세스 개선을 통한 효율성 향상 방안 제시
+4. 고객 만족도와 충성도 향상 전략 수립
+5. 영업 채널별 성과 분석 및 최적화
+6. 수익성 개선을 위한 구체적 액션 플랜 도출
+
+【리포트 요구사항】
+- 영업 성과 지표(KPI)와 개선 목표치 설정
+- 고객별 수익성과 성장 잠재력 분석
+- 영업 프로세스 개선안과 기대 효과 제시
+- 고객 만족도 향상과 충성도 제고 방안
+- 영업 채널 최적화 및 파트너십 전략
+- 수익성 개선을 위한 구체적 실행 계획"""
+    }
+}
+
+# 최종 보고서 작성자 페르소나
+REPORT_SYNTHESIZER = {
+    "name": "최종 보고서 작성자",
+    "emoji": "📋",
+    "role": "전문가 분석 결과 종합 및 최종 보고서 작성",
+    "expertise": "분석 결과 종합, 전략적 제안, 실행 계획 수립",
+    "perspective": "전문가들의 분석을 종합하여 실현 가능한 전략과 실행 계획을 제시",
+    "system_prompt": """당신은 다양한 전문가들의 분석을 종합하여 최종 보고서를 작성하는 전문가입니다.
+
+【전문 영역】
+- 다각도 분석 결과 종합 및 해석
+- 전략적 우선순위 설정 및 실행 계획 수립
+- 리스크와 기회 요인의 균형적 평가
+- 구체적이고 실현 가능한 제안 도출
+- 성과 측정 지표 및 모니터링 방안 수립
+
+【분석 스타일】
+1. 각 전문가의 관점을 균형 있게 고려하여 종합적 분석 수행
+2. 실현 가능성과 임팩트를 고려한 우선순위 설정
+3. 구체적인 실행 계획과 성과 측정 방안 제시
+4. 리스크 관리와 기회 활용 방안을 균형 있게 제시
+5. 이해관계자별 커뮤니케이션 전략 포함
+6. 장기적 관점에서의 지속가능한 전략 수립
+
+【리포트 요구사항】
+- 각 전문가 분석의 핵심 포인트를 명확히 요약
+- 전략적 우선순위와 실행 순서를 구체적으로 제시
+- 예상 성과와 리스크를 정량적으로 평가
+- 구체적인 실행 계획과 타임라인 수립
+- 성과 측정 지표와 모니터링 방안 설정
+- 이해관계자별 커뮤니케이션 전략 포함"""
+}
+
+# 폴더 선택 라디오 버튼
+st.markdown("### 📁 검색 폴더 선택")
+
+if 'selected_folder' not in st.session_state:
+    st.session_state.selected_folder = "전체 검색 (재무 정보 제외)"
+
+selected_folder = st.radio(
+    "검색할 폴더를 선택하세요:",
+    options=list(folder_options.keys()),
+    index=list(folder_options.keys()).index(st.session_state.selected_folder),
+    help="선택한 폴더의 문서만 검색합니다. 전체 검색은 finance 폴더를 제외합니다. 재무 정보-고급은 5명의 전문가가 동시에 분석합니다."
+)
+
+# 재무 정보-고급 옵션에 대한 추가 설명
+if selected_folder == "재무 정보-고급":
+    st.info("""
+    🔍 **재무 정보-고급 분석 모드**
+    
+    이 모드에서는 다음과 같은 전문가들이 동시에 분석을 수행합니다:
+    
+    📊 **재무 분석가**: 재무제표 분석, 재무 비율 분석, 현금흐름 분석
+    🌍 **시장 분석가**: 시장 동향, 경쟁사 분석, 산업 트렌드 분석  
+    📢 **마케팅 전무**: 브랜드 전략, 고객 경험, 마케팅 ROI 분석
+    🎯 **사업 전략가**: 사업 모델 혁신, 수익성 개선, 성장 전략
+    🤝 **영업 분석가**: 영업 성과, 고객 관계, 수익성 분석
+    
+    각 전문가는 내부 재무 데이터와 실시간 시장 조사 결과를 바탕으로 분석하며, 
+    최종 보고서 작성자가 모든 분석을 종합하여 실현 가능한 전략을 제시합니다.
+    """)
+
+# 폴더 변경 시 RAG 시스템 업데이트
+if selected_folder != st.session_state.selected_folder:
+    st.session_state.selected_folder = selected_folder
+    folder_path = folder_options[selected_folder]
+    
+    # 전체 검색인 경우 finance 폴더 제외
+    if selected_folder == "전체 검색 (재무 정보 제외)":
+        st.session_state.chatbot.rag_system.set_search_folder(folder_path)
+        st.info(f"📁 선택된 폴더: {selected_folder} (finance 폴더 제외)")
+    else:
+        st.session_state.chatbot.rag_system.set_search_folder(folder_path)
+        st.info(f"📁 선택된 폴더: {selected_folder}")
+
+st.markdown("---")
+
+# LLM 제공자/모델 선택
+with st.sidebar:
+    st.markdown("## ⚙️ 설정")
+    providers = st.session_state.chatbot.llm_client.get_available_providers()
+    if providers:
+        # OpenAI를 기본 제공자로 설정
+        default_provider = 'openai' if 'openai' in providers else providers[0]
+        provider_index = providers.index(default_provider) if default_provider in providers else 0
+        
+        selected_provider = st.selectbox(
+            "LLM 제공자 선택",
+            providers,
+            index=provider_index
+        )
+        models = st.session_state.chatbot.llm_client.get_models_for_provider(selected_provider)
+        if models:
+            # 기본 모델 설정
+            if selected_provider == 'openai' and 'gpt-4o-mini' in models:
+                model_index = models.index('gpt-4o-mini')
+            elif selected_provider == 'anthropic' and 'claude-3-7-sonnet-latest' in models:
+                model_index = models.index('claude-3-7-sonnet-latest')
+            elif selected_provider == 'ollama' and 'mistral:latest' in models:
+                model_index = models.index('mistral:latest')
+            else:
+                model_index = 0
+            
+            selected_model = st.selectbox(
+                "모델 선택",
+                models,
+                index=model_index
+            )
+        else:
+            selected_model = None
+    else:
+        st.error("사용 가능한 LLM 제공자가 없습니다.")
+        selected_provider = None
+        selected_model = None
+    temperature = st.slider("창의성 (Temperature)", 0.0, 1.0, 0.7, 0.1)
+    st.markdown("---")
+    if st.button("🔄 파일 인덱스 재구축"):
+        with st.spinner("파일 인덱스를 재구축 중입니다..."):
+            # 현재 선택된 폴더로 인덱스 재구축
+            folder_path = folder_options[st.session_state.selected_folder]
+            st.session_state.chatbot.rag_system.set_search_folder(folder_path)
+            st.success(f"파일 인덱스가 재구축되었습니다! (폴더: {st.session_state.selected_folder})")
+
+# CSS 스타일 추가 (00_🤔_Q-Li.py와 동일)
+st.markdown("""
+<style>
+.user-bubble {
+    background: #2d2d2d;
+    color: #fff;
+    padding: 0.7em 1em;
+    border-radius: 1em 1em 0 1em;
+    margin: 0.5em 0;
+    max-width: 70%;
+    align-self: flex-end;
+    text-align: right;
+}
+.bot-bubble {
+    background: #2323a7;
+    color: #fff;
+    padding: 0.7em 1em;
+    border-radius: 1em 1em 1em 0;
+    margin: 0.5em 0;
+    max-width: 70%;
+    align-self: flex-start;
+    text-align: left;
+}
+.bubble-container {
+    display: flex;
+    flex-direction: column;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# 대화 기록 표시 (맨 위)
+st.markdown("### 💬 챗봇과 대화하기")
+
+# PDF 다운로드 버튼 (마지막 메시지가 챗봇 응답인 경우)
+if st.session_state.conversation and st.session_state.conversation[-1]['role'] == '챗봇':
+    last_message = st.session_state.conversation[-1]
+    user_message = st.session_state.conversation[-2]['content'] if len(st.session_state.conversation) > 1 else "분석 요청"
+    
+    # PDF 생성 및 다운로드 버튼
+    if 'persona_analyses' in last_message and last_message['persona_analyses']:
+        # 멀티에이전트 분석 결과 PDF
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("📄 PDF 다운로드", type="secondary"):
+                with st.spinner("PDF 생성 중..."):
+                    pdf_buffer = create_finance_analysis_pdf(
+                        user_message,
+                        last_message['persona_analyses'],
+                        last_message['content'].split("### 📋 최종 종합 보고서\n")[-1] if "### 📋 최종 종합 보고서\n" in last_message['content'] else "",
+                        last_message.get('rag_context', ''),
+                        last_message.get('market_research', '')
+                    )
+                    if pdf_buffer:
+                        st.download_button(
+                            label="💾 PDF 다운로드",
+                            data=pdf_buffer.getvalue(),
+                            file_name=f"재무분석보고서_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                            mime="application/pdf"
+                        )
+        with col2:
+            st.info("멀티에이전트 재무 분석 결과를 PDF로 다운로드할 수 있습니다.")
+    else:
+        # 일반 챗봇 응답 PDF
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("📄 PDF 다운로드", type="secondary"):
+                with st.spinner("PDF 생성 중..."):
+                    pdf_buffer = create_simple_analysis_pdf(
+                        user_message,
+                        last_message['content'],
+                        last_message.get('relevant_docs')
+                    )
+                    if pdf_buffer:
+                        st.download_button(
+                            label="💾 PDF 다운로드",
+                            data=pdf_buffer.getvalue(),
+                            file_name=f"Q-Li분석보고서_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                            mime="application/pdf"
+                        )
+        with col2:
+            st.info("챗봇 분석 결과를 PDF로 다운로드할 수 있습니다.")
+
+st.markdown('<div class="bubble-container">', unsafe_allow_html=True)
+for i, message in enumerate(st.session_state.conversation):
+    if message['role'] == '사용자':
+        st.markdown(f"<div class='user-bubble'>👤 {message['content']}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div class='bot-bubble'>🤔 {message['content']}</div>", unsafe_allow_html=True)
+        
+        # 참고 문서 표시
+        if 'relevant_docs' in message and message['relevant_docs']:
+            with st.expander("📚 참고 문서", expanded=False):
+                for j, doc in enumerate(message['relevant_docs'], 1):
+                    title = doc.metadata.get('source', f'문서 {j}')
+                    st.markdown(f"**{title}**")
+                    st.markdown(doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content)
+        
+        # 시장 조사 결과 표시 (재무 정보-고급인 경우)
+        if 'market_research' in message and message['market_research']:
+            with st.expander("🌍 시장 조사 결과", expanded=False):
+                st.markdown(message['market_research'])
+        
+        # 페르소나별 분석 결과 표시 (재무 정보-고급인 경우)
+        if 'persona_analyses' in message and message['persona_analyses']:
+            with st.expander("👥 전문가별 상세 분석", expanded=False):
+                for persona_key, analysis in message['persona_analyses'].items():
+                    if analysis.get('success'):
+                        persona_info = FINANCE_PERSONAS[persona_key]
+                        st.markdown(f"### {persona_info['emoji']} {persona_info['name']}")
+                        st.markdown(analysis['result'])
+                        st.markdown("---")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# 입력 필드 (맨 아래 고정)
+st.markdown("---")
+st.markdown("### 💬 질문하기")
+
+# 입력 필드 키 관리
+if 'chat_input_key' not in st.session_state:
+    st.session_state['chat_input_key'] = 0
+
+# 입력 필드
+user_input = st.text_area(
+    "질문을 입력하세요:",
+    key=f"chat_input_{st.session_state['chat_input_key']}",
+    value="",
+    height=80,
+    label_visibility="collapsed",
+    placeholder="메시지를 입력하세요..."
+)
+
+if st.button("전송", type="primary"):
+    if user_input.strip():
+        st.session_state.conversation.append({'role': '사용자', 'content': user_input, 'timestamp': datetime.now()})
+        
+        # 재무 정보-고급 옵션인 경우 멀티에이전트 분석 수행
+        if selected_folder == "재무 정보-고급":
+            with st.spinner("🔍 멀티에이전트 분석 중..."):
+                # 1. RAG 컨텍스트 생성
+                rag_context = ""
+                relevant_docs = st.session_state.chatbot.rag_system.search(user_input, k=5)
+                if relevant_docs:
+                    context_parts = []
+                    for i, doc in enumerate(relevant_docs, 1):
+                        title = doc.metadata.get('source', f'문서 {i}')
+                        content = doc.page_content[:1000]
+                        context_parts.append(f"문서 {i} - {title}:\n{content}")
+                    rag_context = "\n\n".join(context_parts)
+                
+                # 2. 시장 조사 수행
+                market_research = ""
+                try:
+                    market_query = f"{user_input} 관련 최신 시장 동향 및 경쟁사 분석"
+                    market_research = perform_perplexity_search(market_query)
+                except Exception as e:
+                    st.warning(f"시장 조사 중 오류: {str(e)}")
+                
+                # 3. 멀티에이전트 분석 수행
+                persona_analyses = {}
+                
+                # 모델 정보 디버깅
+                st.info(f"사용할 모델: {selected_model}, 제공자: {selected_provider}")
+                
+                with ThreadPoolExecutor(max_workers=len(FINANCE_PERSONAS)) as executor:
+                    # 각 페르소나별 분석 작업 준비
+                    analysis_tasks = []
+                    for persona_key, persona_info in FINANCE_PERSONAS.items():
+                        task_args = (user_input, persona_key, persona_info, rag_context, market_research, selected_model)
+                        analysis_tasks.append(executor.submit(analyze_persona_concurrent_finance, task_args))
+                    
+                    # 결과 수집
+                    for future in analysis_tasks:
+                        persona_key, result, success = future.result()
+                        persona_analyses[persona_key] = {
+                            'result': result,
+                            'success': success
+                        }
+                
+                # 4. 최종 보고서 작성
+                final_report = synthesize_finance_analysis(
+                    user_input, persona_analyses, rag_context, market_research, selected_model
+                )
+                
+                # 5. 결과를 대화에 추가
+                analysis_summary = f"""
+## 🔍 멀티에이전트 재무 분석 결과
+
+### 📊 전문가별 분석
+"""
+                
+                for persona_key, analysis in persona_analyses.items():
+                    if analysis.get('success'):
+                        persona_info = FINANCE_PERSONAS[persona_key]
+                        analysis_summary += f"\n#### {persona_info['emoji']} {persona_info['name']}\n{analysis['result']}\n"
+                
+                analysis_summary += f"\n### 📋 최종 종합 보고서\n{final_report if final_report else '최종 보고서 생성 실패'}"
+                
+                st.session_state.conversation.append({
+                    'role': '챗봇', 
+                    'content': analysis_summary, 
+                    'timestamp': datetime.now(), 
+                    'provider': selected_provider, 
+                    'model': selected_model, 
+                    'relevant_docs': relevant_docs,
+                    'persona_analyses': persona_analyses,
+                    'market_research': market_research,
+                    'rag_context': rag_context
+                })
+        else:
+            # 일반 RAG 챗봇 응답
+            with st.spinner("🤖 답변 생성 중..."):
+                response, relevant_docs = st.session_state.chatbot.generate_response(
+                    user_input, selected_provider, selected_model, temperature
+                )
+                st.session_state.conversation.append({
+                    'role': '챗봇', 
+                    'content': response, 
+                    'timestamp': datetime.now(), 
+                    'provider': selected_provider, 
+                    'model': selected_model, 
+                    'relevant_docs': relevant_docs
+                })
+        
+        # 입력 초기화를 위한 키 변경
+        if 'chat_input_key' not in st.session_state:
+            st.session_state['chat_input_key'] = 0
+        st.session_state['chat_input_key'] += 1
+        st.rerun()

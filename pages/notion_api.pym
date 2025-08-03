@@ -1,0 +1,806 @@
+import streamlit as st
+import requests
+import json
+import pandas as pd
+from datetime import datetime
+import os
+from typing import Dict, List, Optional, Any
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
+
+# 페이지 설정
+st.set_page_config(
+    page_title="Notion 데이터 읽기",
+    page_icon="📝",
+    layout="wide"
+)
+
+# 사이드바 설정
+st.sidebar.title("⚙️ 설정")
+
+# Notion API 설정 (.env에서 읽어오기)
+NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+NOTION_DB_URL = os.getenv("NOTION_DB_URL")
+
+# Database ID 추출 함수
+def extract_database_id(url: str) -> str:
+    """Notion URL에서 Database ID를 추출합니다."""
+    import re
+    
+    # 다양한 URL 패턴에서 Database ID 추출
+    patterns = [
+        r'notion\.so/workspace/([a-zA-Z0-9]{32})',
+        r'notion\.so/([a-zA-Z0-9]{32})',
+        r'notion\.so/workspace/([a-zA-Z0-9]{32})\?',
+        r'notion\.so/([a-zA-Z0-9]{32})\?'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    return None
+
+# Database ID 추출
+DATABASE_ID = None
+if NOTION_DB_URL:
+    DATABASE_ID = extract_database_id(NOTION_DB_URL)
+    if DATABASE_ID:
+        st.sidebar.success(f"✅ Database ID가 URL에서 추출되었습니다: {DATABASE_ID[:8]}...")
+    else:
+        st.sidebar.error("❌ URL에서 Database ID를 추출할 수 없습니다.")
+        st.sidebar.info("💡 올바른 Notion 데이터베이스 URL인지 확인해주세요.")
+else:
+    st.sidebar.error("❌ .env 파일에서 NOTION_DB_URL을 찾을 수 없습니다.")
+    st.sidebar.info("💡 .env 파일에 NOTION_DB_URL=your_notion_url 형식으로 추가해주세요.")
+
+# 수동 Database ID 입력 (백업용)
+MANUAL_DATABASE_ID = st.sidebar.text_input(
+    "Database ID (수동 입력)",
+    help="자동 추출이 실패한 경우 수동으로 Database ID를 입력하세요."
+)
+
+# 최종 Database ID 결정
+FINAL_DATABASE_ID = DATABASE_ID or MANUAL_DATABASE_ID
+
+if NOTION_API_KEY:
+    st.sidebar.success("✅ Notion API 키가 .env 파일에서 로드되었습니다.")
+else:
+    st.sidebar.error("❌ .env 파일에서 NOTION_API_KEY를 찾을 수 없습니다.")
+    st.sidebar.info("💡 .env 파일에 NOTION_API_KEY=your_api_key 형식으로 추가해주세요.")
+
+# 메인 함수들
+def test_notion_connection(api_key: str) -> Dict:
+    """Notion API 연결을 테스트합니다."""
+    url = "https://api.notion.com/v1/users/me"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return {"success": True, "data": response.json()}
+    except requests.exceptions.RequestException as e:
+        return {"success": False, "error": str(e), "status_code": response.status_code if 'response' in locals() else None}
+
+def get_notion_database(database_id: str, api_key: str) -> Dict:
+    """Notion 데이터베이스에서 데이터를 가져옵니다."""
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.post(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"API 요청 오류: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            st.error(f"상태 코드: {e.response.status_code}")
+            try:
+                error_detail = e.response.json()
+                st.error(f"오류 상세: {error_detail}")
+            except:
+                st.error(f"응답 내용: {e.response.text}")
+        return None
+
+def parse_notion_properties(properties: Dict) -> Dict:
+    """Notion 속성들을 파싱합니다."""
+    parsed = {}
+    
+    for key, value in properties.items():
+        prop_type = value.get("type")
+        
+        if prop_type == "title":
+            title_content = value.get("title", [])
+            if title_content:
+                parsed[key] = title_content[0].get("plain_text", "")
+            else:
+                parsed[key] = ""
+                
+        elif prop_type == "rich_text":
+            rich_text_content = value.get("rich_text", [])
+            if rich_text_content:
+                parsed[key] = rich_text_content[0].get("plain_text", "")
+            else:
+                parsed[key] = ""
+                
+        elif prop_type == "number":
+            parsed[key] = value.get("number")
+            
+        elif prop_type == "select":
+            select_value = value.get("select")
+            if select_value:
+                parsed[key] = select_value.get("name", "")
+            else:
+                parsed[key] = ""
+                
+        elif prop_type == "multi_select":
+            multi_select_values = value.get("multi_select", [])
+            parsed[key] = ", ".join([item.get("name", "") for item in multi_select_values])
+            
+        elif prop_type == "date":
+            date_value = value.get("date")
+            if date_value:
+                parsed[key] = date_value.get("start", "")
+            else:
+                parsed[key] = ""
+                
+        elif prop_type == "checkbox":
+            parsed[key] = value.get("checkbox", False)
+            
+        elif prop_type == "url":
+            parsed[key] = value.get("url", "")
+            
+        elif prop_type == "email":
+            parsed[key] = value.get("email", "")
+            
+        elif prop_type == "phone_number":
+            parsed[key] = value.get("phone_number", "")
+            
+        else:
+            parsed[key] = str(value)
+    
+    return parsed
+
+def convert_to_dataframe(notion_data: Dict) -> pd.DataFrame:
+    """Notion 데이터를 DataFrame으로 변환합니다."""
+    if not notion_data or "results" not in notion_data:
+        return pd.DataFrame()
+    
+    rows = []
+    for page in notion_data["results"]:
+        properties = page.get("properties", {})
+        parsed_properties = parse_notion_properties(properties)
+        
+        # 페이지 ID와 생성/수정 시간 추가
+        parsed_properties["page_id"] = page.get("id", "")
+        parsed_properties["created_time"] = page.get("created_time", "")
+        parsed_properties["last_edited_time"] = page.get("last_edited_time", "")
+        
+        rows.append(parsed_properties)
+    
+    return pd.DataFrame(rows)
+
+def export_data(df: pd.DataFrame, format_type: str):
+    """데이터를 다양한 형식으로 내보냅니다."""
+    if df.empty:
+        st.warning("내보낼 데이터가 없습니다.")
+        return
+    
+    if format_type == "CSV":
+        csv = df.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            label="CSV 다운로드",
+            data=csv,
+            file_name=f"notion_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+    elif format_type == "Excel":
+        output = pd.ExcelWriter('temp.xlsx', engine='openpyxl')
+        df.to_excel(output, index=False, sheet_name='Notion Data')
+        output.close()
+        
+        with open('temp.xlsx', 'rb') as f:
+            excel_data = f.read()
+        
+        st.download_button(
+            label="Excel 다운로드",
+            data=excel_data,
+            file_name=f"notion_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # 임시 파일 삭제
+        if os.path.exists('temp.xlsx'):
+            os.remove('temp.xlsx')
+
+def get_notion_page_content(page_id: str, api_key: str) -> Dict:
+    """Notion 페이지의 상세 내용을 가져옵니다."""
+    url = f"https://api.notion.com/v1/pages/{page_id}"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"페이지 내용 가져오기 오류: {e}")
+        return None
+
+def get_notion_page_blocks(page_id: str, api_key: str) -> List[Dict]:
+    """Notion 페이지의 블록 내용을 가져옵니다."""
+    url = f"https://api.notion.com/v1/blocks/{page_id}/children"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json().get("results", [])
+    except requests.exceptions.RequestException as e:
+        st.error(f"블록 내용 가져오기 오류: {e}")
+        return []
+
+def parse_notion_blocks(blocks: List[Dict], api_key: str = None) -> str:
+    """Notion 블록들을 텍스트로 파싱합니다."""
+    content = []
+    
+    for block in blocks:
+        block_type = block.get("type")
+        
+        if block_type == "paragraph":
+            rich_text = block.get("paragraph", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(text)
+                    
+        elif block_type == "heading_1":
+            rich_text = block.get("heading_1", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(f"# {text}")
+                    
+        elif block_type == "heading_2":
+            rich_text = block.get("heading_2", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(f"## {text}")
+                    
+        elif block_type == "heading_3":
+            rich_text = block.get("heading_3", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(f"### {text}")
+                    
+        elif block_type == "bulleted_list_item":
+            rich_text = block.get("bulleted_list_item", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(f"• {text}")
+                    
+        elif block_type == "numbered_list_item":
+            rich_text = block.get("numbered_list_item", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(f"1. {text}")
+                    
+        elif block_type == "quote":
+            rich_text = block.get("quote", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(f"> {text}")
+                    
+        elif block_type == "code":
+            rich_text = block.get("code", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(f"```\n{text}\n```")
+                    
+        elif block_type == "divider":
+            content.append("---")
+            
+        elif block_type == "table_of_contents":
+            content.append("[목차]")
+            
+        elif block_type == "callout":
+            rich_text = block.get("callout", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    icon = block.get("callout", {}).get("icon", {}).get("emoji", "💡")
+                    content.append(f"{icon} {text}")
+                    
+        elif block_type == "toggle":
+            rich_text = block.get("toggle", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    content.append(f"▶ {text}")
+                    
+        elif block_type == "to_do":
+            rich_text = block.get("to_do", {}).get("rich_text", [])
+            if rich_text:
+                text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                if text.strip():
+                    checked = block.get("to_do", {}).get("checked", False)
+                    checkbox = "☑" if checked else "☐"
+                    content.append(f"{checkbox} {text}")
+                    
+        elif block_type == "synced_block":
+            # 동기화된 블록은 하위 블록들을 재귀적으로 처리
+            children = block.get("synced_block", {}).get("children", [])
+            if children:
+                child_content = parse_notion_blocks(children, api_key)
+                if child_content.strip():
+                    content.append(child_content)
+                    
+        elif block_type == "child_database":
+            # 하위 데이터베이스는 링크로 표시
+            database_id = block.get("child_database", {}).get("id", "")
+            if database_id:
+                content.append(f"[📊 하위 데이터베이스](https://notion.so/{database_id})")
+                
+        elif block_type == "child_page":
+            # 하위 페이지의 실제 내용을 가져와서 표시
+            page_id = block.get("child_page", {}).get("id", "")
+            if page_id and api_key:
+                # 하위 페이지의 제목 가져오기
+                page_info = get_notion_page_content(page_id, api_key)
+                if page_info:
+                    properties = page_info.get("properties", {})
+                    title = ""
+                    
+                    # 제목 속성 찾기
+                    for prop_name, prop_value in properties.items():
+                        if prop_value.get("type") == "title":
+                            title_content = prop_value.get("title", [])
+                            if title_content:
+                                title = title_content[0].get("plain_text", "")
+                                break
+                    
+                    if title:
+                        content.append(f"## 📄 {title}")
+                        
+                        # 하위 페이지의 블록 내용 가져오기
+                        child_blocks = get_notion_page_blocks(page_id, api_key)
+                        if child_blocks:
+                            child_content = parse_notion_blocks(child_blocks, api_key)
+                            if child_content.strip():
+                                content.append(child_content)
+                            else:
+                                content.append("*[내용 없음]*")
+                        else:
+                            content.append("*[내용을 가져올 수 없음]*")
+                    else:
+                        content.append(f"[📄 하위 페이지](https://notion.so/{page_id})")
+                else:
+                    content.append(f"[📄 하위 페이지](https://notion.so/{page_id})")
+            else:
+                content.append(f"[📄 하위 페이지](https://notion.so/{page_id})")
+                
+        elif block_type == "embed":
+            # 임베드된 콘텐츠
+            url = block.get("embed", {}).get("url", "")
+            if url:
+                content.append(f"[🔗 임베드 링크]({url})")
+                
+        elif block_type == "image":
+            # 이미지
+            url = block.get("image", {}).get("file", {}).get("url", "")
+            if url:
+                content.append(f"![이미지]({url})")
+                
+        elif block_type == "video":
+            # 비디오
+            url = block.get("video", {}).get("file", {}).get("url", "")
+            if url:
+                content.append(f"🎥 [비디오]({url})")
+                
+        elif block_type == "file":
+            # 파일
+            url = block.get("file", {}).get("file", {}).get("url", "")
+            if url:
+                content.append(f"📎 [파일]({url})")
+                
+        elif block_type == "pdf":
+            # PDF
+            url = block.get("pdf", {}).get("file", {}).get("url", "")
+            if url:
+                content.append(f"📄 [PDF]({url})")
+                
+        elif block_type == "bookmark":
+            # 북마크
+            url = block.get("bookmark", {}).get("url", "")
+            if url:
+                content.append(f"🔖 [북마크]({url})")
+                
+        elif block_type == "equation":
+            # 수식
+            expression = block.get("equation", {}).get("expression", "")
+            if expression:
+                content.append(f"$${expression}$$")
+                
+        elif block_type == "table":
+            # 테이블 (간단한 텍스트로 표시)
+            content.append("[📊 테이블]")
+            
+        elif block_type == "column_list":
+            # 컬럼 리스트
+            content.append("[📋 컬럼 레이아웃]")
+            
+        elif block_type == "column":
+            # 컬럼
+            content.append("[📋 컬럼]")
+            
+        elif block_type == "template":
+            # 템플릿
+            content.append("[📋 템플릿]")
+            
+        elif block_type == "link_preview":
+            # 링크 미리보기
+            url = block.get("link_preview", {}).get("url", "")
+            if url:
+                content.append(f"🔗 [링크 미리보기]({url})")
+                
+        elif block_type == "unsupported":
+            # 지원되지 않는 블록
+            content.append("[⚠️ 지원되지 않는 블록]")
+            
+        else:
+            # 알 수 없는 블록 타입
+            content.append(f"[❓ 알 수 없는 블록: {block_type}]")
+    
+    return "\n\n".join(content)
+
+def display_meeting_details(df: pd.DataFrame, api_key: str):
+    """회의록 상세 내용을 표시합니다."""
+    if df.empty:
+        st.warning("표시할 데이터가 없습니다.")
+        return
+    
+    # 회의록 항목들만 필터링 (이름이 있는 항목들)
+    meeting_items = df[df['이름'].notna() & (df['이름'] != '')]
+    
+    if meeting_items.empty:
+        st.warning("회의록 항목을 찾을 수 없습니다.")
+        return
+    
+    st.subheader("📋 회의록 상세 내용")
+    
+    # 모든 항목 표시
+    st.info(f"📊 총 {len(meeting_items)}개의 회의록이 있습니다:")
+    for idx, row in meeting_items.iterrows():
+        st.info(f"  - {row['이름']} (생성일: {row['created_time'][:10]})")
+    
+    # 회의록 선택
+    selected_meeting = st.selectbox(
+        "회의록 선택",
+        options=meeting_items['이름'].tolist(),
+        index=0,
+        help="분석할 회의록을 선택하세요"
+    )
+    
+    if selected_meeting:
+        # 선택된 회의록의 페이지 ID 찾기
+        selected_row = meeting_items[meeting_items['이름'] == selected_meeting].iloc[0]
+        page_id = selected_row['page_id']
+        
+        st.info(f"📄 **{selected_meeting}**")
+        st.info(f"📅 생성일: {selected_row['created_time']}")
+        st.info(f"📝 수정일: {selected_row['last_edited_time']}")
+        st.info(f"🆔 페이지 ID: `{page_id}`")
+        
+        # 페이지 내용 가져오기
+        with st.spinner("회의록 내용을 가져오는 중..."):
+            blocks = get_notion_page_blocks(page_id, api_key)
+            
+            if blocks:
+                st.success(f"✅ {len(blocks)}개의 블록을 찾았습니다.")
+                
+                # 블록 타입 분석
+                block_types = [block.get("type", "unknown") for block in blocks]
+                type_counts = {}
+                for block_type in block_types:
+                    type_counts[block_type] = type_counts.get(block_type, 0) + 1
+                
+                st.info("📊 블록 타입 분석:")
+                for block_type, count in type_counts.items():
+                    st.info(f"  - {block_type}: {count}개")
+                
+                content = parse_notion_blocks(blocks, api_key)
+                
+                if content.strip():
+                    st.markdown("---")
+                    st.markdown("### 📝 회의록 내용")
+                    st.markdown(content)
+                    
+                    # LLM 분석 기능
+                    st.markdown("---")
+                    st.subheader("🤖 LLM 분석")
+                    
+                    # 분석 옵션
+                    analysis_type = st.selectbox(
+                        "분석 유형 선택",
+                        [
+                            "회의록 요약",
+                            "주요 논의 사항 추출",
+                            "액션 아이템 추출",
+                            "결정 사항 정리",
+                            "참석자별 역할 분석",
+                            "전체 분석 리포트"
+                        ],
+                        help="원하는 분석 유형을 선택하세요"
+                    )
+                    
+                    if st.button("🔍 LLM 분석 시작", type="primary"):
+                        with st.spinner("LLM이 분석 중입니다..."):
+                            analysis_result = analyze_with_llm(content, analysis_type)
+                            if analysis_result:
+                                st.markdown("### 📊 분석 결과")
+                                st.markdown(analysis_result)
+                                
+                                # 분석 결과 다운로드
+                                st.download_button(
+                                    label="📄 분석 결과 다운로드",
+                                    data=analysis_result,
+                                    file_name=f"{selected_meeting}_분석결과_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                                    mime="text/markdown"
+                                )
+                    
+                    # 원본 JSON 데이터 (디버깅용)
+                    with st.expander("🔧 원본 데이터 보기"):
+                        st.json(blocks)
+                        
+                    # 블록 타입별 상세 정보
+                    with st.expander("🔍 블록 타입별 상세 정보"):
+                        for i, block in enumerate(blocks):
+                            block_type = block.get("type", "unknown")
+                            st.write(f"**블록 {i+1}**: {block_type}")
+                            if block_type in ["paragraph", "heading_1", "heading_2", "heading_3"]:
+                                rich_text = block.get(block_type, {}).get("rich_text", [])
+                                if rich_text:
+                                    text = "".join([rt.get("plain_text", "") for rt in rich_text])
+                                    st.write(f"  내용: {text}")
+                            st.write("---")
+                else:
+                    st.warning("⚠️ 회의록 내용이 비어있습니다.")
+                    st.info("💡 다음 사항들을 확인해주세요:")
+                    st.info("1. 페이지에 실제 내용이 있는지 확인")
+                    st.info("2. Integration이 페이지에 접근 권한이 있는지 확인")
+                    st.info("3. 페이지가 비어있거나 특수한 블록 타입만 있는지 확인")
+                    
+                    # 디버깅을 위해 원본 데이터 표시
+                    with st.expander("🔧 디버깅: 원본 블록 데이터"):
+                        st.json(blocks)
+            else:
+                st.error("❌ 회의록 내용을 가져올 수 없습니다.")
+                st.info("💡 다음 사항들을 확인해주세요:")
+                st.info("1. Integration이 페이지에 접근 권한이 있는지 확인")
+                st.info("2. 페이지 ID가 올바른지 확인")
+                st.info("3. 페이지가 삭제되었거나 이동되었는지 확인")
+                
+                # 페이지 정보 확인
+                page_info = get_notion_page_content(page_id, api_key)
+                if page_info:
+                    with st.expander("🔧 페이지 정보"):
+                        st.json(page_info)
+
+def analyze_with_llm(content: str, analysis_type: str) -> str:
+    """LLM을 사용하여 회의록을 분석합니다."""
+    try:
+        # OpenAI API 키 확인
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            return "❌ OpenAI API 키가 설정되지 않았습니다. .env 파일에 OPENAI_API_KEY를 추가해주세요."
+        
+        import openai
+        client = openai.OpenAI(api_key=openai_api_key)
+        
+        # 분석 프롬프트 생성
+        prompts = {
+            "회의록 요약": "다음 회의록을 간결하게 요약해주세요. 주요 내용을 3-4개의 핵심 포인트로 정리해주세요.",
+            "주요 논의 사항 추출": "다음 회의록에서 주요 논의 사항들을 추출해주세요. 각 항목을 명확하게 구분해서 정리해주세요.",
+            "액션 아이템 추출": "다음 회의록에서 액션 아이템(해야 할 일)들을 추출해주세요. 담당자와 기한이 있다면 함께 표시해주세요.",
+            "결정 사항 정리": "다음 회의록에서 결정된 사항들을 정리해주세요. 각 결정 사항의 배경과 이유도 포함해주세요.",
+            "참석자별 역할 분석": "다음 회의록에서 참석자들의 역할과 기여도를 분석해주세요. 각자의 책임과 역할을 정리해주세요.",
+            "전체 분석 리포트": "다음 회의록을 종합적으로 분석해주세요. 요약, 주요 논의 사항, 액션 아이템, 결정 사항, 참석자 역할을 모두 포함한 리포트를 작성해주세요."
+        }
+        
+        prompt = prompts.get(analysis_type, "다음 회의록을 분석해주세요.")
+        
+        # LLM 호출
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "당신은 회의록 분석 전문가입니다. 주어진 회의록을 체계적으로 분석하고 명확하게 정리해주세요."},
+                {"role": "user", "content": f"{prompt}\n\n회의록 내용:\n{content}"}
+            ],
+            max_tokens=2000,
+            temperature=0.3
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        return f"❌ LLM 분석 중 오류가 발생했습니다: {str(e)}"
+
+# 메인 앱
+def main():
+    st.title("📝 Notion 데이터 읽기")
+    st.markdown("---")
+    
+    # 세션 상태 초기화
+    if 'notion_data' not in st.session_state:
+        st.session_state.notion_data = None
+    if 'selected_meeting' not in st.session_state:
+        st.session_state.selected_meeting = None
+    if 'meeting_content' not in st.session_state:
+        st.session_state.meeting_content = None
+    
+    # API 키와 데이터베이스 ID 확인
+    if not NOTION_API_KEY:
+        st.warning("⚠️ Notion API 키를 입력해주세요.")
+        st.info("💡 Notion API 키는 https://www.notion.so/my-integrations 에서 생성할 수 있습니다.")
+        return
+    
+    # API 연결 테스트
+    if st.button("🔗 API 연결 테스트", type="secondary"):
+        with st.spinner("API 연결을 테스트하는 중..."):
+            test_result = test_notion_connection(NOTION_API_KEY)
+            
+            if test_result["success"]:
+                st.success("✅ API 연결 성공!")
+                st.json(test_result["data"])
+            else:
+                st.error(f"❌ API 연결 실패: {test_result['error']}")
+                if test_result.get("status_code"):
+                    st.error(f"상태 코드: {test_result['status_code']}")
+    
+    if not FINAL_DATABASE_ID:
+        st.warning("⚠️ Database ID를 입력해주세요.")
+        st.info("💡 Database ID는 Notion 데이터베이스 URL에서 찾을 수 있습니다.")
+        return
+    
+    # 데이터베이스 정보 표시
+    st.info(f"📊 데이터베이스 ID: `{FINAL_DATABASE_ID}`")
+    
+    # 데이터 가져오기 버튼
+    if st.button("🔄 데이터 가져오기", type="primary"):
+        with st.spinner("데이터를 가져오는 중..."):
+            notion_data = get_notion_database(FINAL_DATABASE_ID, NOTION_API_KEY)
+            
+            if notion_data:
+                df = convert_to_dataframe(notion_data)
+                
+                if not df.empty:
+                    st.session_state.notion_data = df
+                    st.success(f"✅ {len(df)}개의 항목을 성공적으로 가져왔습니다!")
+                    
+                    # 데이터 미리보기
+                    st.subheader("📊 데이터 미리보기")
+                    st.dataframe(df, use_container_width=True)
+                    
+                    # 회의록 상세 내용 표시
+                    display_meeting_details(df, NOTION_API_KEY)
+                    
+                    # 데이터 통계
+                    st.subheader("📈 데이터 통계")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("총 항목 수", len(df))
+                    
+                    with col2:
+                        st.metric("컬럼 수", len(df.columns))
+                    
+                    with col3:
+                        st.metric("데이터 크기", f"{df.memory_usage(deep=True).sum() / 1024:.1f} KB")
+                    
+                    # 데이터 내보내기
+                    st.subheader("💾 데이터 내보내기")
+                    export_format = st.selectbox(
+                        "내보낼 형식 선택",
+                        ["CSV", "Excel"]
+                    )
+                    
+                    export_data(df, export_format)
+                    
+                    # 데이터 검색 및 필터링
+                    st.subheader("🔍 데이터 검색")
+                    search_term = st.text_input("검색어를 입력하세요")
+                    
+                    if search_term:
+                        # 모든 문자열 컬럼에서 검색
+                        mask = pd.DataFrame([df[col].astype(str).str.contains(search_term, case=False, na=False) 
+                                          for col in df.select_dtypes(include=['object']).columns]).any()
+                        filtered_df = df[mask]
+                        st.dataframe(filtered_df, use_container_width=True)
+                    
+                else:
+                    st.warning("⚠️ 데이터베이스에서 데이터를 찾을 수 없습니다.")
+                    st.info("💡 데이터베이스에 항목이 있는지 확인해주세요.")
+            else:
+                st.error("❌ 데이터를 가져오는데 실패했습니다.")
+                st.info("💡 다음 사항들을 확인해주세요:")
+                st.info("1. Integration이 데이터베이스에 연결되어 있는지 확인")
+                st.info("2. Integration에 읽기 권한이 있는지 확인")
+                st.info("3. 데이터베이스 ID가 올바른지 확인")
+    
+    # 세션에 저장된 데이터가 있으면 표시
+    elif st.session_state.notion_data is not None:
+        df = st.session_state.notion_data
+        
+        st.success(f"✅ {len(df)}개의 항목이 로드되어 있습니다.")
+        
+        # 데이터 미리보기
+        st.subheader("📊 데이터 미리보기")
+        st.dataframe(df, use_container_width=True)
+        
+        # 회의록 상세 내용 표시
+        display_meeting_details(df, NOTION_API_KEY)
+        
+        # 데이터 통계
+        st.subheader("📈 데이터 통계")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("총 항목 수", len(df))
+        
+        with col2:
+            st.metric("컬럼 수", len(df.columns))
+        
+        with col3:
+            st.metric("데이터 크기", f"{df.memory_usage(deep=True).sum() / 1024:.1f} KB")
+        
+        # 데이터 내보내기
+        st.subheader("💾 데이터 내보내기")
+        export_format = st.selectbox(
+            "내보낼 형식 선택",
+            ["CSV", "Excel"]
+        )
+        
+        export_data(df, export_format)
+        
+        # 데이터 검색 및 필터링
+        st.subheader("🔍 데이터 검색")
+        search_term = st.text_input("검색어를 입력하세요")
+        
+        if search_term:
+            # 모든 문자열 컬럼에서 검색
+            mask = pd.DataFrame([df[col].astype(str).str.contains(search_term, case=False, na=False) 
+                              for col in df.select_dtypes(include=['object']).columns]).any()
+            filtered_df = df[mask]
+            st.dataframe(filtered_df, use_container_width=True)
+
+# 앱 실행
+if __name__ == "__main__":
+    main()

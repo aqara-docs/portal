@@ -1,0 +1,2608 @@
+import streamlit as st
+import os
+import pandas as pd
+import mysql.connector
+from datetime import datetime, timedelta
+import time
+import re
+import json
+import requests
+from dotenv import load_dotenv
+import concurrent.futures
+import threading
+import asyncio
+import io
+from functools import lru_cache
+import urllib.parse
+
+# 환경 변수 로드
+load_dotenv()
+
+# 환경 변수 강제 재로드 (디버깅용)
+from pathlib import Path
+env_path = Path('.') / '.env'
+if env_path.exists():
+    load_dotenv(env_path, override=True)
+
+# API 키 정리 함수
+def clean_api_key(api_key):
+    """API 키에서 따옴표와 공백 제거"""
+    if not api_key:
+        return None
+    
+    # 따옴표 제거
+    api_key = api_key.strip().strip("'").strip('"')
+    
+    # 공백 제거
+    api_key = api_key.strip()
+    
+    return api_key if api_key else None
+
+def get_perplexity_models(api_key):
+    """Perplexity API에서 사용 가능한 모델 목록 가져오기"""
+    try:
+        # Perplexity API의 실제 모델 목록 (2024년 기준)
+        # https://docs.perplexity.ai/guides/model-cards
+        current_models = [
+            "sonar-pro",
+            "sonar-small-online",
+            "llama-3.1-sonar-small-128k-online",
+            "llama-3.1-sonar-medium-128k-online", 
+            "llama-3.1-sonar-large-128k-online",
+            "llama-3.1-sonar-small-128k",
+            "llama-3.1-sonar-medium-128k",
+            "llama-3.1-sonar-large-128k"
+        ]
+        
+        return current_models
+            
+    except Exception as e:
+        return []
+    
+    return []
+
+# 페이지 설정
+st.set_page_config(
+    page_title="🔍 AI 제품 소싱 시스템",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# CSS 스타일링
+st.markdown("""
+<style>
+.main-header {
+    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    padding: 1rem;
+    border-radius: 10px;
+    text-align: center;
+    color: white;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.metric-container {
+    background: white;
+    padding: 1rem;
+    border-radius: 8px;
+    border-left: 4px solid #667eea;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.agent-card {
+    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    padding: 1rem;
+    border-radius: 10px;
+    margin: 0.5rem 0;
+    border: 1px solid #e1e5e9;
+}
+
+.supplier-card {
+    background: white;
+    border: 1px solid #e1e5e9;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.search-result {
+    background: #f8f9fa;
+    border-left: 4px solid #28a745;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    border-radius: 4px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# 메인 헤더
+st.markdown("""
+<div class="main-header">
+    <h1>🔍 AI 제품 소싱 시스템</h1>
+    <p>실시간 웹 검색 기반 제품명, 제조사명, 키워드 검색 시스템</p>
+    💡 Perplexity API를 활용한 정확한 제품 소싱 및 SCM 정보 관리
+</div>
+""", unsafe_allow_html=True) 
+
+# 인증 기능 (간단한 비밀번호 보호)
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('환경변수(ADMIN_PASSWORD)가 설정되어 있지 않습니다. .env 파일을 확인하세요.')
+    st.stop()
+
+if not st.session_state.authenticated:
+    password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    if password == admin_pw:
+        st.session_state.authenticated = True
+        st.rerun()
+    else:
+        if password:  # 비밀번호가 입력된 경우에만 오류 메시지 표시
+            st.error("관리자 권한이 필요합니다")
+        st.stop()
+
+# ===== 개선된 소싱 함수들 =====
+
+def generate_smart_search_queries(product_description, target_count=5, search_regions=None):
+    """제품명, 제조사명, 키워드를 바탕으로 스마트 검색 쿼리 생성 (지역별 최적화)"""
+    queries = []
+    
+    # 입력 텍스트 정리
+    search_text = product_description.strip()
+    
+    # 지역별 검색 키워드 매핑
+    region_keywords = {
+        "중국": ["China", "Chinese", "Shenzhen", "Guangzhou", "Shanghai", "Beijing", "Guangdong"],
+        "베트남": ["Vietnam", "Vietnamese", "Ho Chi Minh", "Hanoi", "Binh Duong"],
+        "한국": ["Korea", "Korean", "Seoul", "Busan", "Incheon", "Gyeonggi"],
+        "대만": ["Taiwan", "Taipei", "Taichung", "Kaohsiung"],
+        "일본": ["Japan", "Japanese", "Tokyo", "Osaka", "Nagoya"],
+        "인도": ["India", "Indian", "Mumbai", "Delhi", "Bangalore"],
+        "태국": ["Thailand", "Thai", "Bangkok", "Chonburi", "Ayutthaya"]
+    }
+    
+    # 선택된 지역이 없으면 기본값 (중국)
+    if not search_regions:
+        search_regions = ["중국"]
+    
+    # 지역별 검색 패턴 생성
+    for region in search_regions:
+        if region in region_keywords:
+            region_terms = region_keywords[region]
+            for term in region_terms[:3]:  # 각 지역당 상위 3개 키워드만 사용
+                queries.extend([
+                    f'"{search_text}" manufacturer {term}',
+                    f'"{search_text}" factory {term}',
+                    f'"{search_text}" supplier {term}',
+                    f'"{search_text}" company {term}',
+                    f'"{search_text}" manufacturing {term}'
+                ])
+    
+    # 제품 키워드 추출
+    keywords = extract_product_keywords(search_text)
+    
+    # 키워드 기반 추가 쿼리 (지역 포함)
+    for keyword in keywords[:2]:  # 상위 2개 키워드만 사용
+        for region in search_regions:
+            if region in region_keywords:
+                region_terms = region_keywords[region]
+                for term in region_terms[:2]:  # 각 지역당 상위 2개 키워드만 사용
+                    queries.extend([
+                        f'"{keyword}" manufacturer {term}',
+                        f'"{keyword}" factory {term}',
+                        f'"{keyword}" supplier {term}'
+                    ])
+    
+    # 유사 제품명 생성 (지역 포함)
+    similar_products = generate_similar_product_queries_with_regions(search_text, search_regions)
+    queries.extend(similar_products)
+    
+    # 중복 제거 및 순서 섞기
+    unique_queries = list(dict.fromkeys(queries))
+    
+    return unique_queries[:target_count]
+
+def generate_similar_product_queries_with_regions(search_text, search_regions):
+    """유사 제품명 쿼리 생성 (지역별 최적화)"""
+    similar_queries = []
+    
+    # 제품명 매핑 (유사 제품들)
+    product_mappings = {
+        'iphone': ['smartphone', 'mobile phone', 'cell phone', 'galaxy', 'android phone'],
+        'galaxy': ['smartphone', 'mobile phone', 'cell phone', 'iphone', 'android phone'],
+        'smartphone': ['mobile phone', 'cell phone', 'iphone', 'galaxy', 'android phone'],
+        'led': ['lighting', 'light', 'bulb', 'lamp', 'illumination'],
+        'lighting': ['led', 'light', 'bulb', 'lamp', 'illumination'],
+        'wireless': ['bluetooth', 'wifi', 'cordless', 'remote'],
+        'bluetooth': ['wireless', 'audio', 'speaker', 'headphone'],
+        'speaker': ['audio', 'sound', 'bluetooth speaker', 'wireless speaker'],
+        'case': ['cover', 'protector', 'shell', 'housing'],
+        'cover': ['case', 'protector', 'shell', 'housing'],
+        'charger': ['charging', 'power supply', 'adapter', 'cable'],
+        'cable': ['wire', 'cord', 'connector', 'charger'],
+        'sensor': ['detector', 'monitor', 'meter', 'gauge'],
+        'motor': ['engine', 'actuator', 'driver', 'controller'],
+        'battery': ['power', 'energy', 'cell', 'accumulator'],
+        'display': ['screen', 'monitor', 'panel', 'lcd', 'oled'],
+        'screen': ['display', 'monitor', 'panel', 'lcd', 'oled']
+    }
+    
+    # 지역별 검색 키워드 매핑
+    region_keywords = {
+        "중국": ["China", "Chinese", "Shenzhen", "Guangzhou"],
+        "베트남": ["Vietnam", "Vietnamese", "Ho Chi Minh", "Hanoi"],
+        "한국": ["Korea", "Korean", "Seoul", "Busan"],
+        "대만": ["Taiwan", "Taipei", "Taichung"],
+        "일본": ["Japan", "Japanese", "Tokyo", "Osaka"],
+        "인도": ["India", "Indian", "Mumbai", "Delhi"],
+        "태국": ["Thailand", "Thai", "Bangkok", "Chonburi"]
+    }
+    
+    # 검색 텍스트에서 제품명 찾기
+    search_lower = search_text.lower()
+    for product, similar_products in product_mappings.items():
+        if product in search_lower:
+            for similar in similar_products[:2]:  # 상위 2개만 사용
+                for region in search_regions:
+                    if region in region_keywords:
+                        region_terms = region_keywords[region]
+                        for term in region_terms[:2]:  # 각 지역당 상위 2개 키워드만 사용
+                            similar_queries.extend([
+                                f'"{similar}" manufacturer {term}',
+                                f'"{similar}" factory {term}',
+                                f'"{similar}" supplier {term}'
+                            ])
+    
+    return similar_queries
+
+def extract_product_keywords(description):
+    """제품 설명에서 핵심 키워드 추출"""
+    # 불용어 제거
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'mine', 'yours', 'his', 'hers', 'ours', 'theirs'}
+    
+    # 텍스트 정리
+    text = re.sub(r'[^\w\s]', ' ', description.lower())
+    words = text.split()
+    
+    # 불용어 제거 및 길이 필터링
+    keywords = [word for word in words if word not in stop_words and len(word) > 2]
+    
+    # 빈도 기반 정렬 (간단한 구현)
+    word_freq = {}
+    for word in keywords:
+        word_freq[word] = word_freq.get(word, 0) + 1
+    
+    # 빈도순 정렬
+    sorted_keywords = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
+    
+    return [word for word, freq in sorted_keywords[:5]]  # 상위 5개 키워드
+
+def verify_perplexity_api_key(api_key):
+    """Perplexity API 키 검증 (개선된 버전)"""
+    try:
+        # API 키 형식 검증
+        if not api_key or not api_key.strip():
+            return False, "API 키가 비어있습니다."
+        
+        api_key = api_key.strip()
+        
+        # pplx- 접두사 확인
+        if not api_key.startswith('pplx-'):
+            return False, f"API 키가 'pplx-'로 시작하지 않습니다. 현재: {api_key[:10]}..."
+        
+        # 키 길이 확인 (pplx- + 최소 20자)
+        if len(api_key) < 25:
+            return False, f"API 키가 너무 짧습니다. 길이: {len(api_key)}"
+        
+        try:
+            from openai import OpenAI
+            
+            # Perplexity API 클라이언트 생성
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://api.perplexity.ai"
+            )
+            
+            # 테스트 메시지
+            messages = [
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant."
+                },
+                {
+                    "role": "user", 
+                    "content": "Hello"
+                }
+            ]
+            
+            # 여러 모델로 테스트
+            test_models = ["sonar-pro", "sonar-small-online"]
+            
+            for test_model in test_models:
+                try:
+                    response = client.chat.completions.create(
+                        model=test_model,
+                        messages=messages,
+                        max_tokens=10,
+                        temperature=0.1
+                    )
+                    
+                    return True, f"API 키가 유효합니다. (작동 모델: {test_model})"
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    if "Invalid model" in error_msg or "model not found" in error_msg.lower():
+                        continue  # 다음 모델 시도
+                    elif "authentication" in error_msg.lower() or "unauthorized" in error_msg.lower():
+                        return False, "API 키가 유효하지 않습니다. (인증 실패)"
+                    elif "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+                        return False, "API 요청 한도를 초과했습니다."
+                    else:
+                        continue  # 다른 오류는 다음 모델 시도
+            
+            # 모든 모델에서 실패한 경우
+            return False, "모든 테스트 모델에서 실패했습니다. API 키를 확인해주세요."
+            
+        except ImportError:
+            return False, "OpenAI 라이브러리가 설치되지 않았습니다. 'pip install openai'를 실행하세요."
+        except Exception as e:
+            return False, f"OpenAI 클라이언트 초기화 오류: {str(e)}"
+            
+    except requests.exceptions.Timeout:
+        return False, "API 요청 시간 초과"
+    except requests.exceptions.ConnectionError:
+        return False, "네트워크 연결 오류"
+    except Exception as e:
+        return False, f"API 키 검증 중 예상치 못한 오류: {str(e)}"
+
+def search_manufacturers_with_perplexity(product_description, max_results=15, query_count=3, search_regions=None):
+    """Perplexity API를 사용한 제조사 검색 (개선된 버전)"""
+    try:
+        raw_api_key = os.environ.get('PERPLEXITY_API_KEY')
+        api_key = clean_api_key(raw_api_key)
+        
+        if not api_key:
+            st.error("❌ PERPLEXITY_API_KEY가 설정되지 않았습니다.")
+            if raw_api_key:
+                st.caption(f"원본 키: '{raw_api_key[:30]}...' (정리 필요)")
+            return []
+        
+        # API 키 검증
+        is_valid, message = verify_perplexity_api_key(api_key)
+        
+        if not is_valid:
+            st.error(f"❌ API 키 검증 실패: {message}")
+            return []
+        
+        st.success("✅ API 키 검증 완료")
+        
+        # 스마트 검색 쿼리 생성 (지역별 최적화)
+        search_queries = generate_smart_search_queries(product_description, target_count=query_count, search_regions=search_regions)
+        
+        all_suppliers = []
+        
+        for i, query in enumerate(search_queries):
+            try:
+                suppliers = execute_single_search(query, api_key, max_results_per_query=5, search_regions=search_regions)
+                if suppliers:
+                    all_suppliers.extend(suppliers)
+                    
+                    # 중복 제거
+                    unique_suppliers = remove_duplicate_suppliers(all_suppliers)
+                    all_suppliers = unique_suppliers
+                    
+                    st.success(f"✅ 쿼리 {i+1}에서 {len(suppliers)}개 공급업체 발견 (총 {len(all_suppliers)}개)")
+                
+                # 잠시 대기 (API 제한 방지)
+                time.sleep(2)
+                
+            except Exception as e:
+                st.warning(f"⚠️ 쿼리 {i+1} 실행 중 오류: {str(e)}")
+                continue
+        
+        return all_suppliers[:max_results]
+        
+    except Exception as e:
+        st.error(f"❌ 제조사 검색 오류: {str(e)}")
+        return []
+
+def execute_single_search(query, api_key, max_results_per_query=5, search_regions=None):
+    """단일 검색 쿼리 실행 (OpenAI 클라이언트 사용)"""
+    try:
+        from openai import OpenAI
+        
+        # Perplexity API 클라이언트 생성
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.perplexity.ai"
+        )
+        
+        # 지역별 검색 키워드 매핑
+        region_keywords = {
+            "중국": ["China", "Chinese", "Shenzhen", "Guangzhou", "Shanghai", "Beijing", "Guangdong"],
+            "베트남": ["Vietnam", "Vietnamese", "Ho Chi Minh", "Hanoi", "Binh Duong"],
+            "한국": ["Korea", "Korean", "Seoul", "Busan", "Incheon", "Gyeonggi"],
+            "대만": ["Taiwan", "Taipei", "Taichung", "Kaohsiung"],
+            "일본": ["Japan", "Japanese", "Tokyo", "Osaka", "Nagoya"],
+            "인도": ["India", "Indian", "Mumbai", "Delhi", "Bangalore"],
+            "태국": ["Thailand", "Thai", "Bangkok", "Chonburi", "Ayutthaya"]
+        }
+        
+        # 지역 제한 조건 생성
+        region_constraint = ""
+        if search_regions:
+            region_terms = []
+            for region in search_regions:
+                if region in region_keywords:
+                    region_terms.extend(region_keywords[region])
+            if region_terms:
+                region_constraint = f"\n\nREGIONAL CONSTRAINT: Only find companies located in or manufacturing in: {', '.join(region_terms)}"
+        
+        # 더 구체적이고 효과적인 프롬프트 (지역별 최적화)
+        search_prompt = f"""
+You are a professional sourcing agent. Find {max_results_per_query} REAL manufacturing companies for: {query}
+
+CRITICAL REQUIREMENTS:
+1. Only find ACTUAL manufacturers, not distributors or trading companies
+2. Each company must have a working website
+3. Focus on companies that actually produce the requested product or related products
+4. Include companies from the specified regions only{region_constraint}
+5. Search for both the exact term and related/similar products/companies
+
+SEARCH SCOPE:
+- If searching for a product name: Find manufacturers of that product and similar products
+- If searching for a company name: Find that company and similar companies in the same industry
+- If searching for a keyword: Find manufacturers related to that technology/field
+- Include OEM/ODM companies that can manufacture similar products
+
+For each company, provide information in this EXACT format (copy this format exactly):
+
+COMPANY: [Full Company Name]
+WEBSITE: [Complete website URL with http:// or https://]
+EMAIL: [Contact email address]
+PHONE: [Phone number]
+LOCATION: [City, Country]
+SPECIALIZATION: [What they manufacture]
+COMPANY_TYPE: [Manufacturer/OEM/ODM]
+ESTABLISHED: [Year established]
+CERTIFICATIONS: [ISO, CE, RoHS, etc.]
+
+EXAMPLE FORMAT:
+COMPANY: ABC Electronics Manufacturing Co., Ltd.
+WEBSITE: https://www.abcelectronics.com
+EMAIL: sales@abcelectronics.com
+PHONE: +86-755-1234-5678
+LOCATION: Shenzhen, China
+SPECIALIZATION: Electronic components and PCB manufacturing
+COMPANY_TYPE: Manufacturer
+ESTABLISHED: 2010
+CERTIFICATIONS: ISO 9001, CE, RoHS
+
+IMPORTANT: 
+- Do not include companies without websites
+- Do not include companies that are clearly just trading companies
+- Focus on companies that actually manufacture the requested product or related products
+- Provide real, verifiable information
+- Include both exact matches and related manufacturers
+- Only include companies from the specified regions{region_constraint}
+"""
+        
+        # 사용 가능한 모델들
+        test_models = ["sonar-pro", "sonar-small-online"]
+        
+        # 각 모델로 시도
+        for model in test_models:
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": search_prompt}],
+                    max_tokens=4000,
+                    temperature=0.2
+                )
+                
+                content = response.choices[0].message.content
+                
+                # 응답 파싱
+                suppliers = parse_manufacturer_response(content, search_regions)
+                
+                if suppliers:
+                    return suppliers
+                
+            except Exception as e:
+                error_msg = str(e)
+                
+                if "Invalid model" in error_msg or "model not found" in error_msg.lower():
+                    continue  # 다음 모델 시도
+                elif "authentication" in error_msg.lower() or "unauthorized" in error_msg.lower():
+                    st.error("❌ API 키 인증 실패")
+                    return []
+                elif "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+                    st.error("❌ API 요청 한도 초과")
+                    return []
+                else:
+                    continue  # 다른 오류는 다음 모델 시도
+        
+        # 모든 모델에서 실패한 경우
+        return []
+        
+    except ImportError:
+        st.error("❌ OpenAI 라이브러리가 설치되지 않았습니다. 'pip install openai'를 실행하세요.")
+        return []
+    except Exception as e:
+        st.error(f"❌ 검색 실행 중 오류: {str(e)}")
+        return []
+
+def parse_manufacturer_response(raw_text, search_regions=None):
+    """제조사 응답 파싱 (지역별 필터링 강화)"""
+    suppliers = []
+    
+    try:
+        # 지역별 검색 키워드 매핑
+        region_keywords = {
+            "중국": ["China", "Chinese", "Shenzhen", "Guangzhou", "Shanghai", "Beijing", "Guangdong"],
+            "베트남": ["Vietnam", "Vietnamese", "Ho Chi Minh", "Hanoi", "Binh Duong"],
+            "한국": ["Korea", "Korean", "Seoul", "Busan", "Incheon", "Gyeonggi"],
+            "대만": ["Taiwan", "Taipei", "Taichung", "Kaohsiung"],
+            "일본": ["Japan", "Japanese", "Tokyo", "Osaka", "Nagoya"],
+            "인도": ["India", "Indian", "Mumbai", "Delhi", "Bangalore"],
+            "태국": ["Thailand", "Thai", "Bangkok", "Chonburi", "Ayutthaya"]
+        }
+        
+        # 더 유연한 패턴 매칭
+        patterns = [
+            # 완전한 형식
+            r'COMPANY:\s*([^\n]+)\s*\nWEBSITE:\s*([^\n]+)\s*\nEMAIL:\s*([^\n]+)\s*\nPHONE:\s*([^\n]+)\s*\nLOCATION:\s*([^\n]+)\s*\nSPECIALIZATION:\s*([^\n]+)\s*\nCOMPANY_TYPE:\s*([^\n]+)\s*\nESTABLISHED:\s*([^\n]+)\s*\nCERTIFICATIONS:\s*([^\n]+)',
+            # 기본 형식
+            r'COMPANY:\s*([^\n]+)\s*\nWEBSITE:\s*([^\n]+)\s*\nEMAIL:\s*([^\n]+)\s*\nPHONE:\s*([^\n]+)\s*\nLOCATION:\s*([^\n]+)\s*\nSPECIALIZATION:\s*([^\n]+)',
+            # 최소 형식
+            r'COMPANY:\s*([^\n]+)\s*\nWEBSITE:\s*([^\n]+)\s*\nEMAIL:\s*([^\n]+)\s*\nPHONE:\s*([^\n]+)\s*\nLOCATION:\s*([^\n]+)',
+            # 회사명과 웹사이트만
+            r'COMPANY:\s*([^\n]+)\s*\nWEBSITE:\s*([^\n]+)'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, raw_text, re.MULTILINE | re.IGNORECASE)
+            
+            for match in matches:
+                supplier = {}
+                
+                if len(match) >= 2:
+                    supplier['company_name'] = match[0].strip()
+                    supplier['website'] = clean_url(match[1].strip())
+                    
+                    if len(match) > 2:
+                        supplier['email'] = clean_email(match[2].strip())
+                    if len(match) > 3:
+                        supplier['phone'] = match[3].strip()
+                    if len(match) > 4:
+                        supplier['location'] = match[4].strip()
+                    if len(match) > 5:
+                        supplier['specialization'] = match[5].strip()
+                    if len(match) > 6:
+                        supplier['company_type'] = match[6].strip()
+                    if len(match) > 7:
+                        supplier['established'] = match[7].strip()
+                    if len(match) > 8:
+                        supplier['certifications'] = match[8].strip()
+                    
+                    # 기본값 설정
+                    supplier.setdefault('email', '')
+                    supplier.setdefault('phone', '')
+                    supplier.setdefault('location', 'Unknown')
+                    supplier.setdefault('specialization', 'Manufacturing')
+                    supplier.setdefault('company_type', 'Manufacturer')
+                    supplier.setdefault('established', 'Unknown')
+                    supplier.setdefault('certifications', 'Not specified')
+                    
+                    # 지역별 필터링 (검색 지역이 지정된 경우)
+                    if search_regions and supplier.get('location'):
+                        location_lower = supplier['location'].lower()
+                        region_match = False
+                        
+                        for region in search_regions:
+                            if region in region_keywords:
+                                region_terms = region_keywords[region]
+                                for term in region_terms:
+                                    if term.lower() in location_lower:
+                                        region_match = True
+                                        break
+                                if region_match:
+                                    break
+                        
+                        # 지역이 일치하지 않으면 제외
+                        if not region_match:
+                            continue
+                    
+                    # 유효성 검사
+                    if is_valid_supplier(supplier):
+                        suppliers.append(supplier)
+        
+        # 구조화된 파싱이 실패한 경우, 텍스트에서 정보 추출
+        if not suppliers:
+            suppliers = extract_suppliers_from_text(raw_text, search_regions)
+        
+        return suppliers
+        
+    except Exception as e:
+        return []
+
+def extract_suppliers_from_text(text, search_regions=None):
+    """텍스트에서 공급업체 정보 추출 (백업 방법, 지역별 필터링 포함)"""
+    suppliers = []
+    
+    try:
+        # 지역별 검색 키워드 매핑
+        region_keywords = {
+            "중국": ["China", "Chinese", "Shenzhen", "Guangzhou", "Shanghai", "Beijing", "Guangdong"],
+            "베트남": ["Vietnam", "Vietnamese", "Ho Chi Minh", "Hanoi", "Binh Duong"],
+            "한국": ["Korea", "Korean", "Seoul", "Busan", "Incheon", "Gyeonggi"],
+            "대만": ["Taiwan", "Taipei", "Taichung", "Kaohsiung"],
+            "일본": ["Japan", "Japanese", "Tokyo", "Osaka", "Nagoya"],
+            "인도": ["India", "Indian", "Mumbai", "Delhi", "Bangalore"],
+            "태국": ["Thailand", "Thai", "Bangkok", "Chonburi", "Ayutthaya"]
+        }
+        
+        # 회사명 패턴 찾기 (더 포괄적)
+        company_patterns = [
+            r'([A-Z][A-Za-z\s&.,]+(?:Ltd|Limited|Inc|Corp|Corporation|Company|Co|Manufacturing|Factory|Industries|Electronics|Technology|Industrial))',
+            r'([A-Z][A-Za-z\s&.,]+(?:Group|International|Global|Trading|Manufacturing))',
+            r'([A-Z][A-Za-z\s&.,]+(?:Co\.|Ltd\.|Inc\.|Corp\.))',
+            r'([A-Z][A-Za-z\s&.,]+(?:Manufacturing|Factory|Industries))'
+        ]
+        
+        # 웹사이트 패턴
+        website_pattern = r'https?://[^\s\)\]\},;]+'
+        
+        # 이메일 패턴
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        
+        # 전화번호 패턴
+        phone_pattern = r'[\+]?[0-9\s\-\(\)]{7,}'
+        
+        # 위치 패턴
+        location_pattern = r'([A-Z][a-z]+,\s*[A-Z][a-z]+|[A-Z][a-z]+,\s*[A-Z]{2,3})'
+        
+        lines = text.split('\n')
+        
+        current_supplier = {}
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # 회사명 찾기
+            for pattern in company_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    company_name = match.group(1).strip()
+                    # 이전 공급업체가 완성되면 저장
+                    if current_supplier and current_supplier.get('company_name'):
+                        if is_valid_supplier(current_supplier):
+                            # 지역별 필터링 적용
+                            if search_regions and current_supplier.get('location'):
+                                location_lower = current_supplier['location'].lower()
+                                region_match = False
+                                
+                                for region in search_regions:
+                                    if region in region_keywords:
+                                        region_terms = region_keywords[region]
+                                        for term in region_terms:
+                                            if term.lower() in location_lower:
+                                                region_match = True
+                                                break
+                                        if region_match:
+                                            break
+                                
+                                # 지역이 일치하지 않으면 제외
+                                if not region_match:
+                                    current_supplier = {'company_name': company_name}
+                                    continue
+                            
+                            suppliers.append(current_supplier.copy())
+                    # 새 공급업체 시작
+                    current_supplier = {'company_name': company_name}
+                    break
+            
+            # 웹사이트 찾기
+            website_match = re.search(website_pattern, line)
+            if website_match:
+                current_supplier['website'] = clean_url(website_match.group(0))
+            
+            # 이메일 찾기
+            email_match = re.search(email_pattern, line)
+            if email_match:
+                current_supplier['email'] = email_match.group(0)
+            
+            # 전화번호 찾기
+            phone_match = re.search(phone_pattern, line)
+            if phone_match:
+                current_supplier['phone'] = phone_match.group(0)
+            
+            # 위치 찾기
+            location_match = re.search(location_pattern, line)
+            if location_match:
+                current_supplier['location'] = location_match.group(1)
+        
+        # 마지막 공급업체 처리
+        if current_supplier and current_supplier.get('company_name'):
+            if is_valid_supplier(current_supplier):
+                # 지역별 필터링 적용
+                if search_regions and current_supplier.get('location'):
+                    location_lower = current_supplier['location'].lower()
+                    region_match = False
+                    
+                    for region in search_regions:
+                        if region in region_keywords:
+                            region_terms = region_keywords[region]
+                            for term in region_terms:
+                                if term.lower() in location_lower:
+                                    region_match = True
+                                    break
+                            if region_match:
+                                break
+                    
+                    # 지역이 일치하지 않으면 제외
+                    if not region_match:
+                        pass  # 마지막 공급업체는 제외
+                    else:
+                        suppliers.append(current_supplier)
+                else:
+                    suppliers.append(current_supplier)
+        
+        # 기본값 설정
+        for supplier in suppliers:
+            supplier.setdefault('email', '')
+            supplier.setdefault('phone', '')
+            supplier.setdefault('location', 'Unknown')
+            supplier.setdefault('specialization', 'Manufacturing')
+            supplier.setdefault('company_type', 'Manufacturer')
+            supplier.setdefault('established', 'Unknown')
+            supplier.setdefault('certifications', 'Not specified')
+        
+        return suppliers
+        
+    except Exception as e:
+        st.error(f"❌ 텍스트 추출 오류: {str(e)}")
+        return []
+
+def clean_url(url):
+    if not url:
+        return ""
+    # 마크다운 링크 패턴 처리 (텍스트가 URL인 경우도 포함)
+    markdown_pattern = r'\[([^\]]+)\]\((https?://[^\s\)]+)\)'
+    markdown_match = re.search(markdown_pattern, url)
+    if markdown_match:
+        url = markdown_match.group(2)
+    # 괄호, 공백, 특수문자 등 끝부분 정리
+    url = url.strip().split(' ')[0]
+    url = re.sub(r'[)\]\},;]+$', '', url)
+    # 괄호가 남아있는 경우 제거
+    url = url.split('(')[0]
+    # http/https 보정
+    if url and not url.startswith(('http://', 'https://')):
+        if url.startswith('www.'):
+            url = f"https://{url}"
+        elif '.' in url:
+            url = f"https://{url}"
+    # URL 인코딩 정리
+    url = urllib.parse.unquote(url)
+    return url
+
+def clean_email(email):
+    """이메일 정리"""
+    if not email:
+        return ""
+    
+    # 이메일 패턴으로 검증
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    match = re.search(email_pattern, email)
+    return match.group(0) if match else ""
+
+def is_valid_supplier(supplier):
+    """공급업체 정보 유효성 검사 (개선된 버전)"""
+    # 최소한 회사명이 있어야 함
+    if not supplier.get('company_name'):
+        return False
+    
+    # 회사명이 너무 짧으면 제외
+    if len(supplier.get('company_name', '')) < 3:
+        return False
+    
+    # 웹사이트나 이메일 중 하나는 있어야 함 (더 유연하게)
+    if not supplier.get('website') and not supplier.get('email'):
+        return False
+    
+    # 명백히 잘못된 회사명 제외
+    invalid_names = ['unknown', 'n/a', 'none', 'example', 'sample', 'test']
+    company_name_lower = supplier.get('company_name', '').lower()
+    if any(invalid in company_name_lower for invalid in invalid_names):
+        return False
+    
+    return True
+
+def remove_duplicate_suppliers(suppliers):
+    """중복 공급업체 제거"""
+    seen = set()
+    unique_suppliers = []
+    
+    for supplier in suppliers:
+        # 회사명과 웹사이트로 중복 판단
+        key = f"{supplier.get('company_name', '').lower()}_{supplier.get('website', '').lower()}"
+        
+        if key not in seen:
+            seen.add(key)
+            unique_suppliers.append(supplier)
+    
+    return unique_suppliers
+
+def verify_supplier_website(website):
+    """공급업체 웹사이트 검증 (강화된 버전)"""
+    if not website:
+        return False
+    try:
+        import requests
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
+        }
+        response = requests.get(
+            website,
+            headers=headers,
+            timeout=7,
+            allow_redirects=True,
+            verify=False  # SSL 인증서 오류 무시 (필요시)
+        )
+        # 200~399까지는 성공으로 간주
+        return 200 <= response.status_code < 400
+    except Exception:
+        return False
+
+def save_suppliers_to_database(suppliers, search_query, session_id):
+    """공급업체를 데이터베이스에 저장 (기존 데이터는 삭제하지 않음)"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            st.error("❌ 데이터베이스 연결 실패")
+            return 0
+        cursor = connection.cursor()
+        # 테이블이 없으면 생성 (기존 데이터는 삭제하지 않음)
+        try:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sourcing_suppliers (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    company_name VARCHAR(255) NOT NULL,
+                    website VARCHAR(500) DEFAULT '',
+                    email VARCHAR(255) DEFAULT '',
+                    phone VARCHAR(100) DEFAULT '',
+                    location VARCHAR(255) DEFAULT '',
+                    specialization VARCHAR(500) DEFAULT '',
+                    company_type VARCHAR(100) DEFAULT '',
+                    established VARCHAR(255) DEFAULT '',
+                    certifications VARCHAR(500) DEFAULT '',
+                    search_query VARCHAR(1000) DEFAULT '',
+                    session_id INT DEFAULT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    memo TEXT,
+                    rating VARCHAR(50) DEFAULT '',
+                    contact_person VARCHAR(255) DEFAULT '',
+                    history TEXT,
+                    INDEX idx_company_name (company_name),
+                    INDEX idx_search_query (search_query(255)),
+                    INDEX idx_session_id (session_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+            connection.commit()
+        except Exception as table_error:
+            st.error(f"❌ 테이블 생성 오류: {str(table_error)}")
+            return 0
+        saved_count = 0
+        failed_count = 0
+        for i, supplier in enumerate(suppliers):
+            try:
+                # 중복 확인
+                cursor.execute("""
+                    SELECT COUNT(*) FROM sourcing_suppliers 
+                    WHERE company_name = %s AND website = %s
+                """, (supplier.get('company_name', ''), supplier.get('website', '')))
+                if cursor.fetchone()[0] > 0:
+                    st.caption(f"⏭️ 중복 제외: {supplier.get('company_name', 'Unknown')}")
+                    continue
+                cursor.execute("""
+                    INSERT INTO sourcing_suppliers (
+                        company_name, website, email, phone, location, 
+                        specialization, company_type, established, certifications,
+                        search_query, session_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    supplier.get('company_name', ''),
+                    supplier.get('website', ''),
+                    supplier.get('email', ''),
+                    supplier.get('phone', ''),
+                    supplier.get('location', ''),
+                    supplier.get('specialization', ''),
+                    supplier.get('company_type', ''),
+                    supplier.get('established', ''),
+                    supplier.get('certifications', ''),
+                    search_query,
+                    session_id
+                ))
+                saved_count += 1
+                # 진행률 표시
+                if (i + 1) % 5 == 0 or i == len(suppliers) - 1:
+                    st.caption(f"💾 저장 진행률: {i+1}/{len(suppliers)}")
+            except Exception as e:
+                failed_count += 1
+                st.warning(f"⚠️ 공급업체 저장 실패: {supplier.get('company_name', 'Unknown')} - {str(e)}")
+                continue
+        connection.commit()
+        cursor.close()
+        connection.close()
+        if saved_count > 0:
+            st.success(f"✅ {saved_count}개 공급업체 저장 완료")
+        if failed_count > 0:
+            st.warning(f"⚠️ {failed_count}개 공급업체 저장 실패")
+        return saved_count
+    except Exception as e:
+        st.error(f"❌ 데이터베이스 저장 오류: {str(e)}")
+        return 0
+
+def get_saved_suppliers(session_id=None):
+    """저장된 공급업체 조회"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return []
+        
+        cursor = connection.cursor(dictionary=True)
+        
+        if session_id:
+            cursor.execute("""
+                SELECT *, 
+                       COALESCE(memo, '') as memo,
+                       COALESCE(rating, '') as rating,
+                       COALESCE(contact_person, '') as contact_person,
+                       COALESCE(history, '') as history
+                FROM sourcing_suppliers 
+                WHERE session_id = %s 
+                ORDER BY created_at DESC
+            """, (session_id,))
+        else:
+            cursor.execute("""
+                SELECT *, 
+                       COALESCE(memo, '') as memo,
+                       COALESCE(rating, '') as rating,
+                       COALESCE(contact_person, '') as contact_person,
+                       COALESCE(history, '') as history
+                FROM sourcing_suppliers 
+                ORDER BY created_at DESC
+            """)
+        
+        suppliers = cursor.fetchall()
+        
+        cursor.close()
+        connection.close()
+        
+        return suppliers
+        
+    except Exception as e:
+        st.error(f"❌ 공급업체 조회 오류: {str(e)}")
+        return []
+
+def delete_supplier(supplier_id):
+    """공급업체 삭제"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return False, "데이터베이스 연결 실패"
+        
+        cursor = connection.cursor()
+        
+        # 삭제 전 회사명 조회 (로그용)
+        cursor.execute("SELECT company_name FROM sourcing_suppliers WHERE id = %s", (supplier_id,))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            connection.close()
+            return False, "해당 공급업체를 찾을 수 없습니다"
+        
+        company_name = result[0]
+        
+        # 삭제 실행
+        cursor.execute("DELETE FROM sourcing_suppliers WHERE id = %s", (supplier_id,))
+        affected_rows = cursor.rowcount
+        connection.commit()
+        
+        cursor.close()
+        connection.close()
+        
+        if affected_rows > 0:
+            return True, f"'{company_name}' 삭제 완료"
+        else:
+            return False, f"'{company_name}' 삭제 실패 (영향받은 행 없음)"
+        
+    except Exception as e:
+        return False, f"삭제 오류: {str(e)}"
+
+def delete_multiple_suppliers(supplier_ids):
+    """여러 공급업체 일괄 삭제"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return False, "데이터베이스 연결 실패"
+        
+        cursor = connection.cursor()
+        
+        # 삭제할 회사명들 조회 (로그용)
+        placeholders = ', '.join(['%s'] * len(supplier_ids))
+        cursor.execute(f"SELECT company_name FROM sourcing_suppliers WHERE id IN ({placeholders})", supplier_ids)
+        companies = [row[0] for row in cursor.fetchall()]
+        
+        # 일괄 삭제 실행
+        cursor.execute(f"DELETE FROM sourcing_suppliers WHERE id IN ({placeholders})", supplier_ids)
+        affected_rows = cursor.rowcount
+        connection.commit()
+        
+        cursor.close()
+        connection.close()
+        
+        if affected_rows > 0:
+            return True, f"{affected_rows}개 공급업체 삭제 완료: {', '.join(companies[:3])}{'...' if len(companies) > 3 else ''}"
+        else:
+            return False, f"삭제 실패 (영향받은 행 없음)"
+        
+    except Exception as e:
+        return False, f"일괄 삭제 오류: {str(e)}"
+
+# ===== 데이터베이스 연결 함수 =====
+
+def connect_to_db():
+    """데이터베이스 연결"""
+    try:
+        # 환경 변수 확인
+        host = os.getenv('SQL_HOST')
+        user = os.getenv('SQL_USER')
+        password = os.getenv('SQL_PASSWORD')
+        database = os.getenv('SQL_DATABASE_NEWBIZ')
+        
+        if not all([host, user, password, database]):
+            st.error("❌ 데이터베이스 환경 변수가 설정되지 않았습니다.")
+            st.caption("필요한 환경 변수: SQL_HOST, SQL_USER, SQL_PASSWORD, SQL_DATABASE_NEWBIZ")
+            return None
+        
+        connection = mysql.connector.connect(
+            host=host,
+            user=user,
+            password=password,
+            database=database,
+            charset='utf8mb4',
+            collation='utf8mb4_unicode_ci',
+            autocommit=False,  # 명시적으로 autocommit 비활성화
+            connection_timeout=10,  # 연결 타임아웃 설정
+            pool_size=5,  # 연결 풀 크기
+            pool_name="sourcing_pool"
+        )
+        return connection
+    except mysql.connector.Error as err:
+        st.error(f"❌ 데이터베이스 연결 오류: {err}")
+        return None
+    except Exception as e:
+        st.error(f"❌ 예상치 못한 데이터베이스 오류: {str(e)}")
+        return None
+
+# 1. DB 컬럼 자동 추가 (main 함수 초기에)
+def ensure_extra_columns():
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return
+        cursor = connection.cursor()
+        cursor.execute("SHOW COLUMNS FROM sourcing_suppliers")
+        columns = [row[0] for row in cursor.fetchall()]
+        alter_sqls = []
+        if 'memo' not in columns:
+            alter_sqls.append("ALTER TABLE sourcing_suppliers ADD COLUMN memo TEXT")
+        if 'rating' not in columns:
+            alter_sqls.append("ALTER TABLE sourcing_suppliers ADD COLUMN rating VARCHAR(50) DEFAULT ''")
+        if 'contact_person' not in columns:
+            alter_sqls.append("ALTER TABLE sourcing_suppliers ADD COLUMN contact_person VARCHAR(255) DEFAULT ''")
+        if 'history' not in columns:
+            alter_sqls.append("ALTER TABLE sourcing_suppliers ADD COLUMN history TEXT")
+        for sql in alter_sqls:
+            try:
+                cursor.execute(sql)
+            except Exception as e:
+                st.error(f"DB 컬럼 추가 오류: {str(e)}")
+        # established 컬럼 길이 확장
+        try:
+            cursor.execute("ALTER TABLE sourcing_suppliers MODIFY COLUMN established VARCHAR(255)")
+        except Exception:
+            pass
+        connection.commit()
+        cursor.close()
+        connection.close()
+    except Exception as e:
+        st.error(f"DB 컬럼 추가 오류: {str(e)}")
+
+# main 함수 맨 앞에 호출
+ensure_extra_columns()
+
+# ===== 메인 UI =====
+
+def main():
+    """메인 애플리케이션"""
+    import pandas as pd   
+    # 사이드바 설정
+    with st.sidebar:
+        st.markdown("## 🔧 시스템 상태")
+        
+        # API 키 상태 확인
+        raw_perplexity_key = os.environ.get('PERPLEXITY_API_KEY', '')
+        perplexity_key = clean_api_key(raw_perplexity_key)
+        
+        if perplexity_key and len(perplexity_key) > 10:
+            st.success("✅ Perplexity API 키 설정됨")
+            
+            # API 키 검증 버튼
+            if st.button("🔍 API 키 검증", key="verify_api_key"):
+                with st.spinner("API 키 검증 중..."):
+                    is_valid, message = verify_perplexity_api_key(perplexity_key)
+                    if is_valid:
+                        st.success("✅ API 키가 유효합니다!")
+                    else:
+                        st.error(f"❌ API 키 검증 실패: {message}")
+        else:
+            st.error("❌ Perplexity API 키 필요")
+            
+            with st.expander("🔑 API 키 설정"):
+                temp_key = st.text_input("Perplexity API Key", type="password")
+                if st.button("임시 키 설정"):
+                    if temp_key.strip():
+                        cleaned_key = clean_api_key(temp_key)
+                        os.environ['PERPLEXITY_API_KEY'] = cleaned_key
+                        st.success("✅ API 키 설정됨")
+                        st.rerun()
+                
+                st.caption("💡 API 키 발급 방법:")
+                st.caption("1. https://www.perplexity.ai/settings/api 방문")
+                st.caption("2. 로그인 후 API 키 생성")
+                st.caption("3. 키는 'pplx-'로 시작해야 함")
+        
+        # 데이터베이스 상태
+        try:
+            connection = connect_to_db()
+            if connection:
+                st.success("✅ 데이터베이스 연결됨")
+                connection.close()
+            else:
+                st.error("❌ 데이터베이스 연결 실패")
+        except:
+            st.error("❌ 데이터베이스 연결 실패")
+        
+        st.markdown("---")
+        st.markdown("## 📊 사용 통계")
+        
+        # 저장된 공급업체 수 (캐시 활용)
+        try:
+            cached_suppliers = get_suppliers_with_cache()
+            total_suppliers = len(cached_suppliers)
+            st.metric("총 공급업체", total_suppliers)
+            
+            # 오늘 발견된 공급업체 수
+            today = datetime.now().date()
+            today_suppliers = sum(1 for s in cached_suppliers 
+                                if s.get('created_at') and s['created_at'].date() == today)
+            st.metric("오늘 발견", today_suppliers)
+            
+            # 전체 개수 확인 (캐시 무시)
+            if st.button("🔄 전체 개수 새로고침", key="refresh_total_count"):
+                refresh_suppliers_cache()
+                st.rerun()
+            
+        except:
+            st.metric("총 공급업체", "확인 불가")
+        
+        # 캐시 새로고침 버튼
+        if st.button("🔄 캐시 새로고침", key="refresh_cache"):
+            refresh_suppliers_cache()
+            st.success("✅ 캐시가 새로고침되었습니다!")
+            st.rerun()
+    
+    # 메인 탭 구성
+    tab1, tab2, tab_register, tab3 = st.tabs(["🔍 제품 소싱", "📋 SCM 정보", "➕ 공급업체 등록", "📊 분석 결과"])
+
+    # ===== 탭 1: 제품 소싱 =====
+    with tab1:
+        st.markdown("## 🔍 제품 소싱 검색")
+        
+        # 검색 예시
+        with st.expander("💡 검색 예시 및 팁", expanded=False):
+            st.markdown("""
+            **효과적인 검색 예시:**
+            - 제품명: "LED 조명", "스마트폰 케이스", "전자 부품"
+            - 제조사명: "삼성전자", "LG전자", "Apple"
+            - 유사 제품: "iPhone 케이스", "갤럭시 케이스"
+            - 키워드: "무선충전", "블루투스 스피커", "스마트워치"
+            - 재질/기술: "플라스틱", "실리콘", "무선충전 기술"
+            
+            **검색 팁:**
+            - 제품명, 제조사명, 키워드 모두 검색 가능
+            - 영어 키워드 혼용: "LED lighting", "wireless charging"
+            - 유사 제품명도 함께 검색됨
+            - 재질이나 기술 키워드 추가
+            """)
+        
+        # 검색 폼
+        with st.form("sourcing_form"):
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                product_description = st.text_area(
+                    "검색할 제품명, 제조사명, 또는 키워드를 입력하세요:",
+                    placeholder="예: LED 조명, 삼성전자, iPhone 케이스, 무선충전, 블루투스 스피커 등",
+                    height=100,
+                    help="제품명, 제조사명, 유사 제품명, 또는 관련 키워드를 입력해주세요."
+                )
+                
+                search_options = st.multiselect(
+                    "검색 지역:",
+                    ["중국", "베트남", "한국", "대만", "일본", "인도", "태국"],
+                    default=["중국"],
+                    help="어느 지역의 제조사를 찾을지 선택하세요"
+                )
+            
+            with col2:
+                max_results = st.slider("최대 결과 수", 5, 30, 15, help="찾을 공급업체의 최대 개수")
+                
+                query_count = st.slider("쿼리 수 (다양한 검색 패턴)", 1, 10, 3, help="Perplexity API에 보낼 검색 쿼리 개수 (기본 3, 최대 10)")
+                
+                search_depth = st.selectbox(
+                    "검색 깊이:",
+                    ["기본 (빠름)", "상세 (보통)", "포괄 (느림)"],
+                    help="검색 깊이가 깊을수록 더 많은 결과를 찾지만 시간이 오래 걸립니다"
+                )
+                
+                st.markdown("### 🔍 검색 팁")
+                st.markdown("""
+                **효과적인 검색을 위한 팁:**
+                - 제품명, 제조사명, 키워드 모두 검색 가능
+                - 유사 제품명도 함께 검색됨
+                - 재질이나 기술 키워드 추가
+                - 영어 키워드 혼용
+                """)
+            
+            submitted = st.form_submit_button("🔍 제품 소싱 시작", type="primary")
+        
+        # 검색 실행
+        if submitted:
+            if not product_description.strip():
+                st.error("❌ 제품 설명을 입력해주세요.")
+            else:
+                # 세션 ID 생성
+                session_id = int(time.time())
+                
+                with st.spinner("🔍 제품 소싱 중..."):
+                    # 검색 쿼리 생성
+                    base_query = product_description
+                    if search_options:
+                        regions = " ".join(search_options)
+                        base_query = f"{product_description} {regions}"
+                        st.info(f"🌍 선택된 검색 지역: {', '.join(search_options)}")
+                    else:
+                        st.info("🌍 검색 지역이 선택되지 않아 기본값(중국)으로 검색합니다.")
+                    
+                    # 검색 실행 (지역별 최적화)
+                    suppliers = search_manufacturers_with_perplexity(base_query, max_results, query_count, search_options)
+                    
+                    if suppliers:
+                        st.success(f"🎉 {len(suppliers)}개의 공급업체를 발견했습니다!")
+                        
+                        # 지역별 통계 표시
+                        if search_options:
+                            region_stats = {}
+                            for supplier in suppliers:
+                                location = supplier.get('location', 'Unknown').lower()
+                                for region in search_options:
+                                    region_keywords = {
+                                        "중국": ["china", "chinese", "shenzhen", "guangzhou", "shanghai", "beijing", "guangdong"],
+                                        "베트남": ["vietnam", "vietnamese", "ho chi minh", "hanoi", "binh duong"],
+                                        "한국": ["korea", "korean", "seoul", "busan", "incheon", "gyeonggi"],
+                                        "대만": ["taiwan", "taipei", "taichung", "kaohsiung"],
+                                        "일본": ["japan", "japanese", "tokyo", "osaka", "nagoya"],
+                                        "인도": ["india", "indian", "mumbai", "delhi", "bangalore"],
+                                        "태국": ["thailand", "thai", "bangkok", "chonburi", "ayutthaya"]
+                                    }
+                                    
+                                    if region in region_keywords:
+                                        for keyword in region_keywords[region]:
+                                            if keyword in location:
+                                                region_stats[region] = region_stats.get(region, 0) + 1
+                                                break
+                            
+                            if region_stats:
+                                st.info(f"🌍 지역별 발견 현황: {', '.join([f'{region}: {count}개' for region, count in region_stats.items()])}")
+                        
+                        # 데이터베이스에 저장
+                        saved_count = save_suppliers_to_database(suppliers, base_query, session_id)
+                        if saved_count > 0:
+                            st.success(f"💾 {saved_count}개 공급업체가 데이터베이스에 저장되었습니다.")
+                            # 캐시 새로고침
+                            refresh_suppliers_cache()
+                        
+                        # 세션 ID 저장
+                        st.session_state.last_session_id = session_id
+                        
+                        # 결과 표시
+                        display_suppliers(get_saved_suppliers(session_id=session_id), show_delete=False, show_detail=False, show_verify=False)
+                        
+                    else:
+                        st.warning("⚠️ 검색 조건에 맞는 공급업체를 찾지 못했습니다.")
+                        
+                        with st.expander("🔧 검색 개선 제안"):
+                            st.markdown("""
+                            **더 나은 결과를 위한 제안:**
+                            1. **제품명 다양화**: "iPhone 케이스" → "갤럭시 케이스", "스마트폰 케이스"
+                            2. **제조사명 추가**: "삼성전자", "LG전자", "Apple"
+                            3. **키워드 확장**: "무선충전", "블루투스", "스마트워치"
+                            4. **재질/기술 키워드**: "플라스틱", "실리콘", "무선충전 기술"
+                            5. **영어 키워드 혼용**: "LED lighting", "wireless charging"
+                            """)
+    
+    # ===== 탭 2: SCM 정보 =====
+    with tab2:
+        st.markdown("## 📋 SCM 정보 목록")
+        
+        # 필터링 및 관리 옵션
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            search_filter = st.text_input("🔍 통합검색", placeholder="회사명, 제품명, 키워드 등으로 검색")
+        
+        with col2:
+            location_filter = st.selectbox("🌍 지역 필터", ["전체", "중국", "베트남", "한국", "대만", "일본", "인도", "기타"])
+        
+        with col3:
+            sort_by = st.selectbox("🔄 정렬", ["최신순", "회사명순", "지역순"])
+        
+        with col4:
+            # 페이지네이션 설정
+            items_per_page = st.selectbox("📄 페이지당 표시", [20, 50, 100, 200], index=1)
+        
+        # 전체 삭제 버튼
+        st.markdown("### 🗑️ 관리")
+        
+        # 세션 상태 초기화
+        if 'confirm_delete_all' not in st.session_state:
+            st.session_state['confirm_delete_all'] = False
+        
+        if not st.session_state['confirm_delete_all']:
+            if st.button("🗑️ 전체 삭제", type="secondary", key="delete_all_btn"):
+                st.session_state['confirm_delete_all'] = True
+                st.rerun()
+        else:
+            st.warning("⚠️ 정말로 전체 공급업체를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.")
+            
+            col_yes, col_no = st.columns(2)
+            
+            with col_yes:
+                if st.button("예, 전체 삭제", key="yes_delete_all", type="primary"):
+                    try:
+                        connection = connect_to_db()
+                        if connection:
+                            cursor = connection.cursor()
+                            
+                            # 삭제 전 개수 확인
+                            cursor.execute("SELECT COUNT(*) FROM sourcing_suppliers")
+                            count_before = cursor.fetchone()[0]
+                            
+                            if count_before > 0:
+                                # 실제 삭제 실행
+                                cursor.execute("DELETE FROM sourcing_suppliers")
+                                connection.commit()
+                                
+                                # 삭제 후 개수 확인
+                                cursor.execute("SELECT COUNT(*) FROM sourcing_suppliers")
+                                count_after = cursor.fetchone()[0]
+                                
+                                cursor.close()
+                                connection.close()
+                                
+                                if count_after == 0:
+                                    st.success(f"✅ 전체 {count_before}개 공급업체가 삭제되었습니다.")
+                                    # 캐시 새로고침
+                                    refresh_suppliers_cache()
+                                else:
+                                    st.warning(f"⚠️ 일부만 삭제됨: {count_before}개 → {count_after}개")
+                            else:
+                                st.info("ℹ️ 삭제할 공급업체가 없습니다.")
+                                cursor.close()
+                                connection.close()
+                            
+                            st.session_state['confirm_delete_all'] = False
+                            st.rerun()
+                        else:
+                            st.error("❌ 데이터베이스 연결 실패")
+                    except Exception as e:
+                        st.error(f"❌ 전체 삭제 오류: {str(e)}")
+                        st.session_state['confirm_delete_all'] = False
+                        st.rerun()
+            
+            with col_no:
+                if st.button("아니오", key="no_delete_all", type="secondary"):
+                    st.session_state['confirm_delete_all'] = False
+                    st.rerun()
+
+        # 공급업체 조회 (캐시 활용)
+        suppliers = get_suppliers_with_cache()
+        
+        # 유사 업체 경고
+        if 'all_suppliers' not in st.session_state:
+            st.session_state['all_suppliers'] = suppliers
+
+        # filtered_suppliers 변수 초기화
+        filtered_suppliers = []
+        current_suppliers = []
+        current_page = 1
+        start_idx = 0
+
+        if suppliers:
+            # 최적화된 필터링
+            filtered_suppliers = filter_suppliers_optimized(
+                suppliers, 
+                search_filter=search_filter, 
+                location_filter=location_filter, 
+                sort_by=sort_by
+            )
+            
+            st.success(f"📊 총 {len(filtered_suppliers)}개의 공급업체가 있습니다.")
+            
+            # 디버깅 정보 (필터 적용 시에만 표시)
+            if search_filter or (location_filter and location_filter != "전체"):
+                with st.expander("🔍 필터링 디버깅 정보", expanded=False):
+                    st.write(f"**검색 필터:** {search_filter or '없음'}")
+                    st.write(f"**지역 필터:** {location_filter or '없음'}")
+                    st.write(f"**정렬:** {sort_by}")
+                    st.write(f"**필터링 전:** {len(suppliers)}개")
+                    st.write(f"**필터링 후:** {len(filtered_suppliers)}개")
+                    
+                    # 지역별 분포 표시
+                    if location_filter and location_filter != "전체":
+                        location_counts = {}
+                        country_counts = {}
+                        for s in suppliers:
+                            loc = s.get('location', 'Unknown')
+                            location_counts[loc] = location_counts.get(loc, 0) + 1
+                            country = extract_country(loc)
+                            country_counts[country] = country_counts.get(country, 0) + 1
+                        
+                        st.write("**전체 지역 분포 (상위 10개):**")
+                        for loc, count in sorted(location_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+                            st.write(f"- {loc}: {count}개")
+                        
+                        st.write("**국가별 분포:**")
+                        for country, count in sorted(country_counts.items(), key=lambda x: x[1], reverse=True):
+                            st.write(f"- {country}: {count}개")
+            
+            # 페이지네이션
+            total_items = len(filtered_suppliers)
+            total_pages = (total_items + items_per_page - 1) // items_per_page
+            
+            if total_pages > 1:
+                # 페이지 선택
+                current_page = st.selectbox(
+                    f"📄 페이지 선택 (총 {total_pages}페이지)",
+                    range(1, total_pages + 1),
+                    index=0
+                )
+                
+                # 페이지 정보 표시
+                start_idx = (current_page - 1) * items_per_page
+                end_idx = min(start_idx + items_per_page, total_items)
+                st.info(f"📄 {start_idx + 1}번째 ~ {end_idx}번째 공급업체 (총 {total_items}개 중)")
+                
+                # 현재 페이지의 공급업체만 표시
+                current_suppliers = filtered_suppliers[start_idx:end_idx]
+            else:
+                current_suppliers = filtered_suppliers
+                current_page = 1
+                start_idx = 0
+            
+            # 상세보기가 활성화된 공급업체가 있는지 확인
+            active_detail_supplier = None
+            for supplier in current_suppliers:
+                supplier_id = supplier.get('id', 'unknown')
+                index = start_idx + current_suppliers.index(supplier) + 1
+                detail_state_key = f"show_detail_{supplier_id}_{index}"
+                if st.session_state.get(detail_state_key, False):
+                    active_detail_supplier = supplier
+                    break
+            
+            # 상세보기가 활성화된 경우 전체 화면으로 표시
+            if active_detail_supplier:
+                supplier_id = active_detail_supplier.get('id', 'unknown')
+                index = start_idx + current_suppliers.index(active_detail_supplier) + 1
+                detail_state_key = f"show_detail_{supplier_id}_{index}"
+                
+                # 전체 화면 상세보기
+                st.markdown("---")
+                st.markdown("## 📊 **전체 화면 상세 정보**")
+                
+                # 분석 정보 요약
+                col_info1, col_info2, col_info3, col_info4 = st.columns(4)
+                with col_info1:
+                    st.metric("회사명", active_detail_supplier.get('company_name', 'N/A'))
+                with col_info2:
+                    st.metric("위치", active_detail_supplier.get('location', 'Unknown'))
+                with col_info3:
+                    st.metric("회사 유형", active_detail_supplier.get('company_type', 'Unknown'))
+                with col_info4:
+                    st.metric("설립연도", active_detail_supplier.get('established', 'Unknown'))
+                
+                # 탭 기반 구조
+                tab1, tab2, tab3, tab4 = st.tabs(["📋 기본 정보", "📄 상세 정보", "📎 파일 관리", "💾 저장/닫기"])
+                
+                with tab1:
+                    st.markdown("### 📋 기본 정보")
+                    st.json({
+                        "회사명": active_detail_supplier.get('company_name', 'N/A'),
+                        "웹사이트": active_detail_supplier.get('website', 'N/A'),
+                        "이메일": active_detail_supplier.get('email', 'N/A'),
+                        "전화번호": active_detail_supplier.get('phone', 'N/A'),
+                        "위치": active_detail_supplier.get('location', 'N/A'),
+                        "전문분야": active_detail_supplier.get('specialization', 'N/A'),
+                        "회사 유형": active_detail_supplier.get('company_type', 'N/A'),
+                        "설립연도": active_detail_supplier.get('established', 'N/A'),
+                        "인증": active_detail_supplier.get('certifications', 'N/A')
+                    })
+                
+                with tab2:
+                    st.markdown("### 📄 상세 정보 편집")
+                    current = lambda k: active_detail_supplier.get(k) or ''
+                    
+                    # 입력 필드들 (2열 배치)
+                    colA, colB = st.columns(2)
+                    with colA:
+                        company_name = st.text_input("회사명*", value=current('company_name'), key=f"edit_company_name_{supplier_id}_{index}")
+                        website = st.text_input("웹사이트*", value=current('website'), key=f"edit_website_{supplier_id}_{index}")
+                        email = st.text_input("이메일", value=current('email'), key=f"edit_email_{supplier_id}_{index}")
+                        phone = st.text_input("전화번호", value=current('phone'), key=f"edit_phone_{supplier_id}_{index}")
+                        location = st.text_input("위치", value=current('location'), key=f"edit_location_{supplier_id}_{index}")
+                        specialization = st.text_input("전문분야", value=current('specialization'), key=f"edit_specialization_{supplier_id}_{index}")
+                    with colB:
+                        company_type = st.text_input("회사유형", value=current('company_type'), key=f"edit_company_type_{supplier_id}_{index}")
+                        established = st.text_input("설립연도", value=current('established'), key=f"edit_established_{supplier_id}_{index}")
+                        certifications = st.text_input("인증", value=current('certifications'), key=f"edit_certifications_{supplier_id}_{index}")
+                        memo = st.text_area("메모", value=current('memo'), key=f"edit_memo_{supplier_id}_{index}")
+                        rating = st.text_input("평가(등급/점수)", value=current('rating'), key=f"edit_rating_{supplier_id}_{index}")
+                        contact_person = st.text_input("담당자", value=current('contact_person'), key=f"edit_contact_{supplier_id}_{index}")
+                        history = st.text_area("이력/비고", value=current('history'), key=f"edit_history_{supplier_id}_{index}")
+                
+                with tab3:
+                    st.markdown("### 📎 견적서/브로셔 등 파일 관리")
+                    uploaded_files = st.file_uploader(
+                        "파일 업로드 (PDF, DOCX, PPTX, XLSX, 이미지 등)",
+                        type=['pdf', 'docx', 'pptx', 'xlsx', 'md', 'txt', 'jpg', 'jpeg', 'png', 'gif'],
+                        accept_multiple_files=True,
+                        key=f"supplier_files_{supplier_id}_{index}"
+                    )
+                    if uploaded_files and st.button("파일 저장", key=f"save_files_{supplier_id}_{index}"):
+                        for file in uploaded_files:
+                            file_data = parse_uploaded_file(file)
+                            if file_data:
+                                save_supplier_file(supplier_id, file_data)
+                        st.success("파일이 저장되었습니다!")
+                        st.rerun()
+                    
+                    files = get_supplier_files(supplier_id)
+                    preview_id = st.session_state.get(f'preview_file_{supplier_id}_{index}')
+                    if files:
+                        st.markdown("**업로드된 파일 목록:**")
+                        for file in files:
+                            colf1, colf2, colf3 = st.columns([4,1,1])
+                            with colf1:
+                                st.write(f"{file['filename']} ({file['file_type']}, {file['file_size']} bytes)")
+                            with colf2:
+                                if st.button("미리보기", key=f"preview_{file['file_id']}_{supplier_id}_{index}"):
+                                    st.session_state[f'preview_file_{supplier_id}_{index}'] = file['file_id']
+                            with colf3:
+                                file_bin = get_supplier_file_binary(file['file_id'])
+                                if file_bin:
+                                    st.download_button(
+                                        label="다운로드",
+                                        data=file_bin['file_binary_data'],
+                                        file_name=file_bin['filename'],
+                                        mime=get_file_mime_type(file_bin['file_type']),
+                                        key=f"download_{file['file_id']}_{supplier_id}_{index}"
+                                    )
+                    else:
+                        st.info("업로드된 파일이 없습니다.")
+                    
+                    # 미리보기는 반드시 for문/with 블록 바깥, expander 최상위에서 실행
+                    if preview_id and files:
+                        file = next((f for f in files if f['file_id'] == preview_id), None)
+                        if file:
+                            st.markdown("---")
+                            st.markdown(f"#### 📄 미리보기: {file['filename']}")
+                            display_file_preview(file, file['file_type'], file['filename'])
+                            if st.button("미리보기 닫기", key=f"close_preview_{supplier_id}_{index}"):
+                                del st.session_state[f'preview_file_{supplier_id}_{index}']
+                
+                with tab4:
+                    st.markdown("### 💾 저장 및 닫기")
+                    
+                    # 저장 버튼
+                    if st.button("💾 저장", key=f"save_detail_{supplier_id}_{index}", type="primary"):
+                        # 필수값 체크
+                        if not company_name.strip() or not website.strip():
+                            st.error("회사명과 웹사이트는 필수 입력입니다.")
+                        else:
+                            try:
+                                connection = connect_to_db()
+                                if connection:
+                                    cursor = connection.cursor()
+                                    cursor.execute(
+                                        """
+                                        UPDATE sourcing_suppliers SET
+                                            company_name=%s, website=%s, email=%s, phone=%s, location=%s,
+                                            specialization=%s, company_type=%s, established=%s, certifications=%s,
+                                            memo=%s, rating=%s, contact_person=%s, history=%s
+                                        WHERE id=%s
+                                        """,
+                                        (
+                                            company_name, website, email, phone, location,
+                                            specialization, company_type, established, certifications,
+                                            memo, rating, contact_person, history, supplier_id
+                                        )
+                                    )
+                                    affected_rows = cursor.rowcount
+                                    connection.commit()
+                                    cursor.close()
+                                    connection.close()
+                                    if affected_rows > 0:
+                                        st.success("✅ 상세 정보가 저장되었습니다.")
+                                        refresh_suppliers_cache()
+                                        st.session_state[detail_state_key] = False
+                                        st.rerun()
+                                    else:
+                                        st.warning(f"⚠️ 저장된 내용이 없습니다. (ID: {supplier_id})")
+                                else:
+                                    st.error("❌ 데이터베이스 연결 실패")
+                            except Exception as e:
+                                st.error(f"❌ 저장 오류: {str(e)}")
+                    
+                    # 닫기 버튼
+                    if st.button("❌ 닫기", key=f"close_detail_{supplier_id}_{index}"):
+                        st.session_state[detail_state_key] = False
+                        st.rerun()
+            
+            # 상세보기가 비활성화된 경우 기존 목록 형태로 표시
+            else:
+                for i, supplier in enumerate(current_suppliers):
+                    company_name = supplier.get('company_name', 'Unknown Company')
+                    
+                    with st.expander(f"🏢 {company_name}"):
+                        display_supplier_card(supplier, start_idx + i + 1, show_delete=True, show_detail=True, show_verify=True)
+        
+        else:
+            st.info("🔍 아직 발견된 공급업체가 없습니다. 먼저 제품 소싱을 실행해주세요.")
+        
+        # 엑셀/CSV 내보내기 버튼 추가 (filtered_suppliers가 있고 비어있지 않을 때만)
+        if filtered_suppliers and len(filtered_suppliers) > 0:
+            col_dl1, col_dl2, col_dl3 = st.columns([1,1,1])
+            with col_dl1:
+                # 현재 페이지만 내보내기
+                df_current = pd.DataFrame(current_suppliers)
+                output_current = io.BytesIO()
+                df_current.to_excel(output_current, index=False, engine='openpyxl')
+                output_current.seek(0)
+                st.download_button(
+                    label="📥 현재 페이지 엑셀",
+                    data=output_current,
+                    file_name=f"scm_suppliers_page_{current_page}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col_dl2:
+                # 전체 데이터 내보내기
+                df_export = pd.DataFrame(filtered_suppliers)
+                output = io.BytesIO()
+                df_export.to_excel(output, index=False, engine='openpyxl')
+                output.seek(0)
+                st.download_button(
+                    label="📥 전체 엑셀",
+                    data=output,
+                    file_name="scm_suppliers_all.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col_dl3:
+                st.download_button(
+                    label="📥 전체 CSV",
+                    data=df_export.to_csv(index=False),
+                    file_name="scm_suppliers_all.csv",
+                    mime="text/csv"
+                )
+
+    # ===== 신규 공급업체 등록 탭 =====
+    with tab_register:
+        st.markdown("## ➕ 신규 공급업체 등록")
+        with st.form("register_supplier_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                company_name = st.text_input("회사명*", max_chars=255)
+                website = st.text_input("웹사이트*", max_chars=500)
+                email = st.text_input("이메일", max_chars=255)
+                phone = st.text_input("전화번호", max_chars=100)
+                location = st.text_input("위치", max_chars=255)
+            with col2:
+                specialization = st.text_input("전문분야", max_chars=500)
+                company_type = st.text_input("회사유형", max_chars=100, placeholder="Manufacturer/OEM/ODM 등")
+                established = st.text_input("설립연도", max_chars=50)
+                certifications = st.text_input("인증", max_chars=500, placeholder="ISO, CE, RoHS 등")
+                search_query = st.text_input("등록 사유/검색 쿼리", max_chars=1000)
+            submitted = st.form_submit_button("등록하기", type="primary")
+        if submitted:
+            # 필수값 체크
+            if not company_name.strip() or not website.strip():
+                st.error("회사명과 웹사이트는 필수 입력입니다.")
+            else:
+                # 유사 업체 경고 (캐시 활용)
+                if company_name or website or email or phone:
+                    temp_target = dict(company_name=company_name, website=website, email=email, phone=phone)
+                    all_suppliers = get_suppliers_with_cache()
+                    similar = find_similar_suppliers(temp_target, all_suppliers)
+                    if similar:
+                        st.warning(f"⚠️ 유사 업체 {len(similar)}건 있음! (예: {similar[0].get('company_name','')})")
+
+                # 중복 체크
+                connection = connect_to_db()
+                if connection:
+                    cursor = connection.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM sourcing_suppliers WHERE company_name = %s AND website = %s", (company_name.strip(), website.strip()))
+                    if cursor.fetchone()[0] > 0:
+                        st.warning("이미 동일한 회사명과 웹사이트가 등록되어 있습니다.")
+                        cursor.close()
+                        connection.close()
+                    else:
+                        cursor.execute("""
+                            INSERT INTO sourcing_suppliers (
+                                company_name, website, email, phone, location, specialization, company_type, established, certifications, search_query
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            company_name.strip(), website.strip(), email.strip(), phone.strip(), location.strip(), specialization.strip(), company_type.strip(), established.strip(), certifications.strip(), search_query.strip()
+                        ))
+                        connection.commit()
+                        cursor.close()
+                        connection.close()
+                        st.success(f"'{company_name}' 공급업체가 성공적으로 등록되었습니다!")
+                        # 캐시 새로고침
+                        refresh_suppliers_cache()
+
+    # ===== 탭 3: 분석 결과 =====
+    with tab3:
+        st.markdown("## 📊 소싱 분석 결과")
+        
+        suppliers = get_suppliers_with_cache()
+        
+        if suppliers:
+            # 최적화된 통계 계산
+            stats = calculate_supplier_stats(suppliers)
+            
+            # 통계 분석
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("총 공급업체", stats['total'])
+            
+            with col2:
+                st.metric("중국 업체", stats['china'])
+            
+            with col3:
+                st.metric("베트남 업체", stats['vietnam'])
+            
+            with col4:
+                st.metric("한국 업체", stats['korea'])
+            
+            # 지역별 분포 차트
+            st.markdown("### 🌍 지역별 공급업체 분포")
+            
+            if stats['location_counts']:
+                df_location = pd.DataFrame(list(stats['location_counts'].items()), columns=['국가', '업체 수'])
+                st.bar_chart(df_location.set_index('국가'))
+            
+            # 회사 유형별 분석
+            st.markdown("### 🏭 회사 유형별 분석")
+            
+            if stats['type_counts']:
+                df_types = pd.DataFrame(list(stats['type_counts'].items()), columns=['회사 유형', '업체 수'])
+                st.bar_chart(df_types.set_index('회사 유형'))
+            
+            # 최근 발견 추이
+            st.markdown("### 📈 최근 발견 추이")
+            try:
+                connection = connect_to_db()
+                if connection:
+                    cursor = connection.cursor()
+                    cursor.execute("""
+                        SELECT DATE(created_at) as 날짜, COUNT(*) as 발견수
+                        FROM sourcing_suppliers
+                        WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                        GROUP BY DATE(created_at)
+                        ORDER BY 날짜
+                    """)
+                    daily_data = cursor.fetchall()
+                    cursor.close()
+                    connection.close()
+                    st.write('쿼리 결과:', daily_data)  # 디버깅용
+                    if daily_data:
+                        df_daily = pd.DataFrame(daily_data, columns=['날짜', '발견수'])
+                        st.write(df_daily)  # DataFrame 확인
+                        df_daily['날짜'] = pd.to_datetime(df_daily['날짜'].astype(str))
+                        st.line_chart(df_daily.set_index('날짜'))
+                    else:
+                        st.info('최근 7일간 신규 등록된 공급업체가 없습니다.')
+            except Exception as e:
+                st.warning(f"⚠️ 일별 통계 조회 실패: {str(e)}")
+        else:
+            st.info("📊 분석할 데이터가 없습니다. 먼저 제품 소싱을 실행해주세요.")
+
+def display_suppliers(suppliers, show_delete=True, show_detail=True, show_verify=True):
+    # 항상 세션에 저장
+    st.session_state['last_sourcing_suppliers'] = suppliers
+    st.markdown("### 🏢 발견된 공급업체")
+    for i, supplier in enumerate(suppliers, 1):
+        company_name = supplier.get('company_name', 'Unknown Company')
+        with st.expander(f"{i}. {company_name}"):
+            display_supplier_card(supplier, i, show_delete, show_detail, show_verify)
+
+def display_supplier_card(supplier, index=None, show_delete=True, show_detail=True, show_verify=True):
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.markdown(f"**🏢 회사명:** {supplier.get('company_name', 'N/A')}")
+        if supplier.get('website'):
+            valid = is_valid_website_cached(supplier['website'])
+            st.markdown(f"**🌐 웹사이트:** [{supplier['website']}]({supplier['website']}) {'✅' if valid else '❌'}")
+        if supplier.get('email'):
+            valid = is_valid_email(supplier['email'])
+            st.markdown(f"**📧 이메일:** {supplier['email']} {'✅' if valid else '❌'}")
+        if supplier.get('phone'):
+            valid = is_valid_phone(supplier['phone'])
+            st.markdown(f"**📞 전화번호:** {supplier['phone']} {'✅' if valid else '❌'}")
+        if supplier.get('location'):
+            st.markdown(f"**📍 위치:** {supplier['location']}")
+        if supplier.get('specialization'):
+            st.markdown(f"**🏭 전문분야:** {supplier['specialization']}")
+    with col2:
+        if supplier.get('company_type'):
+            st.markdown(f"**🏢 유형:** {supplier['company_type']}")
+        if supplier.get('established'):
+            st.markdown(f"**📅 설립:** {supplier['established']}")
+        if supplier.get('certifications'):
+            st.markdown(f"**✅ 인증:** {supplier['certifications']}")
+        
+        # 저장된 메모 정보 표시
+        if supplier.get('memo'):
+            st.markdown(f"**📝 메모:** {supplier['memo']}")
+        if supplier.get('rating'):
+            st.markdown(f"**⭐ 평가:** {supplier['rating']}")
+        if supplier.get('contact_person'):
+            st.markdown(f"**👤 담당자:** {supplier['contact_person']}")
+        if supplier.get('history'):
+            st.markdown(f"**📋 이력:** {supplier['history']}")
+        # 웹사이트 확인 버튼
+        if show_verify and supplier.get('website'):
+            company_name = supplier.get('company_name', 'Unknown')
+            supplier_id = supplier.get('id', 'unknown')
+            session_id = supplier.get('session_id', 'no_session')
+            index_str = f"idx_{index}" if index is not None else "no_idx"
+            safe_company_name = re.sub(r'[^a-zA-Z0-9]', '_', company_name)[:20]
+            verify_key = f"verify_{index_str}_{safe_company_name}_{supplier_id}_{session_id}"
+            if st.button(f"🔍 웹사이트 확인", key=verify_key):
+                is_valid = verify_supplier_website(supplier['website'])
+                if is_valid:
+                    st.success("✅ 웹사이트 접속 가능")
+                else:
+                    st.error("❌ 웹사이트 접속 불가")
+        # 삭제 버튼
+        if show_delete:
+            delete_key = f"delete_card_{index_str}_{safe_company_name}_{supplier_id}_{session_id}"
+            delete_failed_key = f"delete_failed_{supplier_id}"
+            
+            if st.button(f"🗑️ 삭제", key=delete_key, type="secondary", disabled=st.session_state.get(delete_failed_key, False)):
+                with st.spinner("삭제 중..."):
+                    success, message = delete_supplier(supplier_id)
+                    if success:
+                        st.success(message)
+                        # 캐시 강제 새로고침
+                        refresh_suppliers_cache()
+                        # 즉시 새로고침으로 row가 사라짐을 보장
+                        st.rerun()
+                    else:
+                        st.error(message)
+                        st.session_state[delete_failed_key] = True
+                        st.rerun()
+            
+            if st.session_state.get(delete_failed_key):
+                st.error("삭제에 실패했습니다. 새로고침 후 다시 시도해 주세요.")
+                if st.button("🔄 새로고침", key=f"refresh_after_fail_{supplier_id}"):
+                    del st.session_state[delete_failed_key]
+                    st.rerun()
+        # 상세 정보/메모 버튼
+        if show_detail:
+            detail_key = f"detail_{supplier_id}_{index}"
+            detail_state_key = f"show_detail_{supplier_id}_{index}"
+            
+            # 상세 정보 표시 상태 관리
+            if st.button("📝 상세 정보/메모", key=detail_key):
+                st.session_state[detail_state_key] = True
+                st.rerun()
+
+
+def extract_country(location):
+    """위치에서 국가 추출"""
+    if not location:
+        return "Unknown"
+    
+    location_lower = location.lower()
+    
+    country_mapping = {
+        'china': '중국',
+        'chinese': '중국',
+        'vietnam': '베트남',
+        'vietnamese': '베트남',
+        'korea': '한국',
+        'korean': '한국',
+        'taiwan': '대만',
+        'japan': '일본',
+        'japanese': '일본',
+        'india': '인도',
+        'indian': '인도',
+        'thailand': '태국',
+        'thai': '태국',
+        'malaysia': '말레이시아',
+        'indonesia': '인도네시아',
+        'philippines': '필리핀',
+        'singapore': '싱가포르'
+    }
+    
+    for english, korean in country_mapping.items():
+        if english in location_lower:
+            return korean
+    
+    return "기타"
+
+def find_similar_suppliers(target, all_suppliers):
+    def normalize(s):
+        return re.sub(r'[^a-zA-Z0-9]', '', s or '').lower()
+    target_fields = [normalize(target.get('company_name')), normalize(target.get('website')), normalize(target.get('email')), normalize(target.get('phone'))]
+    similar = []
+    for s in all_suppliers:
+        if s.get('id') == target.get('id'):
+            continue
+        fields = [normalize(s.get('company_name')), normalize(s.get('website')), normalize(s.get('email')), normalize(s.get('phone'))]
+        for tf in target_fields:
+            if tf and any(tf in f and f for f in fields):
+                similar.append(s)
+                break
+    return similar
+
+@lru_cache(maxsize=128)
+def is_valid_email(email):
+    if not email:
+        return False
+    pattern = r'^([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)$'
+    return re.match(pattern, email) is not None
+
+@lru_cache(maxsize=128)
+def is_valid_phone(phone):
+    if not phone:
+        return False
+    digits = re.sub(r'\D', '', phone)
+    return 7 <= len(digits) <= 15
+
+@lru_cache(maxsize=128)
+def is_valid_website(url):
+    if not url:
+        return False
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
+        return resp.status_code in [200, 301, 302, 403, 405]
+    except Exception:
+        return False
+
+# 푸터
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666; padding: 20px;'>
+    <p>🔍 <strong>AI 제품 소싱 시스템</strong></p>
+    <p>실시간 웹 검색 기반 제조사 및 공급업체 발굴 | Powered by Perplexity AI</p>
+</div>
+""", unsafe_allow_html=True)
+
+# ===== 성능 최적화를 위한 캐싱 메커니즘 =====
+
+# 세션 상태에 캐시된 데이터 저장
+def get_cached_suppliers():
+    """캐시된 공급업체 데이터 반환"""
+    if 'cached_suppliers' not in st.session_state:
+        st.session_state['cached_suppliers'] = get_saved_suppliers()
+        st.session_state['cache_timestamp'] = time.time()
+    return st.session_state['cached_suppliers']
+
+def refresh_suppliers_cache():
+    """공급업체 캐시 새로고침"""
+    if 'cached_suppliers' in st.session_state:
+        del st.session_state['cached_suppliers']
+    if 'cache_timestamp' in st.session_state:
+        del st.session_state['cache_timestamp']
+
+def get_suppliers_with_cache(session_id=None, force_refresh=False):
+    """캐시를 활용한 공급업체 조회"""
+    if force_refresh:
+        refresh_suppliers_cache()
+    
+    if session_id:
+        # 세션별 조회는 캐시 사용하지 않음
+        return get_saved_suppliers(session_id)
+    
+    return get_cached_suppliers()
+
+# 최적화된 필터링 함수
+def filter_suppliers_optimized(suppliers, search_filter=None, location_filter=None, sort_by="최신순"):
+    """최적화된 공급업체 필터링 (모든 주요 칼럼+메모 포함)"""
+    if not suppliers:
+        return []
+    filtered = suppliers
+    # 검색 필터 적용 (모든 주요 칼럼 포함, memo도 포함)
+    if search_filter:
+        search_lower = search_filter.strip().lower()
+        filtered = [
+            s for s in filtered
+            if any(
+                search_lower in str(s.get(field, '') or '').lower()
+                for field in [
+                    'company_name', 'website', 'email', 'phone', 'location',
+                    'specialization', 'company_type', 'established', 'certifications',
+                    'memo', 'rating', 'contact_person', 'history', 'search_query'
+                ]
+            )
+        ]
+    # 지역 필터 적용
+    if location_filter and location_filter != "전체":
+        # extract_country 함수를 활용한 정확한 지역 필터링
+        filtered_by_country = [
+            s for s in filtered 
+            if extract_country(s.get('location', '')) == location_filter
+        ]
+        
+        # 백업 방법: 키워드 기반 필터링
+        location_mapping = {
+            "중국": ["china", "chinese", "shenzhen", "guangzhou", "shanghai", "beijing"],
+            "베트남": ["vietnam", "vietnamese", "ho chi minh", "hanoi"],
+            "한국": ["korea", "korean", "seoul", "busan", "incheon"],
+            "대만": ["taiwan", "taipei"],
+            "일본": ["japan", "japanese", "tokyo", "osaka"],
+            "인도": ["india", "indian", "mumbai", "delhi"],
+            "태국": ["thailand", "thai", "bangkok"]
+        }
+        
+        target_keywords = location_mapping.get(location_filter, [location_filter.lower()])
+        filtered_by_keyword = [
+            s for s in filtered 
+            if any(keyword in s.get('location', '').lower() for keyword in target_keywords)
+        ]
+        
+        # 두 방법 중 더 많은 결과를 반환
+        if len(filtered_by_country) > len(filtered_by_keyword):
+            filtered = filtered_by_country
+        else:
+            filtered = filtered_by_keyword
+    
+    # 정렬 적용
+    if sort_by == "회사명순":
+        filtered.sort(key=lambda x: x.get('company_name', ''))
+    elif sort_by == "지역순":
+        filtered.sort(key=lambda x: x.get('location', ''))
+    else:  # 최신순
+        filtered.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    
+    return filtered
+
+# 웹사이트 검증 최적화
+@lru_cache(maxsize=256)
+def is_valid_website_cached(url):
+    """캐시된 웹사이트 검증"""
+    if not url:
+        return False
+    
+    # 간단한 URL 형식 검증만 수행 (실제 HTTP 요청 제거)
+    url_pattern = r'^https?://[^\s/$.?#].[^\s]*$'
+    return bool(re.match(url_pattern, url))
+
+# 통계 계산 최적화
+def calculate_supplier_stats(suppliers):
+    """공급업체 통계 계산 (최적화된 버전)"""
+    if not suppliers:
+        return {
+            'total': 0,
+            'china': 0,
+            'vietnam': 0,
+            'korea': 0,
+            'location_counts': {},
+            'type_counts': {}
+        }
+    
+    stats = {
+        'total': len(suppliers),
+        'china': 0,
+        'vietnam': 0,
+        'korea': 0,
+        'location_counts': {},
+        'type_counts': {}
+    }
+    
+    for supplier in suppliers:
+        location = supplier.get('location', 'Unknown').lower()
+        company_type = supplier.get('company_type', 'Unknown')
+        
+        # 지역별 카운트
+        if 'china' in location:
+            stats['china'] += 1
+        elif 'vietnam' in location:
+            stats['vietnam'] += 1
+        elif 'korea' in location:
+            stats['korea'] += 1
+        
+        # 위치별 통계
+        country = extract_country(supplier.get('location', 'Unknown'))
+        stats['location_counts'][country] = stats['location_counts'].get(country, 0) + 1
+        
+        # 회사 유형별 통계
+        stats['type_counts'][company_type] = stats['type_counts'].get(company_type, 0) + 1
+    
+    return stats
+
+def ensure_supplier_files_table():
+    """공급업체 파일 테이블이 없으면 생성 (기존 데이터 보존)"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return
+        cursor = connection.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS supplier_files (
+                file_id INT AUTO_INCREMENT PRIMARY KEY,
+                supplier_id INT,
+                filename VARCHAR(500) NOT NULL,
+                file_type VARCHAR(50),
+                file_content LONGTEXT,
+                file_binary_data LONGBLOB,
+                file_size BIGINT,
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (supplier_id) REFERENCES sourcing_suppliers(id) ON DELETE CASCADE,
+                INDEX idx_supplier_id (supplier_id),
+                INDEX idx_file_type (file_type),
+                INDEX idx_filename (filename)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        connection.commit()
+        cursor.close()
+        connection.close()
+    except Exception as e:
+        st.error(f"공급업체 파일 테이블 생성 오류: {str(e)}")
+
+# 앱 시작 시 테이블 보장
+ensure_supplier_files_table()
+
+# 파일 저장/조회/미리보기 함수들 (02_🗃️_Archives.py 참고)
+def parse_uploaded_file(uploaded_file):
+    try:
+        file_extension = uploaded_file.name.split('.')[-1].lower()
+        content = ""
+        uploaded_file.seek(0)
+        binary_data = uploaded_file.read()
+        binary_base64 = binary_data  # 바이너리 그대로 저장
+        uploaded_file.seek(0)
+        if file_extension == 'pdf':
+            import PyPDF2
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            for page in pdf_reader.pages:
+                content += page.extract_text() + "\n"
+        elif file_extension == 'docx':
+            import docx
+            doc = docx.Document(uploaded_file)
+            for paragraph in doc.paragraphs:
+                content += paragraph.text + "\n"
+        elif file_extension == 'pptx':
+            from pptx import Presentation
+            prs = Presentation(uploaded_file)
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        content += shape.text + "\n"
+        elif file_extension == 'xlsx':
+            import openpyxl
+            workbook = openpyxl.load_workbook(uploaded_file, data_only=True)
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                content += f"=== {sheet_name} ===\n"
+                for row in sheet.iter_rows(values_only=True):
+                    row_text = '\t'.join([str(cell) if cell is not None else '' for cell in row])
+                    if row_text.strip():
+                        content += row_text + "\n"
+                content += "\n"
+        elif file_extension in ['txt', 'md']:
+            uploaded_file.seek(0)
+            content = uploaded_file.read().decode('utf-8')
+        elif file_extension in ['jpg', 'jpeg', 'png', 'gif']:
+            content = f"[{file_extension.upper()} 이미지 파일 - {uploaded_file.name}]"
+        else:
+            try:
+                uploaded_file.seek(0)
+                content = uploaded_file.read().decode('utf-8', errors='ignore')
+                if not content.strip():
+                    content = f"[{file_extension.upper()} 파일 - 텍스트 추출 불가]"
+            except:
+                content = f"[{file_extension.upper()} 파일 - 텍스트 추출 불가]"
+        return {
+            'filename': uploaded_file.name,
+            'file_type': file_extension,
+            'content': content,
+            'binary_data': binary_base64,
+            'size': len(binary_data)
+        }
+    except Exception as e:
+        st.error(f"파일 파싱 오류: {str(e)}")
+        return None
+
+def save_supplier_file(supplier_id, file_data):
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return False
+        cursor = connection.cursor()
+        cursor.execute("""
+            INSERT INTO supplier_files 
+            (supplier_id, filename, file_type, file_content, file_binary_data, file_size)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            supplier_id,
+            file_data['filename'],
+            file_data['file_type'],
+            file_data['content'],
+            file_data['binary_data'],
+            file_data['size']
+        ))
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return True
+    except Exception as e:
+        st.error(f"파일 저장 오류: {str(e)}")
+        return False
+
+def get_supplier_files(supplier_id):
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return []
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT * FROM supplier_files WHERE supplier_id = %s ORDER BY uploaded_at DESC
+        """, (supplier_id,))
+        files = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        return files
+    except Exception as e:
+        st.error(f"파일 목록 조회 오류: {str(e)}")
+        return []
+
+def get_supplier_file_binary(file_id):
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return None
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT filename, file_type, file_binary_data, file_size FROM supplier_files WHERE file_id = %s
+        """, (file_id,))
+        result = cursor.fetchone()
+        cursor.close()
+        connection.close()
+        return result
+    except Exception as e:
+        st.error(f"파일 데이터 조회 오류: {str(e)}")
+        return None
+
+def get_file_mime_type(file_type):
+    mime_types = {
+        'pdf': 'application/pdf',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'txt': 'text/plain',
+        'md': 'text/markdown',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif'
+    }
+    return mime_types.get(file_type.lower(), 'application/octet-stream')
+
+def display_file_preview(file, file_type, filename):
+    """파일 미리보기 표시 (Archives 파일 참고)"""
+    try:
+        import base64
+        import tempfile
+        import os
+        from PyPDF2 import PdfReader, PdfWriter
+        
+        file_type_lower = file_type.lower()
+        
+        if file_type_lower in ['jpg', 'jpeg', 'png', 'gif']:
+            st.image(file['file_binary_data'], caption=f"🖼️ {filename}", use_container_width=True)
+            return True
+        
+        elif file_type_lower == 'pdf':
+            if file.get('file_binary_data'):
+                total_size = file.get('file_size', 0)
+                
+                # 1MB 초과시 페이징 미리보기 (1페이지씩)
+                if total_size > 1 * 1024 * 1024:
+                    key = f"pdf_preview_page_start_{filename}"
+                    if key not in st.session_state:
+                        st.session_state[key] = 0  # 0-based index
+
+                    # PDF 전체 페이지 수 구하기
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                        tmp_in.write(file['file_binary_data'])
+                        tmp_in_path = tmp_in.name
+                    reader = PdfReader(tmp_in_path)
+                    total_pages = len(reader.pages)
+                    os.unlink(tmp_in_path)
+
+                    page_start = st.session_state[key]
+                    page_end = min(page_start + 1, total_pages)
+
+                    col_prev, col_next = st.columns([1, 1])
+                    with col_prev:
+                        if st.button("⬅️ 이전", disabled=page_start == 0, key=f"prev_{filename}"):
+                            st.session_state[key] = max(0, page_start - 1)
+                            st.rerun()
+                    with col_next:
+                        if st.button("다음 ➡️", disabled=page_end >= total_pages, key=f"next_{filename}"):
+                            st.session_state[key] = min(total_pages - 1, page_start + 1)
+                            st.rerun()
+
+                    # 미리보기 PDF 생성 (1페이지)
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_in:
+                            tmp_in.write(file['file_binary_data'])
+                            tmp_in_path = tmp_in.name
+                        reader = PdfReader(tmp_in_path)
+                        writer = PdfWriter()
+                        for i in range(page_start, page_end):
+                            writer.add_page(reader.pages[i])
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_out:
+                            writer.write(tmp_out)
+                            tmp_out_path = tmp_out.name
+                        with open(tmp_out_path, "rb") as f:
+                            preview_pdf_bytes = f.read()
+                        os.unlink(tmp_in_path)
+                        os.unlink(tmp_out_path)
+                        st.markdown(f"**페이지 {page_start+1} / {total_pages}**")
+                        pdf_base64 = base64.b64encode(preview_pdf_bytes).decode('utf-8')
+                        pdf_display = f"""
+                        <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                                width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                            <p>PDF를 표시할 수 없습니다. 
+                            <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                            여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                        </iframe>
+                        """
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"PDF 미리보기 생성 중 오류: {e}")
+
+                    st.download_button(
+                        label="💾 전체 PDF 다운로드",
+                        data=file['file_binary_data'],
+                        file_name=filename,
+                        mime="application/pdf"
+                    )
+                    return True
+                else:
+                    st.subheader(f"📄 PDF 미리보기: {filename}")
+                    pdf_base64 = base64.b64encode(file['file_binary_data']).decode('utf-8')
+                    pdf_display = f"""
+                    <iframe src=\"data:application/pdf;base64,{pdf_base64}\" 
+                            width=\"100%\" height=\"600px\" type=\"application/pdf\">
+                        <p>PDF를 표시할 수 없습니다. 
+                        <a href=\"data:application/pdf;base64,{pdf_base64}\" target=\"_blank\">
+                        여기를 클릭하여 새 탭에서 열어보세요.</a></p>
+                    </iframe>
+                    """
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                    return True
+        
+        elif file_type_lower in ['txt', 'md']:
+            try:
+                text_content = file['file_binary_data'].decode('utf-8')
+                st.subheader(f"📄 텍스트 파일 미리보기: {filename}")
+                
+                if file_type_lower == 'md':
+                    st.markdown(text_content)
+                else:
+                    st.text_area(
+                        "파일 내용",
+                        value=text_content,
+                        height=400,
+                        disabled=True
+                    )
+                return True
+            except Exception as e:
+                st.error(f"텍스트 파일을 읽는 중 오류 발생: {str(e)}")
+                return False
+        
+        elif file_type_lower == 'xlsx':
+            return display_excel_preview(file, filename)
+        
+        elif file_type_lower == 'pptx':
+            return display_powerpoint_preview(file, filename)
+        
+        elif file_type_lower == 'docx':
+            return display_word_preview(file, filename)
+        
+        # 기타 파일은 다운로드만 지원
+        return False
+        
+    except Exception as e:
+        st.error(f"파일 미리보기 오류: {str(e)}")
+        return False
+
+def get_supplier_files_with_content(supplier_id):
+    """공급업체의 파일 목록과 내용을 함께 조회"""
+    try:
+        connection = connect_to_db()
+        if not connection:
+            return []
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT file_id, filename, file_type, file_content, file_size, uploaded_at 
+            FROM supplier_files 
+            WHERE supplier_id = %s 
+            ORDER BY uploaded_at DESC
+        """, (supplier_id,))
+        files = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        return files
+    except Exception as e:
+        return []
+
+def search_in_file_content(files, search_term):
+    """파일 내용에서 검색어 찾기"""
+    if not files or not search_term:
+        return []
+    
+    search_lower = search_term.lower()
+    matching_files = []
+    
+    for file in files:
+        content = file.get('file_content', '')
+        if content and search_lower in content.lower():
+            # 매칭된 부분 찾기 (첫 번째 매칭 위치 주변 텍스트)
+            content_lower = content.lower()
+            match_pos = content_lower.find(search_lower)
+            if match_pos >= 0:
+                # 매칭 위치 주변 100자 추출
+                start = max(0, match_pos - 50)
+                end = min(len(content), match_pos + len(search_lower) + 50)
+                preview = content[start:end]
+                if start > 0:
+                    preview = "..." + preview
+                if end < len(content):
+                    preview = preview + "..."
+                
+                matching_files.append({
+                    'file_id': file['file_id'],
+                    'filename': file['filename'],
+                    'file_type': file['file_type'],
+                    'preview': preview,
+                    'match_position': match_pos
+                })
+    
+    return matching_files
+
+def filter_suppliers_optimized(suppliers, search_filter=None, location_filter=None, sort_by="최신순"):
+    """최적화된 공급업체 필터링 (모든 주요 칼럼+메모+파일내용 포함)"""
+    if not suppliers:
+        return []
+    filtered = suppliers
+    # 검색 필터 적용 (모든 주요 칼럼 포함, memo도 포함)
+    if search_filter:
+        search_lower = search_filter.strip().lower()
+        filtered_with_files = []
+        
+        for supplier in filtered:
+            # DB 칼럼에서 검색
+            db_match = any(
+                search_lower in str(supplier.get(field, '') or '').lower()
+                for field in [
+                    'company_name', 'website', 'email', 'phone', 'location',
+                    'specialization', 'company_type', 'established', 'certifications',
+                    'memo', 'rating', 'contact_person', 'history', 'search_query'
+                ]
+            )
+            
+            # 파일 내용에서 검색
+            supplier_id = supplier.get('id')
+            file_matches = []
+            if supplier_id:
+                files = get_supplier_files_with_content(supplier_id)
+                file_matches = search_in_file_content(files, search_lower)
+            
+            # DB 칼럼 또는 파일 내용에서 매칭되면 포함
+            if db_match or file_matches:
+                # 파일 매칭 정보를 supplier에 추가
+                if file_matches:
+                    supplier['_file_matches'] = file_matches
+                filtered_with_files.append(supplier)
+        
+        filtered = filtered_with_files
+    
+    # 지역 필터 적용
+    if location_filter and location_filter != "전체":
+        # extract_country 함수를 활용한 정확한 지역 필터링
+        filtered_by_country = [
+            s for s in filtered 
+            if extract_country(s.get('location', '')) == location_filter
+        ]
+        
+        # 백업 방법: 키워드 기반 필터링
+        location_mapping = {
+            "중국": ["china", "chinese", "shenzhen", "guangzhou", "shanghai", "beijing"],
+            "베트남": ["vietnam", "vietnamese", "ho chi minh", "hanoi"],
+            "한국": ["korea", "korean", "seoul", "busan", "incheon"],
+            "대만": ["taiwan", "taipei"],
+            "일본": ["japan", "japanese", "tokyo", "osaka"],
+            "인도": ["india", "indian", "mumbai", "delhi"],
+            "태국": ["thailand", "thai", "bangkok"]
+        }
+        
+        target_keywords = location_mapping.get(location_filter, [location_filter.lower()])
+        filtered_by_keyword = [
+            s for s in filtered 
+            if any(keyword in s.get('location', '').lower() for keyword in target_keywords)
+        ]
+        
+        # 두 방법 중 더 많은 결과를 반환
+        if len(filtered_by_country) > len(filtered_by_keyword):
+            filtered = filtered_by_country
+        else:
+            filtered = filtered_by_keyword
+    
+    # 정렬 적용
+    if sort_by == "회사명순":
+        filtered.sort(key=lambda x: x.get('company_name', ''))
+    elif sort_by == "지역순":
+        filtered.sort(key=lambda x: x.get('location', ''))
+    else:  # 최신순
+        filtered.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    
+    return filtered
+
+if __name__ == "__main__":
+    main() 

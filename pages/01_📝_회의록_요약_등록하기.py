@@ -696,7 +696,7 @@ def main():
     create_tables()
     
     # 탭 생성
-    tab1, tab2 = st.tabs(["회의록 작성", "회의록 검색"])
+    tab1, tab2, tab3 = st.tabs(["회의록 작성", "회의록 저장", "회의록 검색"])
     
     with tab1:
         st.header("회의록 작성")
@@ -914,6 +914,104 @@ def main():
                 st.error("❌ 회의록 저장에 실패했습니다.")
     
     with tab2:
+        st.header("회의록 저장")
+        
+        # 저장 성공 후 입력 필드 초기화
+        if 'save_success_flag' in st.session_state and st.session_state.save_success_flag:
+            st.session_state.save_success_flag = False
+            st.session_state.save_title_value = ""
+            st.session_state.save_participants_value = ""
+            st.session_state.save_summary_value = ""
+            st.session_state.save_action_items_value = ""
+            st.session_state.save_full_text_value = ""
+            st.session_state.save_meeting_type_value = 0
+        
+        # 초기값 설정
+        if 'save_title_value' not in st.session_state:
+            st.session_state.save_title_value = ""
+        if 'save_participants_value' not in st.session_state:
+            st.session_state.save_participants_value = ""
+        if 'save_summary_value' not in st.session_state:
+            st.session_state.save_summary_value = ""
+        if 'save_action_items_value' not in st.session_state:
+            st.session_state.save_action_items_value = ""
+        if 'save_full_text_value' not in st.session_state:
+            st.session_state.save_full_text_value = ""
+        if 'save_meeting_type_value' not in st.session_state:
+            st.session_state.save_meeting_type_value = 0
+        
+        # 회의 정보 입력
+        save_title = st.text_input("회의 제목", value=st.session_state.save_title_value, key="save_title")
+        
+        # 참석자 입력
+        save_participants = st.text_area("참석자 (쉼표로 구분)", value=st.session_state.save_participants_value, key="save_participants")
+        
+        # 미팅 형태 선택
+        save_meeting_type = st.selectbox(
+            "미팅 형태",
+            ["사내 미팅", "외부 미팅", "독서 토론"],
+            index=st.session_state.save_meeting_type_value,
+            key="save_meeting_type_select"
+        )
+        
+        # 요약 내용 입력
+        save_summary = st.text_area(
+            "회의 요약 내용",
+            value=st.session_state.save_summary_value,
+            placeholder="회의 요약 내용을 입력하세요...",
+            height=300,
+            key="save_summary"
+        )
+        
+        # Action Items 입력
+        save_action_items = st.text_area(
+            "Action Items (각 항목을 새 줄에 입력하세요)",
+            value=st.session_state.save_action_items_value,
+            placeholder="Action Item 1\nAction Item 2\nAction Item 3",
+            height=200,
+            key="save_action_items"
+        )
+        
+        # 전체 내용 입력 (선택사항)
+        save_full_text = st.text_area(
+            "전체 회의 내용 (선택사항)",
+            value=st.session_state.save_full_text_value,
+            placeholder="전체 회의 내용을 입력하세요...",
+            height=300,
+            key="save_full_text"
+        )
+        
+        # 저장 버튼
+        if st.button("회의록 저장", key="save_meeting_button", use_container_width=True, type="primary"):
+            if save_title and save_participants and save_summary:
+                # 미팅 형태와 제목 조합
+                formatted_save_title = f"{save_meeting_type}-{save_title}" if save_meeting_type else save_title
+                
+                # Action Items 파싱
+                action_items_list = [item.strip() for item in save_action_items.split('\n') if item.strip()]
+                
+                # DB에 저장
+                if save_meeting_record(
+                    formatted_save_title,
+                    save_participants.split(','),
+                    "",  # 오디오 경로는 빈 문자열
+                    save_full_text if save_full_text.strip() else save_summary,  # 전체 내용이 없으면 요약 내용 사용
+                    save_summary,
+                    action_items_list
+                ):
+                    st.success("✅ 회의록이 성공적으로 저장되었습니다.")
+                    
+                    # 저장 성공 상태를 session_state에 저장
+                    st.session_state.save_success_flag = True
+                    
+                    # 페이지 새로고침
+                    st.rerun()
+                else:
+                    st.error("❌ 회의록 저장에 실패했습니다.")
+            else:
+                st.error("❗ 회의 제목, 참석자, 요약 내용은 필수 입력 항목입니다.")
+    
+    with tab3:
         st.header("회의록 검색")
         
         # 검색 필터

@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 import plotly.express as px
 import plotly.graph_objects as go
 import time
+import numpy as np
+from scipy import stats
 
 # 환경 변수 로드
 load_dotenv()
@@ -980,7 +982,6 @@ def main():
             products = [p for p in products if p['current_stock'] > 0]
         if products:
             # 재고현황 표에서 모델명, supplier_name, 현재 재고만 보이도록 DataFrame 컬럼 제한
-            import pandas as pd  # pandas import 추가
             df = pd.DataFrame(products)
             df = df[['model_name', 'supplier_name', 'current_stock']]
             def highlight_status(row):
@@ -1202,7 +1203,6 @@ def main():
                         st.success(f"{selected_supplier['supplier_name']}의 미입고 항목: {len(pending_items)}건")
                         
                         # 미입고 항목을 DataFrame으로 표시
-                        import pandas as pd
                         df_pending = pd.DataFrame(pending_items)
                         df_pending['미입고수량'] = df_pending['ordered_qty'] - df_pending['received_qty']
                         df_pending['입고율(%)'] = (df_pending['received_qty'] / df_pending['ordered_qty'] * 100).round(1)
@@ -1234,7 +1234,7 @@ def main():
                             avg_completion = df_pending['입고율(%)'].mean()
                             st.metric("평균 입고율", f"{avg_completion:.1f}%")
                         with col4:
-                            overdue_count = len(df_pending[df_pending['expected_delivery_date'] < pd.Timestamp.now().date()])
+                            overdue_count = len(df_pending[df_pending['expected_delivery_date'] < date.today()])
                             st.metric("지연 건수", overdue_count)
                     else:
                         st.info(f"{selected_supplier['supplier_name']}의 미입고 항목이 없습니다.")
@@ -1704,93 +1704,598 @@ def main():
     elif menu == "재고 분석":
         st.header("📈 재고 분석")
         
-        # 분석 기간 선택
-        col1, col2 = st.columns(2)
-        with col1:
-            start_date = st.date_input(
-                "분석 시작일",
-                value=date.today() - timedelta(days=30)
-            )
-        with col2:
-            end_date = st.date_input(
-                "분석 종료일",
-                value=date.today()
-            )
+        # 분석 탭 추가
+        analysis_tab1, analysis_tab2, analysis_tab3 = st.tabs(["재고 현황", "재고 이동", "리드타임 분석"])
         
-        # 재고 이동 추이
-        st.subheader("재고 이동 추이")
-        movements = get_stock_movements((end_date - start_date).days)
-        if movements:
-            import pandas as pd  # pandas import 추가
-            df_movements = pd.DataFrame(movements)
+        with analysis_tab1:
+            # 기존 재고 분석 코드
+            # 분석 기간 선택
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input(
+                    "분석 시작일",
+                    value=date.today() - timedelta(days=30)
+                )
+            with col2:
+                end_date = st.date_input(
+                    "분석 종료일",
+                    value=date.today()
+                )
             
-            # 차트 데이터 준비
-            fig = px.line(
-                df_movements,
-                x='date',
-                y=['in_qty', 'out_qty'],
-                color='model_name',
-                title='제품별 입출고 추이',
+            # 재고 이동 추이
+            st.subheader("재고 이동 추이")
+            movements = get_stock_movements((end_date - start_date).days)
+            if movements:
+                df_movements = pd.DataFrame(movements)
+                
+                # 차트 데이터 준비
+                fig = px.line(
+                    df_movements,
+                    x='date',
+                    y=['in_qty', 'out_qty'],
+                    color='model_name',
+                    title='제품별 입출고 추이',
+                    labels={
+                        'date': '날짜',
+                        'value': '수량',
+                        'variable': '구분',
+                        'model_name': '제품명'
+                    }
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # 상세 데이터
+                st.dataframe(
+                    df_movements,
+                    column_config={
+                        "date": st.column_config.DateColumn(
+                            "날짜",
+                            format="YYYY-MM-DD"
+                        ),
+                        "model_name": "제품명",
+                        "supplier_name": "공급업체",
+                        "in_qty": st.column_config.NumberColumn(
+                            "입고 수량",
+                            format="%d개"
+                        ),
+                        "out_qty": st.column_config.NumberColumn(
+                            "출고 수량",
+                            format="%d개"
+                        )
+                    },
+                    hide_index=True
+                )
+            else:
+                st.info("분석 기간의 재고 변동 데이터가 없습니다.")
+            
+            # 재고 통계
+            st.subheader("재고 통계")
+            stats = get_stock_statistics()
+            
+            # 공급업체별 재고 현황 차트
+            supplier_df = pd.DataFrame(stats['suppliers'])
+            # low_stock 컬럼이 없으면 0으로 추가
+            if 'low_stock' not in supplier_df.columns:
+                supplier_df['low_stock'] = 0
+            # 컬럼 타입을 모두 int로 변환
+            for col in ['total_stock', 'out_of_stock', 'low_stock']:
+                if col in supplier_df.columns:
+                    supplier_df[col] = pd.to_numeric(supplier_df[col], errors='coerce').fillna(0).astype(int)
+            fig = px.bar(
+                supplier_df,
+                x='supplier_name',
+                y=['total_stock', 'out_of_stock', 'low_stock'],
+                title='공급업체별 재고 현황',
                 labels={
-                    'date': '날짜',
+                    'supplier_name': '공급업체',
                     'value': '수량',
-                    'variable': '구분',
-                    'model_name': '제품명'
-                }
+                    'variable': '구분'
+                },
+                barmode='group'
             )
             st.plotly_chart(fig, use_container_width=True)
+        
+        with analysis_tab2:
+            st.subheader("재고 이동 분석")
+            # 기존 재고 이동 분석 코드는 그대로 유지
+            movements = get_stock_movements(30)
+            if movements:
+                df_movements = pd.DataFrame(movements)
+                
+                # 월별 집계
+                df_movements['month'] = pd.to_datetime(df_movements['date']).dt.strftime('%Y-%m')
+                monthly_movements = df_movements.groupby(['month', 'model_name']).agg({
+                    'in_qty': 'sum',
+                    'out_qty': 'sum'
+                }).reset_index()
+                
+                fig = px.bar(
+                    monthly_movements,
+                    x='month',
+                    y=['in_qty', 'out_qty'],
+                    color='model_name',
+                    title='월별 제품별 입출고 현황',
+                    barmode='group'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with analysis_tab3:
+            st.subheader("📊 리드타임 분석 및 예측")
             
-            # 상세 데이터
-            st.dataframe(
-                df_movements,
-                column_config={
-                    "date": st.column_config.DateColumn(
-                        "날짜",
-                        format="YYYY-MM-DD"
-                    ),
-                    "model_name": "제품명",
-                    "supplier_name": "공급업체",
-                    "in_qty": st.column_config.NumberColumn(
-                        "입고 수량",
-                        format="%d개"
-                    ),
-                    "out_qty": st.column_config.NumberColumn(
-                        "출고 수량",
-                        format="%d개"
+            # 리드타임 분석 서브탭
+            lt_tab1, lt_tab2, lt_tab3, lt_tab4 = st.tabs(["📈 리드타임 통계", "🔮 리드타임 예측", "📅 리드타임 추이", "⚡ 실시간 분석"])
+            
+            with lt_tab1:
+                st.write("### 📈 리드타임 통계 분석")
+                
+                # 필터 옵션
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    suppliers = get_suppliers()
+                    selected_supplier_lt = st.selectbox(
+                        "공급업체 선택",
+                        options=[{"supplier_id": None, "supplier_name": "전체"}] + suppliers,
+                        format_func=lambda x: x['supplier_name'],
+                        key="lt_supplier"
                     )
-                },
-                hide_index=True
-            )
-        else:
-            st.info("분석 기간의 재고 변동 데이터가 없습니다.")
-        
-        # 재고 통계
-        st.subheader("재고 통계")
-        stats = get_stock_statistics()
-        
-        # 공급업체별 재고 현황 차트
-        import pandas as pd  # pandas import 추가
-        supplier_df = pd.DataFrame(stats['suppliers'])
-        # low_stock 컬럼이 없으면 0으로 추가
-        if 'low_stock' not in supplier_df.columns:
-            supplier_df['low_stock'] = 0
-        # 컬럼 타입을 모두 int로 변환
-        for col in ['total_stock', 'out_of_stock', 'low_stock']:
-            if col in supplier_df.columns:
-                supplier_df[col] = pd.to_numeric(supplier_df[col], errors='coerce').fillna(0).astype(int)
-        fig = px.bar(
-            supplier_df,
-            x='supplier_name',
-            y=['total_stock', 'out_of_stock', 'low_stock'],
-            title='공급업체별 재고 현황',
-            labels={
-                'supplier_name': '공급업체',
-                'value': '수량',
-                'variable': '구분'
-            },
-            barmode='group'
-        )
-        st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    lt_start_date = st.date_input(
+                        "분석 시작일",
+                        value=date.today() - timedelta(days=180),
+                        key="lt_start"
+                    )
+                
+                with col3:
+                    lt_end_date = st.date_input(
+                        "분석 종료일",
+                        value=date.today(),
+                        key="lt_end"
+                    )
+                
+                # 리드타임 데이터 조회
+                lead_time_data = get_lead_time_data(
+                    supplier_id=selected_supplier_lt['supplier_id'] if selected_supplier_lt['supplier_id'] else None,
+                    start_date=lt_start_date,
+                    end_date=lt_end_date
+                )
+                
+                if lead_time_data:
+                    # 통계 계산
+                    stats = calculate_lead_time_statistics(lead_time_data)
+                    
+                    if stats:
+                        # 전체 통계
+                        st.subheader("📊 전체 리드타임 통계")
+                        overall = stats['overall']
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("총 주문 수", f"{overall['total_orders']:,}건")
+                            st.metric("평균 리드타임", f"{overall['avg_lead_time']:.1f}일")
+                        with col2:
+                            st.metric("중간값 리드타임", f"{overall['median_lead_time']:.1f}일")
+                            st.metric("표준편차", f"{overall['std_lead_time']:.1f}일")
+                        with col3:
+                            st.metric("최소 리드타임", f"{overall['min_lead_time']:.1f}일")
+                            st.metric("최대 리드타임", f"{overall['max_lead_time']:.1f}일")
+                        with col4:
+                            st.metric("평균 지연일", f"{overall['avg_delay']:.1f}일")
+                            st.metric("정시 납기율", f"{overall['on_time_rate']:.1f}%")
+                        
+                        # 공급업체별 통계
+                        st.subheader("🏢 공급업체별 리드타임 통계")
+                        supplier_stats = stats['supplier']
+                        
+                        if not supplier_stats.empty:
+                            # 통계 테이블 표시
+                            st.dataframe(
+                                supplier_stats,
+                                use_container_width=True,
+                                column_config={
+                                    "actual_lead_time": st.column_config.NumberColumn("실제 리드타임", format="%.1f일"),
+                                    "delay_days": st.column_config.NumberColumn("지연일수", format="%.1f일")
+                                }
+                            )
+                            
+                            # 공급업체별 평균 리드타임 차트
+                            fig = px.bar(
+                                x=supplier_stats.index,
+                                y=supplier_stats[('actual_lead_time', 'mean')],
+                                title="공급업체별 평균 리드타임",
+                                labels={'x': '공급업체', 'y': '평균 리드타임 (일)'}
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        # 제품별 통계
+                        st.subheader("📦 제품별 리드타임 통계")
+                        product_stats = stats['product']
+                        
+                        if not product_stats.empty:
+                            # 상위 10개 제품만 표시
+                            top_products = product_stats.head(10)
+                            
+                            st.dataframe(
+                                top_products,
+                                use_container_width=True,
+                                column_config={
+                                    "actual_lead_time": st.column_config.NumberColumn("실제 리드타임", format="%.1f일"),
+                                    "delay_days": st.column_config.NumberColumn("지연일수", format="%.1f일")
+                                }
+                            )
+                            
+                            # 제품별 평균 리드타임 차트
+                            fig2 = px.bar(
+                                x=[f"{idx[0]} - {idx[1]}" for idx in top_products.index],
+                                y=top_products[('actual_lead_time', 'mean')],
+                                title="제품별 평균 리드타임 (상위 10개)",
+                                labels={'x': '공급업체 - 제품명', 'y': '평균 리드타임 (일)'}
+                            )
+                            fig2.update_xaxes(tickangle=45)
+                            st.plotly_chart(fig2, use_container_width=True)
+                        
+                        # 리드타임 분포 히스토그램
+                        st.subheader("📊 리드타임 분포")
+                        raw_data = stats['raw_data']
+                        
+                        fig3 = px.histogram(
+                            raw_data,
+                            x='actual_lead_time',
+                            nbins=20,
+                            title="실제 리드타임 분포",
+                            labels={'actual_lead_time': '리드타임 (일)', 'count': '주문 수'}
+                        )
+                        st.plotly_chart(fig3, use_container_width=True)
+                        
+                        # 지연일수 분포
+                        fig4 = px.histogram(
+                            raw_data,
+                            x='delay_days',
+                            nbins=20,
+                            title="지연일수 분포",
+                            labels={'delay_days': '지연일수 (일)', 'count': '주문 수'}
+                        )
+                        st.plotly_chart(fig4, use_container_width=True)
+                        
+                else:
+                    st.info("분석 기간 내 리드타임 데이터가 없습니다.")
+            
+            with lt_tab2:
+                st.write("### 🔮 리드타임 예측")
+                
+                # 예측 대상 선택
+                col1, col2 = st.columns(2)
+                with col1:
+                    suppliers = get_suppliers()
+                    selected_supplier_pred = st.selectbox(
+                        "공급업체 선택",
+                        options=suppliers,
+                        format_func=lambda x: x['supplier_name'],
+                        key="pred_supplier"
+                    )
+                
+                with col2:
+                    if selected_supplier_pred:
+                        products = get_products(selected_supplier_pred['supplier_id'])
+                        selected_product_pred = st.selectbox(
+                            "제품 선택",
+                            options=products,
+                            format_func=lambda x: x['model_name'],
+                            key="pred_product"
+                        )
+                    else:
+                        selected_product_pred = None
+                
+                # 신뢰도 설정
+                confidence_level = st.slider(
+                    "예측 신뢰도",
+                    min_value=0.7,
+                    max_value=0.95,
+                    value=0.8,
+                    step=0.05,
+                    help="높은 신뢰도는 더 넓은 예측 구간을 제공합니다."
+                )
+                
+                if selected_supplier_pred and selected_product_pred:
+                    # 예측 실행
+                    if st.button("리드타임 예측 실행", type="primary"):
+                        with st.spinner("예측 분석 중..."):
+                            prediction, error = predict_lead_time(
+                                selected_supplier_pred['supplier_id'],
+                                selected_product_pred['product_id'],
+                                confidence_level
+                            )
+                        
+                        if prediction:
+                            st.success("✅ 리드타임 예측 완료!")
+                            
+                            # 예측 결과 표시
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric(
+                                    "예상 리드타임",
+                                    f"{prediction['expected_lead_time']}일",
+                                    f"±{prediction['std_deviation']:.1f}일"
+                                )
+                            with col2:
+                                st.metric(
+                                    "신뢰구간",
+                                    f"{prediction['confidence_interval'][0]}~{prediction['confidence_interval'][1]}일",
+                                    f"{confidence_level*100:.0f}% 신뢰도"
+                                )
+                            with col3:
+                                st.metric(
+                                    "데이터 포인트",
+                                    f"{prediction['data_points']}건",
+                                    f"최근 {len(prediction['recent_trend'])}건 기준"
+                                )
+                            
+                            # 상세 정보
+                            st.subheader("📋 예측 상세 정보")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write(f"**과거 최소 리드타임:** {prediction['min_historical']}일")
+                                st.write(f"**과거 최대 리드타임:** {prediction['max_historical']}일")
+                                st.write(f"**표준편차:** {prediction['std_deviation']}일")
+                            with col2:
+                                st.write(f"**신뢰구간 하한:** {prediction['confidence_interval'][0]}일")
+                                st.write(f"**신뢰구간 상한:** {prediction['confidence_interval'][1]}일")
+                                st.write(f"**분석 기반 주문 수:** {prediction['data_points']}건")
+                            
+                            # 최근 추이
+                            if len(prediction['recent_trend']) > 1:
+                                st.subheader("📈 최근 리드타임 추이")
+                                fig = px.line(
+                                    x=range(len(prediction['recent_trend'])),
+                                    y=prediction['recent_trend'],
+                                    title="최근 5건 리드타임 추이",
+                                    labels={'x': '주문 순서 (최신순)', 'y': '리드타임 (일)'}
+                                )
+                                fig.add_hline(y=prediction['expected_lead_time'], line_dash="dash", line_color="red", 
+                                             annotation_text=f"예측 평균: {prediction['expected_lead_time']}일")
+                                st.plotly_chart(fig, use_container_width=True)
+                            
+                            # 예측 활용 가이드
+                            st.subheader("💡 예측 활용 가이드")
+                            st.info(f"""
+                            **권장 발주 시점:** 현재 날짜로부터 {prediction['expected_lead_time']}일 전
+                            
+                            **안전 마진:** {prediction['confidence_interval'][1] - prediction['expected_lead_time']}일 추가 여유
+                            
+                            **최대 지연 대비:** {prediction['max_historical'] - prediction['expected_lead_time']}일 추가 준비
+                            """)
+                        
+                        elif error:
+                            st.error(f"예측 실패: {error}")
+                        else:
+                            st.warning("예측을 위한 충분한 데이터가 없습니다.")
+                else:
+                    st.info("공급업체와 제품을 선택한 후 예측을 실행하세요.")
+            
+            with lt_tab3:
+                st.write("### 📅 리드타임 추이 분석")
+                
+                # 추이 분석 필터
+                col1, col2 = st.columns(2)
+                with col1:
+                    suppliers = get_suppliers()
+                    selected_supplier_trend = st.selectbox(
+                        "공급업체 선택",
+                        options=[{"supplier_id": None, "supplier_name": "전체"}] + suppliers,
+                        format_func=lambda x: x['supplier_name'],
+                        key="trend_supplier"
+                    )
+                
+                with col2:
+                    trend_days = st.selectbox(
+                        "분석 기간",
+                        options=[30, 60, 90, 180, 365],
+                        format_func=lambda x: f"{x}일",
+                        index=2
+                    )
+                
+                # 리드타임 추이 데이터 조회
+                trend_data = get_lead_time_trends(
+                    supplier_id=selected_supplier_trend['supplier_id'] if selected_supplier_trend['supplier_id'] else None,
+                    days=trend_days
+                )
+                
+                if trend_data:
+                    df_trend = pd.DataFrame(trend_data)
+                    
+                    # 월별 평균 리드타임 추이
+                    st.subheader("📈 월별 평균 리드타임 추이")
+                    
+                    monthly_avg = df_trend.groupby('month').agg({
+                        'avg_lead_time': 'mean',
+                        'order_count': 'sum',
+                        'avg_delay': 'mean'
+                    }).reset_index()
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        fig1 = px.line(
+                            monthly_avg,
+                            x='month',
+                            y='avg_lead_time',
+                            title="월별 평균 리드타임",
+                            labels={'month': '월', 'avg_lead_time': '평균 리드타임 (일)'}
+                        )
+                        st.plotly_chart(fig1, use_container_width=True)
+                    
+                    with col2:
+                        fig2 = px.line(
+                            monthly_avg,
+                            x='month',
+                            y='avg_delay',
+                            title="월별 평균 지연일수",
+                            labels={'month': '월', 'avg_delay': '평균 지연일수 (일)'}
+                        )
+                        st.plotly_chart(fig2, use_container_width=True)
+                    
+                    # 공급업체별 추이
+                    if selected_supplier_trend['supplier_id'] is None:
+                        st.subheader("🏢 공급업체별 리드타임 추이")
+                        supplier_trend = df_trend.groupby(['month', 'supplier_name']).agg({
+                            'avg_lead_time': 'mean'
+                        }).reset_index()
+                        
+                        fig3 = px.line(
+                            supplier_trend,
+                            x='month',
+                            y='avg_lead_time',
+                            color='supplier_name',
+                            title="공급업체별 월별 리드타임",
+                            labels={'month': '월', 'avg_lead_time': '평균 리드타임 (일)', 'supplier_name': '공급업체'}
+                        )
+                        st.plotly_chart(fig3, use_container_width=True)
+                    
+                    # 상세 데이터 테이블
+                    st.subheader("📊 상세 추이 데이터")
+                    st.dataframe(
+                        df_trend,
+                        column_config={
+                            "month": "월",
+                            "supplier_name": "공급업체",
+                            "model_name": "제품명",
+                            "avg_lead_time": st.column_config.NumberColumn("평균 리드타임", format="%.1f일"),
+                            "order_count": st.column_config.NumberColumn("주문 수", format="%d건"),
+                            "avg_delay": st.column_config.NumberColumn("평균 지연일수", format="%.1f일")
+                        },
+                        hide_index=True
+                    )
+                    
+                else:
+                    st.info("분석 기간 내 리드타임 추이 데이터가 없습니다.")
+            
+            with lt_tab4:
+                st.write("### ⚡ 실시간 리드타임 분석")
+                
+                # 실시간 분석 옵션
+                col1, col2 = st.columns(2)
+                with col1:
+                    realtime_supplier = st.selectbox(
+                        "공급업체 선택",
+                        options=suppliers,
+                        format_func=lambda x: x['supplier_name'],
+                        key="realtime_supplier"
+                    )
+                
+                with col2:
+                    analysis_type = st.selectbox(
+                        "분석 유형",
+                        ["전체 제품", "특정 제품", "지연 위험 제품"],
+                        key="realtime_analysis"
+                    )
+                
+                if realtime_supplier:
+                    # 실시간 데이터 조회
+                    recent_data = get_lead_time_data(
+                        supplier_id=realtime_supplier['supplier_id'],
+                        start_date=date.today() - timedelta(days=30)
+                    )
+                    
+                    if recent_data:
+                        df_recent = pd.DataFrame(recent_data)
+                        
+                        if analysis_type == "전체 제품":
+                            st.subheader("📊 전체 제품 리드타임 현황")
+                            
+                            # 제품별 요약
+                            product_summary = df_recent.groupby('model_name').agg({
+                                'actual_lead_time': ['mean', 'count', 'std'],
+                                'delay_days': 'mean'
+                            }).round(1)
+                            
+                            # 위험도 평가
+                            product_summary['risk_level'] = product_summary.apply(
+                                lambda x: '🔴' if x[('delay_days', 'mean')] > 5 else '🟡' if x[('delay_days', 'mean')] > 0 else '🟢', axis=1
+                            )
+                            
+                            st.dataframe(
+                                product_summary,
+                                use_container_width=True,
+                                column_config={
+                                    "actual_lead_time": st.column_config.NumberColumn("평균 리드타임", format="%.1f일"),
+                                    "delay_days": st.column_config.NumberColumn("평균 지연일수", format="%.1f일")
+                                }
+                            )
+                        
+                        elif analysis_type == "특정 제품":
+                            st.subheader("🎯 특정 제품 상세 분석")
+                            
+                            products = get_products(realtime_supplier['supplier_id'])
+                            selected_product_detail = st.selectbox(
+                                "분석할 제품 선택",
+                                options=products,
+                                format_func=lambda x: x['model_name'],
+                                key="detail_product"
+                            )
+                            
+                            if selected_product_detail:
+                                product_data = df_recent[df_recent['model_name'] == selected_product_detail['model_name']]
+                                
+                                if not product_data.empty:
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric("평균 리드타임", f"{product_data['actual_lead_time'].mean():.1f}일")
+                                        st.metric("최소 리드타임", f"{product_data['actual_lead_time'].min():.1f}일")
+                                    with col2:
+                                        st.metric("최대 리드타임", f"{product_data['actual_lead_time'].max():.1f}일")
+                                        st.metric("표준편차", f"{product_data['actual_lead_time'].std():.1f}일")
+                                    with col3:
+                                        st.metric("평균 지연일수", f"{product_data['delay_days'].mean():.1f}일")
+                                        st.metric("정시 납기율", f"{len(product_data[product_data['delay_days'] <= 0]) / len(product_data) * 100:.1f}%")
+                                    
+                                    # 리드타임 분포
+                                    fig = px.histogram(
+                                        product_data,
+                                        x='actual_lead_time',
+                                        nbins=10,
+                                        title=f"{selected_product_detail['model_name']} 리드타임 분포",
+                                        labels={'actual_lead_time': '리드타임 (일)', 'count': '주문 수'}
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
+                        
+                        elif analysis_type == "지연 위험 제품":
+                            st.subheader("⚠️ 지연 위험 제품 분석")
+                            
+                            # 지연 위험 제품 필터링
+                            risk_products = df_recent[df_recent['delay_days'] > 0].groupby('model_name').agg({
+                                'delay_days': ['mean', 'count'],
+                                'actual_lead_time': 'mean'
+                            }).round(1)
+                            
+                            if not risk_products.empty:
+                                st.warning(f"지연 위험이 있는 제품: {len(risk_products)}개")
+                                
+                                # 위험도별 정렬
+                                risk_products['risk_score'] = risk_products[('delay_days', 'mean')] * risk_products[('delay_days', 'count')]
+                                risk_products = risk_products.sort_values('risk_score', ascending=False)
+                                
+                                st.dataframe(
+                                    risk_products,
+                                    use_container_width=True,
+                                    column_config={
+                                        "delay_days": st.column_config.NumberColumn("평균 지연일수", format="%.1f일"),
+                                        "actual_lead_time": st.column_config.NumberColumn("평균 리드타임", format="%.1f일")
+                                    }
+                                )
+                                
+                                # 위험 제품 추이
+                                fig = px.bar(
+                                    x=risk_products.index,
+                                    y=risk_products[('delay_days', 'mean')],
+                                    title="지연 위험 제품별 평균 지연일수",
+                                    labels={'x': '제품명', 'y': '평균 지연일수 (일)'}
+                                )
+                                fig.update_xaxes(tickangle=45)
+                                st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.success("✅ 지연 위험이 있는 제품이 없습니다.")
+                    
+                    else:
+                        st.info("최근 30일 내 리드타임 데이터가 없습니다.")
 
     elif menu == "PI 관리":
         st.header("📄 PI 관리")
@@ -1939,7 +2444,6 @@ def main():
             
             if pi_list:
                 # 데이터프레임 변환
-                import pandas as pd  # pandas import 추가
                 df = pd.DataFrame(pi_list)
                 df = df.drop(columns=['total_amount', 'currency'], errors='ignore')
                 df['입고율'] = (df['total_received_qty'] / df['total_ordered_qty'] * 100).round(1)
@@ -2305,7 +2809,6 @@ def main():
         
         if ci_list:
             # 데이터프레임 변환
-            import pandas as pd  # pandas import 추가
             df = pd.DataFrame(ci_list)
             
             st.dataframe(
@@ -2508,7 +3011,6 @@ def main():
                 
                 if products:
                     # 데이터프레임 변환
-                    import pandas as pd  # pandas import 추가
                     df = pd.DataFrame(products)
                     
                     # 상태별 색상 지정
@@ -2565,7 +3067,6 @@ def main():
 
     elif menu == "재고 이력":
         st.header("📜 재고 입출고 이력")
-        import pandas as pd  # pandas import 추가
         conn = connect_to_db()
         # 기간 필터
         col1, col2 = st.columns(2)
@@ -2818,7 +3319,6 @@ def main():
                     st.success(f"조회 기간 내 A/S 지원 입고: {len(as_history)}건")
                     
                     # 데이터프레임으로 표시
-                    import pandas as pd
                     df = pd.DataFrame(as_history)
                     
                     # 날짜 포맷 변경
@@ -2957,7 +3457,6 @@ def main():
                     # 공급업체별 통계
                     if supplier_stats:
                         st.subheader("🏢 공급업체별 A/S 지원 현황")
-                        import pandas as pd
                         df_supplier = pd.DataFrame(supplier_stats)
                         
                         col1, col2 = st.columns(2)
@@ -3071,6 +3570,184 @@ def main():
             finally:
                 cursor.close()
                 conn.close()
+
+# --- 리드타임 분석 관련 함수들 ---
+def get_lead_time_data(supplier_id=None, start_date=None, end_date=None):
+    """리드타임 데이터 조회"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        query = """
+            SELECT 
+                pi.pi_id,
+                pi.pi_number,
+                pi.issue_date,
+                pi.expected_delivery_date,
+                s.supplier_name,
+                s.supplier_id,
+                p.model_name,
+                p.product_id,
+                pi_items.quantity as ordered_qty,
+                pi_items.expected_production_date,
+                ci.shipping_date,
+                ci.arrival_date,
+                DATEDIFF(ci.arrival_date, pi.issue_date) as actual_lead_time,
+                DATEDIFF(pi.expected_delivery_date, pi.issue_date) as expected_lead_time,
+                DATEDIFF(ci.arrival_date, pi.expected_delivery_date) as delay_days
+            FROM proforma_invoices pi
+            JOIN suppliers s ON pi.supplier_id = s.supplier_id
+            JOIN pi_items ON pi.pi_id = pi_items.pi_id
+            JOIN products_logistics p ON pi_items.product_id = p.product_id
+            JOIN ci_items ON pi_items.pi_item_id = ci_items.pi_item_id
+            JOIN commercial_invoices ci ON ci_items.ci_id = ci.ci_id
+            WHERE ci.arrival_date IS NOT NULL
+            AND pi.issue_date IS NOT NULL
+        """
+        params = []
+        
+        if supplier_id:
+            query += " AND pi.supplier_id = %s"
+            params.append(supplier_id)
+        if start_date:
+            query += " AND pi.issue_date >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND pi.issue_date <= %s"
+            params.append(end_date)
+            
+        query += " ORDER BY pi.issue_date DESC"
+        
+        cursor.execute(query, params)
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+def calculate_lead_time_statistics(lead_time_data):
+    """리드타임 통계 계산"""
+    if not lead_time_data:
+        return None
+    
+    df = pd.DataFrame(lead_time_data)
+    
+    # 공급업체별 통계
+    supplier_stats = df.groupby('supplier_name').agg({
+        'actual_lead_time': ['mean', 'median', 'std', 'min', 'max', 'count'],
+        'delay_days': ['mean', 'median', 'std', 'min', 'max']
+    }).round(1)
+    
+    # 제품별 통계
+    product_stats = df.groupby(['supplier_name', 'model_name']).agg({
+        'actual_lead_time': ['mean', 'median', 'std', 'min', 'max', 'count'],
+        'delay_days': ['mean', 'median', 'std', 'min', 'max']
+    }).round(1)
+    
+    # 전체 통계
+    overall_stats = {
+        'total_orders': len(df),
+        'avg_lead_time': df['actual_lead_time'].mean(),
+        'median_lead_time': df['actual_lead_time'].median(),
+        'std_lead_time': df['actual_lead_time'].std(),
+        'min_lead_time': df['actual_lead_time'].min(),
+        'max_lead_time': df['actual_lead_time'].max(),
+        'avg_delay': df['delay_days'].mean(),
+        'on_time_rate': len(df[df['delay_days'] <= 0]) / len(df) * 100
+    }
+    
+    return {
+        'overall': overall_stats,
+        'supplier': supplier_stats,
+        'product': product_stats,
+        'raw_data': df
+    }
+
+def predict_lead_time(supplier_id, product_id, confidence_level=0.8):
+    """리드타임 예측"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # 해당 공급업체/제품의 과거 리드타임 데이터 조회
+        cursor.execute("""
+            SELECT 
+                DATEDIFF(ci.arrival_date, pi.issue_date) as actual_lead_time
+            FROM proforma_invoices pi
+            JOIN pi_items ON pi.pi_id = pi_items.pi_id
+            JOIN ci_items ON pi_items.pi_item_id = ci_items.pi_item_id
+            JOIN commercial_invoices ci ON ci_items.ci_id = ci.ci_id
+            WHERE pi.supplier_id = %s 
+            AND pi_items.product_id = %s
+            AND ci.arrival_date IS NOT NULL
+            ORDER BY pi.issue_date DESC
+            LIMIT 20
+        """, (supplier_id, product_id))
+        
+        lead_times = [row['actual_lead_time'] for row in cursor.fetchall()]
+        
+        if len(lead_times) < 2:
+            return None, "예측을 위한 충분한 데이터가 없습니다. (최소 2개 주문 필요)"
+        
+        # 통계 계산
+        mean_lt = np.mean(lead_times)
+        std_lt = np.std(lead_times)
+        
+        # 신뢰구간 계산
+        confidence_interval = stats.norm.interval(confidence_level, loc=mean_lt, scale=std_lt/np.sqrt(len(lead_times)))
+        
+        # 예측 결과
+        prediction = {
+            'expected_lead_time': round(mean_lt, 1),
+            'confidence_interval': (round(confidence_interval[0], 1), round(confidence_interval[1], 1)),
+            'std_deviation': round(std_lt, 1),
+            'data_points': len(lead_times),
+            'min_historical': min(lead_times),
+            'max_historical': max(lead_times),
+            'recent_trend': lead_times[:5] if len(lead_times) >= 5 else lead_times
+        }
+        
+        return prediction, None
+        
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_lead_time_trends(supplier_id=None, days=90):
+    """리드타임 추이 분석"""
+    conn = connect_to_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        query = """
+            SELECT 
+                DATE_FORMAT(pi.issue_date, '%%Y-%%m') as month,
+                s.supplier_name,
+                p.model_name,
+                AVG(DATEDIFF(ci.arrival_date, pi.issue_date)) as avg_lead_time,
+                COUNT(*) as order_count,
+                AVG(DATEDIFF(ci.arrival_date, pi.expected_delivery_date)) as avg_delay
+            FROM proforma_invoices pi
+            JOIN suppliers s ON pi.supplier_id = s.supplier_id
+            JOIN pi_items ON pi.pi_id = pi_items.pi_id
+            JOIN products_logistics p ON pi_items.product_id = p.product_id
+            JOIN ci_items ON pi_items.pi_item_id = ci_items.pi_item_id
+            JOIN commercial_invoices ci ON ci_items.ci_id = ci.ci_id
+            WHERE ci.arrival_date IS NOT NULL
+            AND pi.issue_date >= DATE_SUB(CURRENT_DATE, INTERVAL %s DAY)
+        """
+        params = [days]
+        
+        if supplier_id:
+            query += " AND pi.supplier_id = %s"
+            params.append(supplier_id)
+            
+        query += """
+            GROUP BY DATE_FORMAT(pi.issue_date, '%%Y-%%m'), s.supplier_name, p.model_name
+            ORDER BY month DESC, avg_lead_time DESC
+        """
+        
+        cursor.execute(query, params)
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
 if __name__ == "__main__":
     main() 

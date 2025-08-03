@@ -1,0 +1,1486 @@
+import streamlit as st
+import pandas as pd
+import mysql.connector
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+import json
+import time
+import requests
+import re
+from datetime import datetime
+import hashlib
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import pickle
+import io
+
+load_dotenv()
+
+# 페이지 설정
+st.set_page_config(
+    page_title="🤖 아카라라이프 사내 챗봇",
+    page_icon="🤖",
+    layout="wide"
+)
+
+# ===== LLM 클라이언트 관리 =====
+
+class LLMClient:
+    """다양한 LLM 클라이언트를 관리하는 클래스"""
+    
+    def __init__(self):
+        self.clients = {}
+        self.models = {}
+        self.setup_clients()
+    
+    def setup_clients(self):
+        """사용 가능한 LLM 클라이언트들을 설정"""
+        # OpenAI 클라이언트
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if openai_key:
+            try:
+                self.clients['openai'] = OpenAI(api_key=openai_key)
+                self.models['openai'] = [
+                    'gpt-4-turbo-preview',
+                    'gpt-4',
+                    'gpt-3.5-turbo',
+                    'gpt-3.5-turbo-16k'
+                ]
+            except Exception as e:
+                st.warning(f"OpenAI 클라이언트 설정 실패: {e}")
+        
+        # Perplexity 클라이언트
+        perplexity_key = os.getenv('PERPLEXITY_API_KEY')
+        if perplexity_key:
+            try:
+                self.clients['perplexity'] = OpenAI(
+                    api_key=perplexity_key,
+                    base_url="https://api.perplexity.ai"
+                )
+                self.models['perplexity'] = [
+                    'sonar-pro',
+                    'sonar-small-online',
+                    'llama-3.1-sonar-small-128k-online',
+                    'llama-3.1-sonar-medium-128k-online',
+                    'llama-3.1-sonar-large-128k-online'
+                ]
+            except Exception as e:
+                st.warning(f"Perplexity 클라이언트 설정 실패: {e}")
+        
+        # Anthropic 클라이언트 (Claude)
+        anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+        if anthropic_key:
+            try:
+                import anthropic
+                self.clients['anthropic'] = anthropic.Anthropic(api_key=anthropic_key)
+                self.models['anthropic'] = [
+                    'claude-3-opus-20240229',
+                    'claude-3-sonnet-20240229',
+                    'claude-3-haiku-20240307'
+                ]
+            except Exception as e:
+                st.warning(f"Anthropic 클라이언트 설정 실패: {e}")
+        
+        # Google Gemini 클라이언트
+        google_key = os.getenv('GOOGLE_API_KEY')
+        if google_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=google_key)
+                self.clients['google'] = genai
+                self.models['google'] = [
+                    'gemini-pro',
+                    'gemini-pro-vision'
+                ]
+            except Exception as e:
+                st.warning(f"Google Gemini 클라이언트 설정 실패: {e}")
+    
+    def get_available_providers(self):
+        """사용 가능한 LLM 제공자 목록 반환"""
+        return list(self.clients.keys())
+    
+    def get_models_for_provider(self, provider):
+        """특정 제공자의 모델 목록 반환"""
+        return self.models.get(provider, [])
+    
+    def generate_response(self, provider, model, messages, temperature=0.7, max_tokens=2000):
+        """선택된 LLM으로 응답 생성"""
+        try:
+            if provider == 'openai':
+                return self._generate_openai_response(model, messages, temperature, max_tokens)
+            elif provider == 'perplexity':
+                return self._generate_perplexity_response(model, messages, temperature, max_tokens)
+            elif provider == 'anthropic':
+                return self._generate_anthropic_response(model, messages, temperature, max_tokens)
+            elif provider == 'google':
+                return self._generate_google_response(model, messages, temperature, max_tokens)
+            else:
+                return None, f"지원하지 않는 제공자: {provider}"
+        except Exception as e:
+            return None, f"응답 생성 오류: {str(e)}"
+    
+    def _generate_openai_response(self, model, messages, temperature, max_tokens):
+        """OpenAI 응답 생성"""
+        response = self.clients['openai'].chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content, None
+    
+    def _generate_perplexity_response(self, model, messages, temperature, max_tokens):
+        """Perplexity 응답 생성"""
+        response = self.clients['perplexity'].chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content, None
+    
+    def _generate_anthropic_response(self, model, messages, temperature, max_tokens):
+        """Anthropic 응답 생성"""
+        # Anthropic은 다른 메시지 형식을 사용
+        system_message = ""
+        user_messages = []
+        
+        for msg in messages:
+            if msg['role'] == 'system':
+                system_message = msg['content']
+            else:
+                user_messages.append(msg['content'])
+        
+        user_content = "\n\n".join(user_messages)
+        
+        response = self.clients['anthropic'].messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_message,
+            messages=[{"role": "user", "content": user_content}]
+        )
+        return response.content[0].text, None
+    
+    def _generate_google_response(self, model, messages, temperature, max_tokens):
+        """Google Gemini 응답 생성"""
+        # Gemini는 다른 메시지 형식을 사용
+        user_content = ""
+        for msg in messages:
+            if msg['role'] == 'user':
+                user_content += msg['content'] + "\n\n"
+        
+        model_instance = self.clients['google'].GenerativeModel(model)
+        response = model_instance.generate_content(
+            user_content,
+            generation_config=self.clients['google'].types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens
+            )
+        )
+        return response.text, None
+
+# ===== RAG 시스템 =====
+
+class RAGSystem:
+    """Retrieval-Augmented Generation 시스템 (DB 기반)"""
+    
+    def __init__(self):
+        self.vectorizer = None
+        self.document_embeddings = None
+        self.documents = []
+        self.document_metadata = []
+        self.is_loaded = False
+        self.setup_database()
+    
+    def setup_database(self):
+        """RAG 문서 테이블 생성"""
+        try:
+            conn = connect_to_db()
+            cursor = conn.cursor()
+            
+            # RAG 문서 테이블 생성
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS rag_documents (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    content TEXT NOT NULL,
+                    document_type VARCHAR(100) DEFAULT 'general',
+                    category VARCHAR(100) DEFAULT 'general',
+                    tags TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    INDEX idx_document_type (document_type),
+                    INDEX idx_category (category),
+                    INDEX idx_is_active (is_active)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+            
+            # 초기 데이터 삽입 (없는 경우에만)
+            self.insert_initial_documents(cursor)
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            # 팀메이트 데이터 로드 (오류 무시)
+            try:
+                self.load_teammates_from_db()
+            except Exception as e:
+                st.warning(f"팀메이트 데이터 로드 중 오류 발생 (무시됨): {str(e)}")
+            
+        except Exception as e:
+            st.error(f"RAG 데이터베이스 설정 오류: {str(e)}")
+    
+    def insert_initial_documents(self, cursor):
+        """초기 아카라라이프 문서 삽입"""
+        try:
+            # 기존 문서 확인
+            cursor.execute("SELECT COUNT(*) FROM rag_documents")
+            if cursor.fetchone()[0] > 0:
+                return  # 이미 문서가 있으면 스킵
+            
+            initial_documents = [
+                {
+                    'title': '아카라라이프 업무 프로세스',
+                    'content': """
+                    아카라라이프 업무 프로세스
+                    1. 신규 프로젝트 기안
+                       - 프로젝트 제안서 작성
+                       - 예산 산정 및 승인 요청
+                       - 팀 구성 및 역할 분담
+                    
+                    2. 프로젝트 실행
+                       - 주간 진행상황 보고
+                       - 월간 성과 평가
+                       - 이슈 발생 시 즉시 보고
+                    
+                    3. 프로젝트 완료
+                       - 최종 성과 보고서 작성
+                       - 사후 평가 및 개선사항 도출
+                       - 경험 축적 및 공유
+                    """,
+                    'document_type': 'process',
+                    'category': 'project_management'
+                },
+                {
+                    'title': '아카라라이프 전결 규정',
+                    'content': """
+                    아카라라이프 전결 규정
+                    1. 일반 사항
+                       - 100만원 이하: 부서장 전결
+                       - 100만원 초과 500만원 이하: 이사 전결
+                       - 500만원 초과: 이사회 승인 필요
+                    
+                    2. 긴급 사항
+                       - 긴급한 경우 사후 보고 가능
+                       - 3일 이내 사후 승인 절차 진행
+                    
+                    3. 예외 사항
+                       - 특별 예산은 별도 규정 적용
+                       - 외부 업체 계약은 법무팀 검토 필수
+                    """,
+                    'document_type': 'regulation',
+                    'category': 'approval'
+                },
+                {
+                    'title': '아카라라이프 조직도 및 담당자',
+                    'content': """
+                    아카라라이프 조직도 및 담당자
+                    경영진:
+                    - CEO: 김철수 (전사 경영 총괄)
+                    - CTO: 이영희 (기술 개발 총괄)
+                    - CFO: 박민수 (재무 회계 총괄)
+                    
+                    부서별:
+                    - 개발팀: 홍길동 (팀장), 김개발, 이코딩
+                    - 마케팅팀: 최마케팅 (팀장), 박홍보, 정광고
+                    - 영업팀: 조영업 (팀장), 유고객, 한계약
+                    - 인사팀: 강인사 (팀장), 윤채용, 임급여
+                    - 재무팀: 신재무 (팀장), 백회계, 남세무
+                    """,
+                    'document_type': 'organization',
+                    'category': 'contact'
+                }
+            ]
+            
+            for doc in initial_documents:
+                cursor.execute("""
+                    INSERT INTO rag_documents (title, content, document_type, category)
+                    VALUES (%s, %s, %s, %s)
+                """, (doc['title'], doc['content'], doc['document_type'], doc['category']))
+            
+        except Exception as e:
+            st.error(f"초기 문서 삽입 오류: {str(e)}")
+    
+    def load_teammates_from_db(self):
+        """company_teammates 테이블에서 팀메이트 정보를 RAG 문서로 변환"""
+        try:
+            # 데이터베이스 연결
+            conn = connect_to_db()
+            cursor = conn.cursor(dictionary=True)
+            
+            # 테이블 존재 여부 확인
+            cursor.execute("SHOW TABLES LIKE 'company_teammates'")
+            if not cursor.fetchone():
+                cursor.close()
+                conn.close()
+                return
+            
+            # 팀메이트 데이터 조회
+            cursor.execute("SELECT * FROM company_teammates")
+            teammates = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            if not teammates:
+                return
+            
+            # RAG 문서 저장을 위한 새 연결
+            rag_conn = connect_to_db()
+            rag_cursor = rag_conn.cursor()
+            
+            try:
+                for teammate in teammates:
+                    # 유효한 데이터만 추출
+                    valid_data = {}
+                    for key, value in teammate.items():
+                        if key not in ['created_at', 'updated_at'] and value and str(value).strip():
+                            valid_data[key] = str(value).strip()
+                    
+                    if valid_data:
+                        # 제목 생성
+                        title = valid_data.get('성명', valid_data.get('이름', '팀메이트 정보'))
+                        
+                        # 내용 생성
+                        content_parts = []
+                        for key, value in valid_data.items():
+                            content_parts.append(f"{key}: {value}")
+                        content = "\n".join(content_parts)
+                        
+                        # 중복 확인 및 저장
+                        rag_cursor.execute("""
+                            SELECT COUNT(*) FROM rag_documents 
+                            WHERE title = %s AND document_type = 'teammate'
+                        """, (title,))
+                        
+                        if rag_cursor.fetchone()[0] == 0:
+                            rag_cursor.execute("""
+                                INSERT INTO rag_documents (title, content, document_type, category, tags)
+                                VALUES (%s, %s, %s, %s, %s)
+                            """, (title, content, 'teammate', 'organization', 'company_teammates'))
+                
+                rag_conn.commit()
+                
+            finally:
+                rag_cursor.close()
+                rag_conn.close()
+                
+        except Exception as e:
+            st.error(f"팀메이트 데이터 로드 오류: {str(e)}")
+            import traceback
+            st.error(f"상세 오류: {traceback.format_exc()}")
+    
+    def load_documents_from_db(self):
+        """DB에서 문서 로드"""
+        try:
+            conn = connect_to_db()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT id, title, content, document_type, category, tags
+                FROM rag_documents 
+                WHERE is_active = TRUE
+                ORDER BY created_at DESC
+            """)
+            
+            documents = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            # 문서 데이터 정리
+            self.documents = []
+            self.document_metadata = []
+            
+            for doc in documents:
+                self.documents.append(doc['content'])
+                self.document_metadata.append({
+                    'id': doc['id'],
+                    'title': doc['title'],
+                    'type': doc['document_type'],
+                    'category': doc['category'],
+                    'tags': doc['tags']
+                })
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"DB 문서 로드 오류: {str(e)}")
+            return False
+    
+    def add_document(self, title, content, document_type='general', category='general', tags=None):
+        """새 문서 추가"""
+        try:
+            conn = connect_to_db()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO rag_documents (title, content, document_type, category, tags)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (title, content, document_type, category, tags))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            # 인덱스 재구축 필요
+            self.is_loaded = False
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"문서 추가 오류: {str(e)}")
+            return False
+    
+    def update_document(self, doc_id, title, content, document_type=None, category=None, tags=None):
+        """문서 수정"""
+        try:
+            conn = connect_to_db()
+            cursor = conn.cursor()
+            
+            update_fields = ["title = %s", "content = %s"]
+            params = [title, content]
+            
+            if document_type:
+                update_fields.append("document_type = %s")
+                params.append(document_type)
+            if category:
+                update_fields.append("category = %s")
+                params.append(category)
+            if tags:
+                update_fields.append("tags = %s")
+                params.append(tags)
+            
+            params.append(doc_id)
+            
+            cursor.execute(f"""
+                UPDATE rag_documents 
+                SET {', '.join(update_fields)}
+                WHERE id = %s
+            """, params)
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            # 인덱스 재구축 필요
+            self.is_loaded = False
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"문서 수정 오류: {str(e)}")
+            return False
+    
+    def delete_document(self, doc_id):
+        """문서 삭제 (소프트 삭제)"""
+        try:
+            conn = connect_to_db()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE rag_documents 
+                SET is_active = FALSE 
+                WHERE id = %s
+            """, (doc_id,))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            # 인덱스 재구축 필요
+            self.is_loaded = False
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"문서 삭제 오류: {str(e)}")
+            return False
+    
+    def get_all_documents(self):
+        """모든 활성 문서 조회"""
+        try:
+            conn = connect_to_db()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT id, title, content, document_type, category, tags, created_at
+                FROM rag_documents 
+                WHERE is_active = TRUE
+                ORDER BY created_at DESC
+            """)
+            
+            documents = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            return documents
+            
+        except Exception as e:
+            st.error(f"문서 조회 오류: {str(e)}")
+            return []
+    
+    def build_index(self):
+        """문서 인덱스 구축"""
+        # DB에서 문서 로드
+        if not self.load_documents_from_db():
+            return False
+        
+        if not self.documents:
+            st.warning("검색할 문서가 없습니다.")
+            return False
+        
+        try:
+            # TF-IDF 벡터화
+            self.vectorizer = TfidfVectorizer(
+                max_features=1000,
+                stop_words='english',
+                ngram_range=(1, 2)
+            )
+            
+            # 문서 벡터화
+            self.document_embeddings = self.vectorizer.fit_transform(self.documents)
+            self.is_loaded = True
+            return True
+        except Exception as e:
+            st.error(f"인덱스 구축 실패: {str(e)}")
+            return False
+    
+    def search_similar_documents(self, query, top_k=5, document_type=None, category=None):
+        """유사한 문서 검색 (필터링 지원)"""
+        if not self.is_loaded or not self.documents:
+            return []
+        
+        try:
+            # 쿼리 벡터화
+            query_vector = self.vectorizer.transform([query])
+            
+            # 코사인 유사도 계산
+            similarities = cosine_similarity(query_vector, self.document_embeddings).flatten()
+            
+            # 상위 k개 문서 선택
+            top_indices = similarities.argsort()[-top_k:][::-1]
+            
+            results = []
+            for idx in top_indices:
+                if similarities[idx] > 0.1:  # 최소 유사도 임계값
+                    metadata = self.document_metadata[idx]
+                    
+                    # 필터링 적용
+                    if document_type and metadata.get('type') != document_type:
+                        continue
+                    if category and metadata.get('category') != category:
+                        continue
+                    
+                    results.append({
+                        'content': self.documents[idx],
+                        'metadata': metadata,
+                        'similarity': float(similarities[idx])
+                    })
+            
+            return results
+        except Exception as e:
+            st.error(f"문서 검색 실패: {str(e)}")
+            return []
+    
+    def save_index(self, filepath):
+        """인덱스 저장"""
+        if not self.is_loaded:
+            return False
+        
+        try:
+            with open(filepath, 'wb') as f:
+                pickle.dump({
+                    'vectorizer': self.vectorizer,
+                    'document_embeddings': self.document_embeddings,
+                    'documents': self.documents,
+                    'document_metadata': self.document_metadata
+                }, f)
+            return True
+        except Exception as e:
+            st.error(f"인덱스 저장 실패: {str(e)}")
+            return False
+    
+    def load_index(self, filepath):
+        """인덱스 로드"""
+        try:
+            with open(filepath, 'rb') as f:
+                data = pickle.load(f)
+                self.vectorizer = data['vectorizer']
+                self.document_embeddings = data['document_embeddings']
+                self.documents = data['documents']
+                self.document_metadata = data['document_metadata']
+                self.is_loaded = True
+            return True
+        except Exception as e:
+            st.error(f"인덱스 로드 실패: {str(e)}")
+            return False
+
+# ===== 데이터베이스 연결 함수 =====
+
+def connect_to_db():
+    """MySQL DB 연결"""
+    return mysql.connector.connect(
+        user=os.getenv('SQL_USER'),
+        password=os.getenv('SQL_PASSWORD'),
+        host=os.getenv('SQL_HOST'),
+        database=os.getenv('SQL_DATABASE_NEWBIZ'),
+        charset='utf8mb4',
+        collation='utf8mb4_unicode_ci'
+    )
+
+# ===== 아카라라이프 전용 데이터 로더 =====
+
+def load_aqaralife_documents():
+    """아카라라이프 관련 문서들을 로드 (더 이상 사용하지 않음)"""
+    # 이 함수는 이제 사용하지 않습니다. DB에서 동적으로 로드합니다.
+    return []
+
+# ===== 챗봇 시스템 =====
+
+class AqaralifeChatbot:
+    """아카라라이프 사내 챗봇"""
+    
+    def __init__(self):
+        self.llm_client = LLMClient()
+        self.rag_system = RAGSystem()
+        self.conversation_history = []
+        self.setup_rag()
+    
+    def setup_rag(self):
+        """RAG 시스템 초기화"""
+        # DB 기반 RAG 시스템 초기화
+        if self.rag_system.build_index():
+            st.success("✅ RAG 시스템이 성공적으로 구축되었습니다.")
+        else:
+            st.error("❌ RAG 시스템 구축에 실패했습니다.")
+    
+    def generate_response(self, user_query, provider='openai', model=None, temperature=0.7):
+        """사용자 쿼리에 대한 응답 생성"""
+        try:
+            # 1. RAG를 통한 관련 문서 검색
+            relevant_docs = self.rag_system.search_similar_documents(user_query, top_k=3)
+            
+            # 허구 답변 방지: 관련 문서가 없으면 LLM 호출 없이 안내
+            if not relevant_docs:
+                return "관련 정보를 찾을 수 없습니다. 확인 후 답변드리겠습니다.", None
+            
+            # 2. 컨텍스트 구성
+            context = self._build_context(relevant_docs)
+            
+            # 3. 프롬프트 구성
+            prompt = self._build_prompt(user_query, context)
+            
+            # 4. LLM 응답 생성
+            if model is None:
+                models = self.llm_client.get_models_for_provider(provider)
+                model = models[0] if models else None
+            
+            if not model:
+                return "지원하는 모델이 없습니다.", None
+            
+            response, error = self.llm_client.generate_response(
+                provider, model, prompt, temperature
+            )
+            
+            if error:
+                return f"응답 생성 오류: {error}", None
+            
+            # 5. 대화 기록 업데이트
+            self.conversation_history.append({
+                'user': user_query,
+                'assistant': response,
+                'timestamp': datetime.now(),
+                'provider': provider,
+                'model': model
+            })
+            
+            return response, relevant_docs
+            
+        except Exception as e:
+            return f"챗봇 오류: {str(e)}", None
+    
+    def _build_context(self, relevant_docs):
+        """관련 문서로부터 컨텍스트 구성"""
+        if not relevant_docs:
+            return "관련 정보를 찾을 수 없습니다."
+        
+        context_parts = []
+        for i, doc in enumerate(relevant_docs, 1):
+            title = doc['metadata'].get('title', f'문서 {i}')
+            context_parts.append(f"문서 {i} - {title} (유사도: {doc['similarity']:.2f}):\n{doc['content']}")
+        
+        return "\n\n".join(context_parts)
+    
+    def _build_prompt(self, user_query, context):
+        """프롬프트 구성"""
+        system_prompt = """당신은 아카라라이프의 사내 챗봇입니다. 
+다음 규칙을 따라 응답해주세요:
+
+1. 아카라라이프의 업무 프로세스, 전결 규정, 조직도, 팀메이트 정보에 대한 질문에 정확히 답변
+2. 담당자 검색 시 정확한 부서와 연락처 제공
+3. 전결 규정 관련 질문 시 정확한 금액 기준과 절차 안내
+4. 업무 프로세스 질문 시 구체적인 단계와 담당자 안내
+5. 팀메이트 정보 검색 시 해당 인원의 상세 정보와 연락처 제공
+6. 친근하고 전문적인 톤으로 응답
+7. 모르는 내용은 솔직히 "확인 후 답변드리겠습니다"라고 안내
+8. 만약 관련 정보가 문서/DB에 없으면, '해당 정보가 없습니다' 또는 '확인 후 답변드리겠습니다'라고 안내하세요.
+9. 문서/DB에 없는 정보를 임의로 만들어내지 마세요.
+10. 반드시 아래 문서 내용에 근거해서만 답변하세요. 문서에 없는 정보는 답하지 마세요.
+
+아래는 관련 문서 내용입니다:
+{context}
+
+사용자 질문: {user_query}"""
+
+        return [
+            {"role": "system", "content": system_prompt.format(context=context, user_query=user_query)},
+            {"role": "user", "content": user_query}
+        ]
+    
+    def get_conversation_history(self):
+        """대화 기록 반환"""
+        return self.conversation_history
+    
+    def clear_history(self):
+        """대화 기록 초기화"""
+        self.conversation_history = []
+
+# ===== 문서 관리 함수들 =====
+
+def add_document_to_rag(title, content, document_type='general', category='general', tags=None):
+    """RAG 시스템에 새 문서 추가"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO rag_documents (title, content, document_type, category, tags)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (title, content, document_type, category, tags))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"문서 추가 오류: {str(e)}")
+        return False
+
+def get_all_rag_documents():
+    """모든 RAG 문서 조회"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT id, title, content, document_type, category, tags, created_at
+            FROM rag_documents 
+            WHERE is_active = TRUE
+            ORDER BY created_at DESC
+        """)
+        
+        documents = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return documents
+        
+    except Exception as e:
+        st.error(f"문서 조회 오류: {str(e)}")
+        return []
+
+def update_rag_document(doc_id, title, content, document_type=None, category=None, tags=None):
+    """RAG 문서 수정"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        
+        update_fields = ["title = %s", "content = %s"]
+        params = [title, content]
+        
+        if document_type:
+            update_fields.append("document_type = %s")
+            params.append(document_type)
+        if category:
+            update_fields.append("category = %s")
+            params.append(category)
+        if tags:
+            update_fields.append("tags = %s")
+            params.append(tags)
+        
+        params.append(doc_id)
+        
+        cursor.execute(f"""
+            UPDATE rag_documents 
+            SET {', '.join(update_fields)}
+            WHERE id = %s
+        """, params)
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"문서 수정 오류: {str(e)}")
+        return False
+
+def delete_rag_document(doc_id):
+    """RAG 문서 삭제 (소프트 삭제)"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE rag_documents 
+            SET is_active = FALSE 
+            WHERE id = %s
+        """, (doc_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"문서 삭제 오류: {str(e)}")
+        return False
+
+# ===== 메인 UI =====
+
+def main():
+    st.title("🤖 아카라라이프 사내 챗봇")
+    st.markdown("업무 프로세스, 전결 규정, 담당자 검색을 도와드립니다.")
+    
+    # 세션 상태 초기화
+    if 'chatbot' not in st.session_state:
+        st.session_state.chatbot = AqaralifeChatbot()
+    
+    if 'conversation' not in st.session_state:
+        st.session_state.conversation = []
+    
+    # 탭 선택을 세션 상태로 관리
+    tab_options = ["🔍 검색", "📝 문서 관리", "💬 챗봇", "⚙️ 관리자 모드"]
+    if 'selected_tab' not in st.session_state:
+        st.session_state.selected_tab = tab_options[0]
+    selected_tab = st.radio("탭 선택", tab_options, index=tab_options.index(st.session_state.selected_tab), horizontal=True, label_visibility="collapsed")
+    st.session_state.selected_tab = selected_tab
+
+    if selected_tab == "🔍 검색":
+        # 기존 tab1 코드 (문서 검색)
+        st.header("문서 검색")
+        
+        # 검색 방식 선택
+        search_type = st.radio(
+            "검색 방식",
+            ["일반 검색", "AI 도움"],
+            horizontal=True
+        )
+        
+        search_query = st.text_input(
+            "검색어를 입력하세요",
+            placeholder="업무 프로세스, 전결 규정, 담당자 등"
+        )
+        
+        col1, col2 = st.columns([1, 4])
+        
+        with col1:
+            if st.button("검색", type="primary"):
+                if search_query:
+                    if search_type == "일반 검색":
+                        # 일반 검색 (RAG 기반)
+                        with st.spinner("문서를 검색하고 있습니다..."):
+                            relevant_docs = st.session_state.chatbot.rag_system.search_similar_documents(search_query, top_k=5)
+                            
+                            if relevant_docs:
+                                st.success(f"{len(relevant_docs)}개의 관련 문서를 찾았습니다.")
+                                st.write("### 검색 결과")
+                                
+                                for i, doc in enumerate(relevant_docs, 1):
+                                    title = doc['metadata'].get('title', f'문서 {i}')
+                                    doc_type = doc['metadata'].get('type', 'unknown')
+                                    category = doc['metadata'].get('category', 'unknown')
+                                    
+                                    with st.expander(f"📄 {title} (유사도: {doc['similarity']:.2f})"):
+                                        st.markdown(f"**유형:** {doc_type}")
+                                        st.markdown(f"**카테고리:** {category}")
+                                        st.markdown("**내용:**")
+                                        st.markdown(doc['content'])
+                            else:
+                                st.info("검색 결과가 없습니다.")
+                    else:  # AI 도움
+                        with st.spinner("AI가 관련 정보를 분석하고 있습니다..."):
+                            response, relevant_docs = st.session_state.chatbot.generate_response(
+                                search_query, 'openai', 'gpt-4-turbo-preview', 0.7
+                            )
+                            
+                            if response:
+                                st.write("### AI 분석 결과")
+                                st.markdown(response)
+                                
+                                if relevant_docs:
+                                    with st.expander("📚 참고 문서"):
+                                        for j, doc in enumerate(relevant_docs, 1):
+                                            title = doc['metadata'].get('title', f'문서 {j}')
+                                            st.markdown(f"**{title}** (유사도: {doc['similarity']:.2f})")
+                                            st.markdown(f"*{doc['metadata'].get('type', 'unknown')} - {doc['metadata'].get('category', 'unknown')}*")
+                                            st.markdown(doc['content'][:200] + "..." if len(doc['content']) > 200 else doc['content'])
+                            else:
+                                st.warning("AI 분석 결과를 생성할 수 없습니다.")
+                else:
+                    st.warning("검색어를 입력해주세요.")
+        
+        with col2:
+            st.markdown("### 💡 검색 팁")
+            st.markdown("""
+            **일반 검색:**
+            - 키워드 기반으로 관련 문서를 찾습니다
+            - 유사도 점수로 정확도를 확인할 수 있습니다
+            
+            **AI 도움:**
+            - AI가 질문을 분석하여 답변을 생성합니다
+            - 관련 문서를 참고하여 더 정확한 정보를 제공합니다
+            """)
+    
+    elif selected_tab == "📝 문서 관리":
+        # 기존 tab2 코드 (문서 관리)
+        st.header("문서 관리")
+        
+        upload_method = st.radio(
+            "등록 방식 선택",
+            ["엑셀 파일 업로드", "수동 입력"],
+            horizontal=True
+        )
+        
+        if upload_method == "엑셀 파일 업로드":
+            # 엑셀 파일 업로드 기능
+            uploaded_file = st.file_uploader("엑셀 파일 선택", type=['xlsx', 'xls'])
+            
+            if uploaded_file:
+                try:
+                    # 원본 데이터 미리보기
+                    st.write("### 원본 데이터 미리보기")
+                    df_raw = pd.read_excel(uploaded_file)
+                    st.dataframe(df_raw)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        header_row = st.number_input("제목 행 번호", min_value=1, value=1) - 1
+                    with col2:
+                        data_start_row = st.number_input("데이터 시작 행 번호", min_value=1, value=2) - 1
+                    
+                    # 선택한 헤더 행으로 데이터프레임 생성
+                    df = pd.read_excel(uploaded_file, header=header_row)
+                    
+                    # NaN이나 빈 문자열인 컬럼명 처리
+                    df.columns = [f'Column_{i+1}' if pd.isna(col) or str(col).strip() == '' 
+                                else str(col).strip() 
+                                for i, col in enumerate(df.columns)]
+                    
+                    # 중복된 컬럼명 처리
+                    seen_columns = {}
+                    new_columns = []
+                    for col in df.columns:
+                        if col in seen_columns:
+                            seen_columns[col] += 1
+                            new_columns.append(f"{col}_{seen_columns[col]}")
+                        else:
+                            seen_columns[col] = 1
+                            new_columns.append(col)
+                    df.columns = new_columns
+                    
+                    columns = df.columns.tolist()
+                    
+                    # 컬럼 선택
+                    st.write("### 사용할 컬럼 선택")
+                    st.write("문서에 포함할 컬럼들을 선택해주세요.")
+                    
+                    # 컬럼 선택을 위한 체크박스 (3열 레이아웃)
+                    selected_columns = []
+                    cols = st.columns(3)
+                    for i, col in enumerate(columns):
+                        with cols[i % 3]:
+                            if st.checkbox(f"📋 {col}", value=True, key=f"col_{i}"):
+                                selected_columns.append(col)
+                    
+                    if not selected_columns:
+                        st.error("최소 하나 이상의 컬럼을 선택해주세요.")
+                        st.stop()
+                    
+                    # 선택된 컬럼으로 데이터프레임 필터링
+                    preview_df = df[selected_columns].copy()
+                    if data_start_row > header_row:
+                        preview_df = preview_df.iloc[data_start_row-header_row:]
+                    
+                    # NaN 값을 빈 문자열로 변환
+                    preview_df = preview_df.fillna('')
+                    
+                    # 데이터 미리보기
+                    st.write("### 처리된 데이터 미리보기")
+                    st.dataframe(preview_df)
+                    
+                    # 문서 유형 선택
+                    document_type = st.selectbox("문서 유형", ["process", "regulation", "organization", "general"])
+                    category = st.text_input("카테고리", placeholder="예: project_management, approval, contact")
+                    
+                    if st.button("문서 등록", type="primary"):
+                        # 각 행을 개별 문서로 등록
+                        success_count = 0
+                        for _, row in preview_df.iterrows():
+                            # 제목은 첫 번째 컬럼 사용
+                            title = str(row.iloc[0]) if len(row) > 0 else "제목 없음"
+                            # 내용은 모든 컬럼을 조합
+                            content_parts = []
+                            for col in selected_columns:
+                                value = str(row[col])
+                                if value and value != 'nan':
+                                    content_parts.append(f"{col}: {value}")
+                            
+                            content = "\n".join(content_parts)
+                            
+                            if add_document_to_rag(title, content, document_type, category):
+                                success_count += 1
+                        
+                        if success_count > 0:
+                            st.success(f"✅ {success_count}개의 문서가 등록되었습니다!")
+                            # RAG 시스템 재구축
+                            st.session_state.chatbot.rag_system.build_index()
+                            st.rerun()
+                
+                except Exception as e:
+                    st.error(f"파일 처리 중 오류가 발생했습니다: {str(e)}")
+        
+        else:  # 수동 입력
+            # 문서 추가
+            with st.expander("➕ 새 문서 추가"):
+                with st.form("add_document_form"):
+                    title = st.text_input("문서 제목*")
+                    content = st.text_area("문서 내용*", height=200)
+                    document_type = st.selectbox("문서 유형", ["process", "regulation", "organization", "general"])
+                    category = st.text_input("카테고리", placeholder="예: project_management, approval, contact")
+                    tags = st.text_input("태그", placeholder="쉼표로 구분")
+                    
+                    submitted = st.form_submit_button("문서 추가", type="primary")
+                    
+                    if submitted:
+                        if title.strip() and content.strip():
+                            if add_document_to_rag(title, content, document_type, category, tags):
+                                st.success("✅ 문서가 추가되었습니다!")
+                                # RAG 시스템 재구축
+                                st.session_state.chatbot.rag_system.build_index()
+                                st.rerun()
+                        else:
+                            st.error("제목과 내용을 입력해주세요.")
+        
+        # 문서 목록
+        st.markdown("### 📋 문서 목록")
+        
+        documents = get_all_rag_documents()
+        if documents:
+            for doc in documents:
+                st.markdown(f"### 📄 {doc['title']}")
+                
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    st.markdown(f"**제목:** {doc['title']}")
+                    st.markdown(f"**유형:** {doc['document_type']}")
+                    st.markdown(f"**카테고리:** {doc['category']}")
+                    if doc['tags']:
+                        st.markdown(f"**태그:** {doc['tags']}")
+                    st.markdown(f"**생성일:** {doc['created_at']}")
+                    
+                    # 내용을 접을 수 있는 섹션으로 변경
+                    if st.button("📝 내용 보기", key=f"view_{doc['id']}"):
+                        st.session_state.viewing_doc = doc['id']
+                    
+                    if 'viewing_doc' in st.session_state and st.session_state.viewing_doc == doc['id']:
+                        st.markdown("**내용:**")
+                        st.markdown(doc['content'])
+                        if st.button("📝 내용 숨기기", key=f"hide_{doc['id']}"):
+                            del st.session_state.viewing_doc
+                            st.rerun()
+                
+                with col2:
+                    # 문서 수정
+                    if st.button("✏️ 수정", key=f"edit_{doc['id']}"):
+                        st.session_state.editing_doc = doc
+                        st.rerun()
+                    
+                    # 문서 삭제
+                    if st.button("🗑️ 삭제", key=f"delete_{doc['id']}"):
+                        if delete_rag_document(doc['id']):
+                            st.success("✅ 문서가 삭제되었습니다!")
+                            # RAG 시스템 재구축
+                            st.session_state.chatbot.rag_system.build_index()
+                            st.rerun()
+                
+                st.divider()
+            
+            # 문서 수정 폼
+            if 'editing_doc' in st.session_state:
+                doc = st.session_state.editing_doc
+                with st.expander("✏️ 문서 수정"):
+                    with st.form("edit_document_form"):
+                        title = st.text_input("문서 제목", value=doc['title'])
+                        content = st.text_area("문서 내용", value=doc['content'], height=200)
+                        document_type = st.selectbox("문서 유형", ["process", "regulation", "organization", "general"], 
+                                                   index=["process", "regulation", "organization", "general"].index(doc['document_type']))
+                        category = st.text_input("카테고리", value=doc['category'])
+                        tags = st.text_input("태그", value=doc['tags'] or "")
+                        
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            if st.form_submit_button("💾 저장", type="primary"):
+                                if update_rag_document(doc['id'], title, content, document_type, category, tags):
+                                    st.success("✅ 문서가 수정되었습니다!")
+                                    del st.session_state.editing_doc
+                                    # RAG 시스템 재구축
+                                    st.session_state.chatbot.rag_system.build_index()
+                                    st.rerun()
+                        
+                        with col_cancel:
+                            if st.form_submit_button("❌ 취소"):
+                                del st.session_state.editing_doc
+                                st.rerun()
+        else:
+            st.info("등록된 문서가 없습니다.")
+    
+    elif selected_tab == "💬 챗봇":
+        # 기존 tab3 코드 (챗봇)
+        st.markdown("""
+        <style>
+        .user-bubble {
+            background: #2d2d2d;
+            color: #fff;
+            padding: 0.7em 1em;
+            border-radius: 1em 1em 0 1em;
+            margin: 0.5em 0;
+            max-width: 70%;
+            align-self: flex-end;
+            text-align: right;
+        }
+        .bot-bubble {
+            background: #2323a7;
+            color: #fff;
+            padding: 0.7em 1em;
+            border-radius: 1em 1em 1em 0;
+            margin: 0.5em 0;
+            max-width: 70%;
+            align-self: flex-start;
+            text-align: left;
+        }
+        .bubble-container {
+            display: flex;
+            flex-direction: column;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        st.markdown("### 💬 챗봇과 대화하기")
+
+        # 사이드바 설정 (기존과 동일)
+        with st.sidebar:
+            st.markdown("## ⚙️ 설정")
+            providers = st.session_state.chatbot.llm_client.get_available_providers()
+            if providers:
+                selected_provider = st.selectbox(
+                    "LLM 제공자 선택",
+                    providers,
+                    index=0
+                )
+                models = st.session_state.chatbot.llm_client.get_models_for_provider(selected_provider)
+                if models:
+                    selected_model = st.selectbox(
+                        "모델 선택",
+                        models,
+                        index=0
+                    )
+                else:
+                    selected_model = None
+            else:
+                st.error("사용 가능한 LLM 제공자가 없습니다.")
+                selected_provider = None
+                selected_model = None
+            temperature = st.slider("창의성 (Temperature)", 0.0, 1.0, 0.7, 0.1)
+            st.markdown("---")
+            st.markdown("## 💬 대화 관리")
+            if st.button("🗑️ 대화 기록 초기화"):
+                st.session_state.chatbot.clear_history()
+                st.session_state.conversation = []
+                st.rerun()
+            if st.session_state.conversation:
+                conversation_text = "\n\n".join([
+                    f"**{msg['role']}:** {msg['content']}" 
+                    for msg in st.session_state.conversation
+                ])
+                st.download_button(
+                    "📥 대화 내보내기",
+                    conversation_text,
+                    file_name=f"aqaralife_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain"
+                )
+
+        # 예시 질문들 (상단)
+        with st.expander("💡 예시 질문들"):
+            st.markdown("""
+            **업무 프로세스 관련:**
+            - 신규 프로젝트 기안 절차는 어떻게 되나요?
+            - 프로젝트 진행상황 보고는 언제 하나요?
+            
+            **전결 규정 관련:**
+            - 300만원 예산 승인은 누가 하나요?
+            - 긴급 예산 사용 절차는 어떻게 되나요?
+            
+            **담당자 검색:**
+            - 개발팀 팀장은 누구인가요?
+            - 마케팅 관련 문의는 누구에게 하면 되나요?
+            
+            **팀메이트 검색:**
+            - 홍길동님의 연락처는 어떻게 되나요?
+            - 마케팅팀에서 일하는 사람은 누구인가요?
+            - 개발 관련해서 누구에게 문의하면 되나요?
+            """)
+
+        # 챗봇 탭의 메인 영역을 3:1로 분할
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            # 대화 기록 (누적, 말풍선)
+            st.markdown('<div class="bubble-container">', unsafe_allow_html=True)
+            for i, message in enumerate(st.session_state.conversation):
+                if message['role'] == '사용자':
+                    st.markdown(f"<div class='user-bubble'>👤 {message['content']}</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='bot-bubble'>🤖 {message['content']}</div>", unsafe_allow_html=True)
+                    # 관련 문서 표시 (있는 경우)
+                    if 'relevant_docs' in message and message['relevant_docs']:
+                        with st.expander("📚 참고 문서", expanded=False):
+                            for j, doc in enumerate(message['relevant_docs'], 1):
+                                title = doc['metadata'].get('title', f'문서 {j}')
+                                st.markdown(f"**{title}** (유사도: {doc['similarity']:.2f})")
+                                st.markdown(f"*{doc['metadata'].get('type', 'unknown')} - {doc['metadata'].get('category', 'unknown')}*")
+                                st.markdown(doc['content'][:200] + "..." if len(doc['content']) > 200 else doc['content'])
+                    if 'provider' in message and 'model' in message:
+                        st.caption(f"사용 모델: {message['provider']} - {message['model']}")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            # 프롬프트 입력창 (항상 하단)
+            user_input = st.text_area(
+                "질문을 입력하세요:",
+                key="chat_input",
+                height=80,
+                label_visibility="collapsed",
+                placeholder="메시지를 입력하세요..."
+            )
+            col_send, col_clear = st.columns([1, 1])
+            with col_send:
+                if st.button("전송", type="primary"):
+                    if user_input.strip():
+                        st.session_state.conversation.append({'role': '사용자', 'content': user_input, 'timestamp': datetime.now()})
+                        # streaming 답변
+                        with st.spinner("🤖 답변 생성 중..."):
+                            response, relevant_docs = st.session_state.chatbot.generate_response(user_input, selected_provider, selected_model, temperature)
+                            # streaming 효과
+                            bot_placeholder = st.empty()
+                            streamed = ""
+                            for i in range(1, len(response)+1):
+                                streamed = response[:i]
+                                bot_placeholder.markdown(f"<div class='bot-bubble'>🤖 {streamed}</div>", unsafe_allow_html=True)
+                                time.sleep(0.01)
+                            st.session_state.conversation.append({'role': '챗봇', 'content': response, 'timestamp': datetime.now(), 'provider': selected_provider, 'model': selected_model, 'relevant_docs': relevant_docs})
+                        st.rerun()
+            with col_clear:
+                if st.button("입력 초기화"):
+                    st.rerun()
+
+        with col2:
+            st.markdown("### 📊 시스템 상태")
+            if selected_provider:
+                st.success(f"✅ {selected_provider} 연결됨")
+                if selected_model:
+                    st.info(f"🤖 모델: {selected_model}")
+            else:
+                st.error("❌ LLM 연결 안됨")
+            if st.session_state.chatbot.rag_system.is_loaded:
+                st.success("✅ RAG 시스템 준비됨")
+                st.info(f"📚 문서 수: {len(st.session_state.chatbot.rag_system.documents)}")
+            else:
+                st.error("❌ RAG 시스템 오류")
+            if st.session_state.conversation:
+                st.metric("대화 수", len([msg for msg in st.session_state.conversation if msg['role'] == '사용자']))
+    
+    elif selected_tab == "⚙️ 관리자 모드":
+        # 기존 tab4 코드 (관리자 모드)
+        st.header("관리자 모드")
+        
+        # 관리자 인증
+        admin_password = st.text_input("관리자 비밀번호", type="password")
+        if admin_password:
+            if verify_admin_password(admin_password):
+                st.success("관리자 인증 성공")
+                
+                # 시스템 관리 기능
+                st.markdown("### 🔧 시스템 관리")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # RAG 시스템 재구축
+                    if st.button("🔄 RAG 시스템 재구축"):
+                        with st.spinner("RAG 시스템을 재구축하고 있습니다..."):
+                            if st.session_state.chatbot.rag_system.build_index():
+                                st.success("✅ RAG 시스템이 재구축되었습니다!")
+                            else:
+                                st.error("❌ RAG 시스템 재구축에 실패했습니다.")
+                
+                with col2:
+                    # 팀메이트 동기화
+                    if st.button("👥 팀메이트 동기화"):
+                        with st.spinner("팀메이트 정보를 RAG 시스템에 동기화하고 있습니다..."):
+                            success, message = sync_teammates_to_rag()
+                            if success:
+                                st.success(f"✅ {message}")
+                                # RAG 시스템 재구축
+                                st.session_state.chatbot.rag_system.build_index()
+                            else:
+                                st.error(f"❌ {message}")
+                
+                # 시스템 정보
+                st.markdown("### 📊 시스템 정보")
+                
+                # 문서 통계
+                documents = get_all_rag_documents()
+                if documents:
+                    doc_types = {}
+                    doc_categories = {}
+                    
+                    for doc in documents:
+                        doc_type = doc['document_type']
+                        doc_category = doc['category']
+                        
+                        doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
+                        doc_categories[doc_category] = doc_categories.get(doc_category, 0) + 1
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**문서 유형별 분포:**")
+                        for doc_type, count in doc_types.items():
+                            st.markdown(f"- {doc_type}: {count}개")
+                    
+                    with col2:
+                        st.markdown("**카테고리별 분포:**")
+                        for category, count in doc_categories.items():
+                            st.markdown(f"- {category}: {count}개")
+                    
+                    # 전체 문서 목록
+                    st.markdown("### 📋 전체 문서 목록")
+                    for doc in documents:
+                        st.markdown(f"### 📄 {doc['title']} (ID: {doc['id']})")
+                        st.markdown(f"**제목:** {doc['title']}")
+                        st.markdown(f"**유형:** {doc['document_type']}")
+                        st.markdown(f"**카테고리:** {doc['category']}")
+                        st.markdown(f"**생성일:** {doc['created_at']}")
+                        
+                        # 관리자용 삭제 버튼
+                        if st.button("🗑️ 삭제", key=f"admin_delete_{doc['id']}", type="secondary"):
+                            if delete_rag_document(doc['id']):
+                                st.success(f"✅ '{doc['title']}' 문서가 삭제되었습니다.")
+                                # RAG 시스템 재구축
+                                st.session_state.chatbot.rag_system.build_index()
+                                st.rerun()
+                        
+                        st.divider()
+                else:
+                    st.info("등록된 문서가 없습니다.")
+            else:
+                st.error("관리자 비밀번호가 일치하지 않습니다.")
+
+def verify_admin_password(input_password):
+    """관리자 비밀번호 확인"""
+    return input_password == os.getenv('ADMIN_PASSWORD')
+
+def sync_teammates_to_rag():
+    """company_teammates 테이블의 데이터를 RAG 시스템에 동기화"""
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor(dictionary=True)
+        
+        # 테이블 존재 여부 확인
+        cursor.execute("SHOW TABLES LIKE 'company_teammates'")
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return False, "company_teammates 테이블이 존재하지 않습니다."
+        
+        # 기존 팀메이트 문서 삭제
+        cursor.execute("""
+            DELETE FROM rag_documents 
+            WHERE document_type = 'teammate' AND tags = 'company_teammates'
+        """)
+        
+        # 팀메이트 데이터 조회
+        cursor.execute("SELECT * FROM company_teammates")
+        teammates = cursor.fetchall()
+        
+        if not teammates:
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return True, "팀메이트 데이터가 없습니다."
+        
+        # 팀메이트 데이터를 RAG 문서로 변환하여 저장
+        added_count = 0
+        for teammate in teammates:
+            # 유효한 데이터만 추출
+            valid_data = {}
+            for key, value in teammate.items():
+                if key not in ['created_at', 'updated_at'] and value and str(value).strip():
+                    valid_data[key] = str(value).strip()
+            
+            if valid_data:
+                # 제목 생성
+                title = valid_data.get('성명', valid_data.get('이름', '팀메이트 정보'))
+                
+                # 내용 생성
+                content_parts = []
+                for key, value in valid_data.items():
+                    content_parts.append(f"{key}: {value}")
+                content = "\n".join(content_parts)
+                
+                # 새로 추가
+                cursor.execute("""
+                    INSERT INTO rag_documents (title, content, document_type, category, tags)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (title, content, 'teammate', 'organization', 'company_teammates'))
+                
+                added_count += 1
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return True, f"{added_count}명의 팀메이트 정보가 RAG 시스템에 동기화되었습니다."
+        
+    except Exception as e:
+        return False, f"팀메이트 동기화 오류: {str(e)}"
+
+if __name__ == "__main__":
+    main() 

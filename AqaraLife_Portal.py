@@ -73,8 +73,8 @@ def display_main_logo():
 logo_displayed = display_logo_at_top()
 
 # 메인 페이지 제목
-st.write("# 아카라라이프 포털!  👉 🤖📱✨ 🏡😊❤️ ")
-st.write("## 스마트 하게, 우리 삶을 더 행복하게")
+st.write("# &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;아카라라이프 포털!  🤖📱 🏡😊 ")
+st.write("## &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp;&nbsp; 스마트 하게, 우리 삶을 더 행복하게")
 
 # 메인 화면에 로고 표시
 st.markdown("---")  # 구분선

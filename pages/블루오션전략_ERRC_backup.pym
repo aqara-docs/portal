@@ -1,0 +1,1694 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+import anthropic
+import json
+import base64
+import requests
+import graphviz
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.figure_factory as ff
+import mysql.connector
+import concurrent.futures
+import time
+import re
+from urllib.parse import urlparse, urljoin
+from bs4 import BeautifulSoup
+import requests
+from PIL import Image
+import io
+import hashlib
+
+# 환경 변수 로드
+load_dotenv()
+
+# 페이지 설정
+st.set_page_config(
+    page_title="🔵 블루오션 전략 ERRC 분석",
+    page_icon="🔵",
+    layout="wide"
+)
+st.title("🔵 블루오션 전략 ERRC 분석 시스템")
+
+# 인증 기능
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+admin_pw = os.getenv('ADMIN_PASSWORD')
+if not admin_pw:
+    st.error('환경변수(ADMIN_PASSWORD)가 설정되어 있지 않습니다.')
+    st.stop()
+
+if not st.session_state.authenticated:
+    password = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    if password == admin_pw:
+        st.session_state.authenticated = True
+        st.rerun()
+    else:
+        if password:
+            st.error("관리자 권한이 필요합니다")
+        st.stop()
+
+# API 클라이언트 초기화
+openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+
+# MySQL Database configuration
+db_config = {
+    'user': os.getenv('SQL_USER'),
+    'password': os.getenv('SQL_PASSWORD'),
+    'host': os.getenv('SQL_HOST'),
+    'database': os.getenv('SQL_DATABASE_NEWBIZ'),
+    'charset': 'utf8mb4',
+    'collation': 'utf8mb4_general_ci'
+}
+
+# === Perplexity API 관련 함수들 ===
+def clean_api_key(api_key):
+    """API 키 정리"""
+    if not api_key:
+        return None
+    return api_key.strip().strip("'").strip('"').strip()
+
+def verify_perplexity_api_key(api_key):
+    try:
+        if not api_key or not api_key.strip():
+            return False
+        api_key = api_key.strip()
+        if not api_key.startswith('pplx-'):
+            return False
+        if len(api_key) < 25:
+            return False
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"}
+        ]
+        try:
+            response = client.chat.completions.create(
+                model="sonar-pro",
+                messages=messages,
+                max_tokens=10,
+                temperature=0.1
+            )
+            return True
+        except Exception as e:
+            if "authentication" in str(e).lower() or "unauthorized" in str(e).lower():
+                return False
+            return True
+    except Exception:
+        return False
+
+def search_with_perplexity(query, api_key, model="sonar-pro", max_results=10):
+    """Perplexity API를 사용한 검색 (OpenAI 호환 클라이언트 사용)"""
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+        messages = [
+            {
+                'role': 'system',
+                'content': '당신은 전문적인 비즈니스 분석가입니다. 주어진 회사나 기업에 대해 정확하고 상세한 정보를 제공해주세요.'
+            },
+            {
+                'role': 'user',
+                'content': f"{query}에 대해 다음 정보를 상세히 조사해주세요:\n\n1. 회사 개요 및 주요 사업\n2. 핵심 제품/서비스\n3. 비즈니스 모델\n4. 시장 포지셔닝\n5. 경쟁 우위\n6. 최근 동향 및 전략\n7. 재무 성과 (가능한 경우)\n8. 조직 구조 및 문화\n9. 고객 대상\n10. 파트너십 및 협력 관계"
+            }
+        ]
+        
+        # 사용 가능한 모델들
+        test_models = ["sonar-pro", "sonar-small-online"]
+        
+        # 각 모델로 시도
+        for model in test_models:
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=4000,
+                    temperature=0.3,
+                    top_p=0.9
+                )
+                return {
+                    'content': response.choices[0].message.content,
+                    'success': True,
+                    'error': None
+                }
+            except Exception as e:
+                error_msg = str(e)
+                
+                if "Invalid model" in error_msg or "model not found" in error_msg.lower():
+                    continue  # 다음 모델 시도
+                elif "authentication" in error_msg.lower() or "unauthorized" in error_msg.lower():
+                    return {
+                        'content': f"API 키 인증 실패: {error_msg}",
+                        'success': False,
+                        'error': f"API 키 인증 실패: {error_msg}"
+                    }
+                elif "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+                    return {
+                        'content': f"API 요청 한도 초과: {error_msg}",
+                        'success': False,
+                        'error': f"API 요청 한도 초과: {error_msg}"
+                    }
+                else:
+                    continue  # 다른 오류는 다음 모델 시도
+        
+        # 모든 모델에서 실패한 경우
+        return {
+            'content': "모든 Perplexity 모델에서 검색에 실패했습니다.",
+            'success': False,
+            'error': "모든 Perplexity 모델에서 검색에 실패했습니다."
+        }
+        
+    except Exception as e:
+        return {
+            'content': f"Perplexity 검색 중 오류: {str(e)}",
+            'success': False,
+            'error': str(e)
+        }
+
+def search_competitors_with_perplexity(company_name, industry, api_key, model="sonar-pro"):
+    """경쟁사 검색 (OpenAI 호환 클라이언트 사용)"""
+    try:
+        query = f"{company_name}와 같은 {industry} 산업에서 주요 경쟁사 2개를 찾아서 각각의 상세 정보를 제공해주세요. 각 경쟁사에 대해 다음 정보를 포함해주세요:\n\n1. 회사명 및 개요\n2. 주요 제품/서비스\n3. 비즈니스 모델\n4. 시장 포지셔닝\n5. 경쟁 우위\n6. 최근 전략 동향"
+        return search_with_perplexity(query, api_key, model)
+    except Exception as e:
+        return {
+            'content': f"경쟁사 검색 중 오류: {str(e)}",
+            'success': False,
+            'error': str(e)
+        }
+
+# === ERRC 분석 전문가 에이전트 ===
+ERRC_ANALYSIS_AGENTS = {
+    "errc_analyzer": {
+        "name": "🔵 ERRC 분석 전문가",
+        "emoji": "🔵",
+        "description": "ERRC 프레임워크를 활용한 블루오션 전략 분석",
+        "system_prompt": """당신은 15년 경력의 블루오션 전략 전문가입니다.
+
+**전문 분야:**
+- ERRC 프레임워크 분석
+- 블루오션 전략 수립
+- 경쟁사 비교 분석
+- 전략 캔버스 작성
+
+**ERRC 프레임워크:**
+- E (Eliminate): 제거 - 불필요한 요소 제거
+- R (Reduce): 축소 - 과도한 투자나 활동 축소
+- R (Raise): 강화 - 핵심 가치 강화
+- C (Create): 창출 - 새로운 가치 창출
+
+**분석 관점:**
+- 기존 경쟁에서 벗어나는 방법
+- 고객 가치 제안 개선
+- 비용 구조 최적화
+- 새로운 시장 기회 창출
+
+회사와 경쟁사 정보를 바탕으로 ERRC 분석과 블루오션 전략을 제시해주세요."""
+    },
+    
+    "strategy_canvas_creator": {
+        "name": "📊 전략 캔버스 전문가",
+        "emoji": "📊",
+        "description": "ERRC 기반 전략 캔버스 작성",
+        "system_prompt": """당신은 12년 경력의 전략 캔버스 전문가입니다.
+
+**전문 분야:**
+- 전략 캔버스 설계
+- 경쟁 요소 분석
+- 가치 곡선 작성
+- 블루오션 전략 시각화
+
+**전략 캔버스 구성요소:**
+- 제거 (Eliminate): 어떤 요소를 제거할 것인가?
+- 축소 (Reduce): 어떤 요소를 표준 이하로 줄일 것인가?
+- 강화 (Raise): 어떤 요소를 표준 이상으로 높일 것인가?
+- 창출 (Create): 어떤 새로운 요소를 창출할 것인가?
+
+**분석 관점:**
+- 경쟁사와의 차별화 요소
+- 고객 가치 제안 개선
+- 비용 구조 최적화
+- 새로운 시장 기회
+
+ERRC 분석 결과를 바탕으로 전략 캔버스를 작성해주세요."""
+    }
+}
+
+# === AI 응답 생성 함수 ===
+def get_ai_response(prompt, model_name="gpt-4o-mini", system_prompt="", enable_thinking=False):
+    """AI 응답 생성 함수"""
+    try:
+        if model_name.startswith("gpt"):
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            
+            response = openai.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=4000
+            )
+            
+            return {
+                'content': response.choices[0].message.content,
+                'success': True,
+                'error': None
+            }
+            
+        elif model_name.startswith("claude"):
+            response = anthropic_client.messages.create(
+                model=model_name,
+                max_tokens=4000,
+                temperature=0.7,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            return {
+                'content': response.content[0].text,
+                'success': True,
+                'error': None
+            }
+            
+    except Exception as e:
+        return {
+            'content': f"AI 응답 생성 중 오류: {str(e)}",
+            'success': False,
+            'error': str(e)
+        }
+
+# === ERRC 분석 함수들 ===
+def analyze_company_with_errc(company_info, competitors_info, model_name="gpt-4o-mini"):
+    """회사 정보를 바탕으로 ERRC 분석"""
+    
+    errc_agent = ERRC_ANALYSIS_AGENTS["errc_analyzer"]
+    
+    prompt = f"""
+{errc_agent['system_prompt']}
+
+다음은 분석 대상 회사와 경쟁사 정보입니다:
+
+**분석 대상 회사 정보:**
+{company_info}
+
+**경쟁사 정보:**
+{competitors_info}
+
+**ERRC 분석 요청사항:**
+
+다음 JSON 형식으로 응답해주세요:
+
+{{
+    "eliminate": [
+        {{
+            "element": "제거할 요소명",
+            "reason": "제거 이유",
+            "expected_effect": "기대 효과"
+        }}
+    ],
+    "reduce": [
+        {{
+            "element": "축소할 요소명",
+            "current_level": "현재 수준",
+            "target_level": "목표 수준",
+            "reason": "축소 이유"
+        }}
+    ],
+    "raise": [
+        {{
+            "element": "강화할 요소명",
+            "current_level": "현재 수준",
+            "target_level": "목표 수준",
+            "reason": "강화 이유"
+        }}
+    ],
+    "create": [
+        {{
+            "element": "창출할 요소명",
+            "description": "요소 설명",
+            "expected_impact": "기대 영향"
+        }}
+    ],
+    "strategy_summary": "전체 블루오션 전략 요약"
+}}
+
+**분석 가이드라인:**
+
+1. **E (Eliminate) - 제거할 요소**
+   - 현재 불필요하거나 고객 가치에 기여하지 않는 요소들
+   - 경쟁사들이 공통적으로 제공하지만 실제로는 불필요한 요소들
+   - 제거 시 비용 절감과 효율성 향상을 가져올 요소들
+
+2. **R (Reduce) - 축소할 요소**
+   - 현재 과도하게 투자되고 있는 요소들
+   - 경쟁사 대비 불필요하게 높은 수준의 요소들
+   - 표준 이하로 줄여도 고객 만족에 영향이 적은 요소들
+
+3. **R (Raise) - 강화할 요소**
+   - 고객이 가장 중요하게 생각하는 핵심 요소들
+   - 경쟁사 대비 차별화할 수 있는 요소들
+   - 강화 시 고객 만족도와 충성도 향상을 가져올 요소들
+
+4. **C (Create) - 창출할 요소**
+   - 시장에 아직 없는 새로운 가치 제안
+   - 경쟁사들이 제공하지 않는 혁신적 요소들
+   - 새로운 고객 세그먼트를 창출할 수 있는 요소들
+
+**중요**: 
+- JSON 형식으로 정확히 응답해주세요
+- 각 요소별로 구체적이고 실행 가능한 내용을 포함해주세요
+- 경쟁사 비교를 통한 차별화 요소를 명확히 해주세요
+
+ERRC 프레임워크를 활용하여 블루오션 전략을 제시해주세요.
+"""
+    
+    try:
+        response = get_ai_response(
+            prompt=prompt,
+            model_name=model_name,
+            system_prompt=errc_agent['system_prompt'],
+            enable_thinking=False
+        )
+        
+        return {
+            'content': response['content'],
+            'success': response['success'],
+            'error': response.get('error', None)
+        }
+        
+    except Exception as e:
+        return {
+            'content': f"ERRC 분석 중 오류가 발생했습니다: {str(e)}",
+            'success': False,
+            'error': str(e)
+        }
+
+def create_strategy_canvas(errc_analysis, company_info, competitors_info, model_name="gpt-4o-mini"):
+    """ERRC 분석을 바탕으로 전략 캔버스 작성"""
+    
+    canvas_agent = ERRC_ANALYSIS_AGENTS["strategy_canvas_creator"]
+    
+    prompt = f"""
+{canvas_agent['system_prompt']}
+
+다음은 ERRC 분석 결과와 회사 정보입니다:
+
+**ERRC 분석 결과:**
+{errc_analysis}
+
+**회사 정보:**
+{company_info}
+
+**경쟁사 정보:**
+{competitors_info}
+
+**전략 캔버스 작성 요청사항:**
+
+다음 JSON 형식으로 응답해주세요:
+
+{{
+    "strategy_canvas": {{
+        "eliminate": ["제거할 요소1", "제거할 요소2"],
+        "reduce": ["축소할 요소1", "축소할 요소2"],
+        "raise": ["강화할 요소1", "강화할 요소2"],
+        "create": ["창출할 요소1", "창출할 요소2"]
+    }},
+    "value_curve": {{
+        "factors": ["요소1", "요소2", "요소3", "요소4", "요소5"],
+        "current_company": [3, 5, 7, 4, 2],
+        "competitor1": [4, 6, 5, 5, 3],
+        "competitor2": [5, 4, 6, 3, 4],
+        "target_company": [1, 3, 9, 2, 8]
+    }},
+    "action_plan": {{
+        "short_term": ["단기 계획1", "단기 계획2"],
+        "medium_term": ["중기 계획1", "중기 계획2"],
+        "long_term": ["장기 계획1", "장기 계획2"]
+    }},
+    "summary": "전략 캔버스 요약"
+}}
+
+**분석 가이드라인:**
+
+1. **전략 캔버스 구성요소 분석**
+   - 제거할 요소 (Eliminate): 구체적인 요소들과 제거 근거
+   - 축소할 요소 (Reduce): 축소할 요소들과 축소 수준
+   - 강화할 요소 (Raise): 강화할 요소들과 강화 수준
+   - 창출할 요소 (Create): 새로 창출할 요소들과 창출 방법
+
+2. **가치 곡선 작성**
+   - 현재 회사의 가치 곡선 (1-10점 척도)
+   - 경쟁사들의 가치 곡선 (1-10점 척도)
+   - ERRC 적용 후 새로운 가치 곡선 (1-10점 척도)
+   - 각 요소별 수준 비교
+
+3. **실행 로드맵**
+   - 단기 실행 계획 (3-6개월)
+   - 중기 실행 계획 (6-12개월)
+   - 장기 실행 계획 (1-3년)
+
+**중요**: 
+- JSON 형식으로 정확히 응답해주세요
+- 가치 곡선의 수치는 1-10점 척도로 설정해주세요
+- 구체적이고 실행 가능한 액션 플랜을 제시해주세요
+
+전략 캔버스를 작성해주세요.
+"""
+    
+    try:
+        response = get_ai_response(
+            prompt=prompt,
+            model_name=model_name,
+            system_prompt=canvas_agent['system_prompt'],
+            enable_thinking=False
+        )
+        
+        return {
+            'content': response['content'],
+            'success': response['success'],
+            'error': response.get('error', None)
+        }
+        
+    except Exception as e:
+        return {
+            'content': f"전략 캔버스 작성 중 오류가 발생했습니다: {str(e)}",
+            'success': False,
+            'error': str(e)
+        }
+
+def evaluate_custom_errc(custom_errc, company_info, competitors_info, model_name="gpt-4o-mini"):
+    """작성자가 직접 작성한 ERRC에 대한 AI 평가 및 조언"""
+    
+    prompt = f"""
+당신은 20년 경력의 블루오션 전략 전문가입니다. 작성자가 직접 작성한 ERRC 분석을 평가하고 개선 조언을 제공해주세요.
+
+**작성자가 작성한 ERRC:**
+{custom_errc}
+
+**회사 정보:**
+{company_info}
+
+**경쟁사 정보:**
+{competitors_info}
+
+**평가 및 조언 요청사항:**
+
+다음 JSON 형식으로 응답해주세요:
+
+{{
+    "evaluation": {{
+        "overall_score": 85,
+        "strengths": ["강점1", "강점2", "강점3"],
+        "weaknesses": ["개선점1", "개선점2", "개선점3"],
+        "missing_elements": ["누락된 요소1", "누락된 요소2"]
+    }},
+    "improvement_suggestions": {{
+        "eliminate": ["개선된 제거 요소1", "개선된 제거 요소2"],
+        "reduce": ["개선된 축소 요소1", "개선된 축소 요소2"],
+        "raise": ["개선된 강화 요소1", "개선된 강화 요소2"],
+        "create": ["개선된 창출 요소1", "개선된 창출 요소2"]
+    }},
+    "strategic_advice": {{
+        "immediate_actions": ["즉시 실행할 액션1", "즉시 실행할 액션2"],
+        "long_term_vision": "장기 비전 및 방향성",
+        "risk_considerations": ["고려해야 할 리스크1", "고려해야 할 리스크2"],
+        "success_metrics": ["성공 지표1", "성공 지표2"]
+    }},
+    "expert_commentary": "전문가 종합 평가 및 조언"
+}}
+
+**평가 기준:**
+
+1. **전략적 일관성 (30점)**
+   - ERRC 요소들이 서로 일관성 있게 연결되어 있는가?
+   - 전략적 방향성이 명확한가?
+
+2. **혁신성 (25점)**
+   - 기존 경쟁에서 벗어나는 혁신적 요소가 있는가?
+   - 새로운 가치 창출 가능성이 있는가?
+
+3. **실행 가능성 (25점)**
+   - 제시된 전략이 실제로 실행 가능한가?
+   - 필요한 자원과 역량을 고려했는가?
+
+4. **경쟁 우위 (20점)**
+   - 경쟁사 대비 차별화 요소가 명확한가?
+   - 지속 가능한 경쟁 우위를 창출할 수 있는가?
+
+**중요**: 
+- JSON 형식으로 정확히 응답해주세요
+- 구체적이고 실행 가능한 조언을 제시해주세요
+- 작성자의 노력을 인정하면서도 개선점을 명확히 지적해주세요
+
+작성자의 ERRC를 평가하고 개선 조언을 제공해주세요.
+"""
+    
+    try:
+        response = get_ai_response(
+            prompt=prompt,
+            model_name=model_name,
+            system_prompt="당신은 20년 경력의 블루오션 전략 전문가입니다.",
+            enable_thinking=False
+        )
+        
+        return {
+            'content': response['content'],
+            'success': response['success'],
+            'error': response.get('error', None)
+        }
+        
+    except Exception as e:
+        return {
+            'content': f"ERRC 평가 중 오류가 발생했습니다: {str(e)}",
+            'success': False,
+            'error': str(e)
+        }
+
+# === ERRC 시각화 함수들 ===
+def parse_errc_json(errc_content):
+    """ERRC 분석 결과를 JSON으로 파싱"""
+    try:
+        # JSON 부분 추출
+        json_start = errc_content.find('{')
+        json_end = errc_content.rfind('}') + 1
+        
+        if json_start != -1 and json_end != 0:
+            json_str = errc_content[json_start:json_end]
+            return json.loads(json_str)
+        else:
+            return None
+    except Exception as e:
+        st.error(f"ERRC JSON 파싱 오류: {str(e)}")
+        return None
+
+def display_errc_quadrant_table(errc_data):
+    """ERRC 분석 결과를 사분면 테이블로 표시"""
+    if not errc_data:
+        st.error("ERRC 데이터를 파싱할 수 없습니다.")
+        return
+    
+    # 사분면 테이블 생성
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 🔴 E (Eliminate) - 제거")
+        if 'eliminate' in errc_data and errc_data['eliminate']:
+            eliminate_df = pd.DataFrame(errc_data['eliminate'])
+            st.dataframe(eliminate_df, use_container_width=True)
+        else:
+            st.info("제거할 요소가 없습니다.")
+        
+        st.markdown("### 🔵 R (Raise) - 강화")
+        if 'raise' in errc_data and errc_data['raise']:
+            raise_df = pd.DataFrame(errc_data['raise'])
+            st.dataframe(raise_df, use_container_width=True)
+        else:
+            st.info("강화할 요소가 없습니다.")
+    
+    with col2:
+        st.markdown("### 🟡 R (Reduce) - 축소")
+        if 'reduce' in errc_data and errc_data['reduce']:
+            reduce_df = pd.DataFrame(errc_data['reduce'])
+            st.dataframe(reduce_df, use_container_width=True)
+        else:
+            st.info("축소할 요소가 없습니다.")
+        
+        st.markdown("### 🟢 C (Create) - 창출")
+        if 'create' in errc_data and errc_data['create']:
+            create_df = pd.DataFrame(errc_data['create'])
+            st.dataframe(create_df, use_container_width=True)
+        else:
+            st.info("창출할 요소가 없습니다.")
+    
+    # 전략 요약
+    if 'strategy_summary' in errc_data:
+        st.markdown("### 📋 전략 요약")
+        st.info(errc_data['strategy_summary'])
+
+def create_strategy_canvas_plotly(canvas_data):
+    """전략 캔버스를 plotly로 시각화"""
+    if not canvas_data:
+        st.error("전략 캔버스 데이터를 파싱할 수 없습니다.")
+        return
+    
+    try:
+        # 가치 곡선 차트
+        if 'value_curve' in canvas_data:
+            value_curve = canvas_data['value_curve']
+            
+            # 데이터프레임 생성
+            df = pd.DataFrame({
+                '요소': value_curve['factors'],
+                '현재 회사': value_curve['current_company'],
+                '경쟁사1': value_curve['competitor1'],
+                '경쟁사2': value_curve['competitor2'],
+                '목표 회사': value_curve['target_company']
+            })
+            
+            # Plotly 라인 차트
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=df['요소'],
+                y=df['현재 회사'],
+                mode='lines+markers',
+                name='현재 회사',
+                line=dict(color='blue', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=df['요소'],
+                y=df['경쟁사1'],
+                mode='lines+markers',
+                name='경쟁사1',
+                line=dict(color='red', width=2),
+                marker=dict(size=6)
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=df['요소'],
+                y=df['경쟁사2'],
+                mode='lines+markers',
+                name='경쟁사2',
+                line=dict(color='orange', width=2),
+                marker=dict(size=6)
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=df['요소'],
+                y=df['목표 회사'],
+                mode='lines+markers',
+                name='목표 회사 (ERRC 적용)',
+                line=dict(color='green', width=4, dash='dash'),
+                marker=dict(size=10, symbol='star')
+            ))
+            
+            fig.update_layout(
+                title='🔵 블루오션 전략 가치 곡선',
+                xaxis_title='전략 요소',
+                yaxis_title='수준 (1-10점)',
+                yaxis=dict(range=[0, 10]),
+                height=500,
+                showlegend=True,
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                )
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # 전략 캔버스 구성요소
+        if 'strategy_canvas' in canvas_data:
+            st.markdown("### 📊 전략 캔버스 구성요소")
+            
+            canvas = canvas_data['strategy_canvas']
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### 🔴 제거 (Eliminate)")
+                if 'eliminate' in canvas and canvas['eliminate']:
+                    for i, item in enumerate(canvas['eliminate'], 1):
+                        st.write(f"{i}. {item}")
+                else:
+                    st.info("제거할 요소 없음")
+                
+                st.markdown("#### 🟡 축소 (Reduce)")
+                if 'reduce' in canvas and canvas['reduce']:
+                    for i, item in enumerate(canvas['reduce'], 1):
+                        st.write(f"{i}. {item}")
+                else:
+                    st.info("축소할 요소 없음")
+            
+            with col2:
+                st.markdown("#### 🔵 강화 (Raise)")
+                if 'raise' in canvas and canvas['raise']:
+                    for i, item in enumerate(canvas['raise'], 1):
+                        st.write(f"{i}. {item}")
+                else:
+                    st.info("강화할 요소 없음")
+                
+                st.markdown("#### 🟢 창출 (Create)")
+                if 'create' in canvas and canvas['create']:
+                    for i, item in enumerate(canvas['create'], 1):
+                        st.write(f"{i}. {item}")
+                else:
+                    st.info("창출할 요소 없음")
+        
+        # 액션 플랜
+        if 'action_plan' in canvas_data:
+            st.markdown("### 📅 실행 로드맵")
+            
+            action_plan = canvas_data['action_plan']
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("#### 🚀 단기 계획 (3-6개월)")
+                if 'short_term' in action_plan and action_plan['short_term']:
+                    for i, plan in enumerate(action_plan['short_term'], 1):
+                        st.write(f"{i}. {plan}")
+                else:
+                    st.info("단기 계획 없음")
+            
+            with col2:
+                st.markdown("#### 📈 중기 계획 (6-12개월)")
+                if 'medium_term' in action_plan and action_plan['medium_term']:
+                    for i, plan in enumerate(action_plan['medium_term'], 1):
+                        st.write(f"{i}. {plan}")
+                else:
+                    st.info("중기 계획 없음")
+            
+            with col3:
+                st.markdown("#### 🎯 장기 계획 (1-3년)")
+                if 'long_term' in action_plan and action_plan['long_term']:
+                    for i, plan in enumerate(action_plan['long_term'], 1):
+                        st.write(f"{i}. {plan}")
+                else:
+                    st.info("장기 계획 없음")
+        
+        # 요약
+        if 'summary' in canvas_data:
+            st.markdown("### 📋 전략 캔버스 요약")
+            st.info(canvas_data['summary'])
+            
+    except Exception as e:
+        st.error(f"전략 캔버스 시각화 오류: {str(e)}")
+
+def parse_canvas_json(canvas_content):
+    """전략 캔버스 결과를 JSON으로 파싱"""
+    try:
+        # JSON 부분 추출
+        json_start = canvas_content.find('{')
+        json_end = canvas_content.rfind('}') + 1
+        
+        if json_start != -1 and json_end != 0:
+            json_str = canvas_content[json_start:json_end]
+            return json.loads(json_str)
+        else:
+            return None
+    except Exception as e:
+        st.error(f"전략 캔버스 JSON 파싱 오류: {str(e)}")
+        return None
+
+def parse_evaluation_json(evaluation_content):
+    """ERRC 평가 결과를 JSON으로 파싱"""
+    try:
+        # JSON 부분 추출
+        json_start = evaluation_content.find('{')
+        json_end = evaluation_content.rfind('}') + 1
+        
+        if json_start != -1 and json_end != 0:
+            json_str = evaluation_content[json_start:json_end]
+            return json.loads(json_str)
+        else:
+            return None
+    except Exception as e:
+        st.error(f"평가 JSON 파싱 오류: {str(e)}")
+        return None
+
+def display_evaluation_results(evaluation_data):
+    """ERRC 평가 결과를 시각화"""
+    if not evaluation_data:
+        st.error("평가 데이터를 파싱할 수 없습니다.")
+        return
+    
+    try:
+        # 전체 점수
+        if 'evaluation' in evaluation_data:
+            eval_info = evaluation_data['evaluation']
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("전체 점수", f"{eval_info.get('overall_score', 0)}/100")
+            
+            with col2:
+                st.metric("전략적 일관성", "30점 만점")
+            
+            with col3:
+                st.metric("혁신성", "25점 만점")
+            
+            with col4:
+                st.metric("실행 가능성", "25점 만점")
+        
+        # 평가 세부사항
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### ✅ 강점")
+            if 'strengths' in eval_info and eval_info['strengths']:
+                for i, strength in enumerate(eval_info['strengths'], 1):
+                    st.write(f"{i}. {strength}")
+            else:
+                st.info("강점이 없습니다.")
+            
+            st.markdown("### ❌ 개선점")
+            if 'weaknesses' in eval_info and eval_info['weaknesses']:
+                for i, weakness in enumerate(eval_info['weaknesses'], 1):
+                    st.write(f"{i}. {weakness}")
+            else:
+                st.info("개선점이 없습니다.")
+        
+        with col2:
+            st.markdown("### ⚠️ 누락된 요소")
+            if 'missing_elements' in eval_info and eval_info['missing_elements']:
+                for i, element in enumerate(eval_info['missing_elements'], 1):
+                    st.write(f"{i}. {element}")
+            else:
+                st.info("누락된 요소가 없습니다.")
+        
+        # 개선 제안
+        if 'improvement_suggestions' in evaluation_data:
+            st.markdown("### 🔧 개선 제안")
+            improvement = evaluation_data['improvement_suggestions']
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### 🔴 개선된 제거 요소")
+                if 'eliminate' in improvement and improvement['eliminate']:
+                    for i, item in enumerate(improvement['eliminate'], 1):
+                        st.write(f"{i}. {item}")
+                else:
+                    st.info("개선된 제거 요소 없음")
+                
+                st.markdown("#### 🔵 개선된 강화 요소")
+                if 'raise' in improvement and improvement['raise']:
+                    for i, item in enumerate(improvement['raise'], 1):
+                        st.write(f"{i}. {item}")
+                else:
+                    st.info("개선된 강화 요소 없음")
+            
+            with col2:
+                st.markdown("#### 🟡 개선된 축소 요소")
+                if 'reduce' in improvement and improvement['reduce']:
+                    for i, item in enumerate(improvement['reduce'], 1):
+                        st.write(f"{i}. {item}")
+                else:
+                    st.info("개선된 축소 요소 없음")
+                
+                st.markdown("#### 🟢 개선된 창출 요소")
+                if 'create' in improvement and improvement['create']:
+                    for i, item in enumerate(improvement['create'], 1):
+                        st.write(f"{i}. {item}")
+                else:
+                    st.info("개선된 창출 요소 없음")
+        
+        # 전략적 조언
+        if 'strategic_advice' in evaluation_data:
+            st.markdown("### 💡 전략적 조언")
+            advice = evaluation_data['strategic_advice']
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### 🚀 즉시 실행 액션")
+                if 'immediate_actions' in advice and advice['immediate_actions']:
+                    for i, action in enumerate(advice['immediate_actions'], 1):
+                        st.write(f"{i}. {action}")
+                else:
+                    st.info("즉시 실행 액션 없음")
+                
+                st.markdown("#### 🎯 장기 비전")
+                if 'long_term_vision' in advice:
+                    st.info(advice['long_term_vision'])
+                else:
+                    st.info("장기 비전 없음")
+            
+            with col2:
+                st.markdown("#### ⚠️ 리스크 고려사항")
+                if 'risk_considerations' in advice and advice['risk_considerations']:
+                    for i, risk in enumerate(advice['risk_considerations'], 1):
+                        st.write(f"{i}. {risk}")
+                else:
+                    st.info("리스크 고려사항 없음")
+                
+                st.markdown("#### 📊 성공 지표")
+                if 'success_metrics' in advice and advice['success_metrics']:
+                    for i, metric in enumerate(advice['success_metrics'], 1):
+                        st.write(f"{i}. {metric}")
+                else:
+                    st.info("성공 지표 없음")
+        
+        # 전문가 종합 평가
+        if 'expert_commentary' in evaluation_data:
+            st.markdown("### 👨‍💼 전문가 종합 평가")
+            st.info(evaluation_data['expert_commentary'])
+            
+    except Exception as e:
+        st.error(f"평가 결과 시각화 오류: {str(e)}")
+
+# === 데이터베이스 관련 함수들 ===
+def create_errc_analysis_tables():
+    """ERRC 분석을 위한 데이터베이스 테이블 생성"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # 1. ERRC 분석 기본 정보 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS errc_analyses (
+                analysis_id INT AUTO_INCREMENT PRIMARY KEY,
+                company_name VARCHAR(500) NOT NULL,
+                industry VARCHAR(200),
+                analysis_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                company_info LONGTEXT,
+                competitors_info LONGTEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 2. ERRC 분석 결과 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS errc_analysis_results (
+                result_id INT AUTO_INCREMENT PRIMARY KEY,
+                analysis_id INT,
+                errc_analysis_content LONGTEXT,
+                strategy_canvas_content LONGTEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES errc_analyses(analysis_id) ON DELETE CASCADE
+            )
+        ''')
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+
+    except mysql.connector.Error as err:
+        st.error(f"테이블 생성 중 오류 발생: {err}")
+        return False
+
+def save_errc_analysis(company_name, industry, company_info, competitors_info, errc_analysis, strategy_canvas):
+    """ERRC 분석 결과를 데이터베이스에 저장"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # 1. 기본 정보 저장
+        cursor.execute('''
+            INSERT INTO errc_analyses 
+            (company_name, industry, company_info, competitors_info)
+            VALUES (%s, %s, %s, %s)
+        ''', (company_name, industry, company_info, competitors_info))
+        
+        analysis_id = cursor.lastrowid
+
+        # 2. 분석 결과 저장
+        cursor.execute('''
+            INSERT INTO errc_analysis_results
+            (analysis_id, errc_analysis_content, strategy_canvas_content)
+            VALUES (%s, %s, %s)
+        ''', (analysis_id, errc_analysis, strategy_canvas))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True, analysis_id
+
+    except mysql.connector.Error as err:
+        st.error(f"데이터베이스 저장 중 오류 발생: {err}")
+        return False, None
+
+def get_saved_errc_analyses():
+    """저장된 ERRC 분석 목록 조회"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute('''
+            SELECT 
+                ea.analysis_id,
+                ea.company_name,
+                ea.industry,
+                ea.analysis_date,
+                ear.errc_analysis_content,
+                ear.strategy_canvas_content
+            FROM errc_analyses ea
+            LEFT JOIN errc_analysis_results ear ON ea.analysis_id = ear.analysis_id
+            ORDER BY ea.analysis_date DESC
+        ''')
+        
+        results = cursor.fetchall()
+        return results
+    except mysql.connector.Error as err:
+        st.error(f"데이터 조회 중 오류 발생: {err}")
+        return []
+    finally:
+        if 'conn' in locals():
+            cursor.close()
+            conn.close()
+
+def delete_errc_analysis(analysis_id):
+    """ERRC 분석 삭제"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM errc_analyses WHERE analysis_id = %s', (analysis_id,))
+        deleted_rows = cursor.rowcount
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        if deleted_rows > 0:
+            st.success(f"✅ 분석 ID {analysis_id} 삭제 완료")
+            return True
+        else:
+            st.error("삭제할 데이터가 없습니다.")
+            return False
+        
+    except mysql.connector.Error as err:
+        st.error(f"데이터베이스 오류: {err}")
+        return False
+
+# === 메인 함수 ===
+def main():
+    # 데이터베이스 테이블 생성
+    create_errc_analysis_tables()
+    
+    # 탭 생성
+    tab1, tab2, tab3 = st.tabs(["🔍 회사 조사 기반 ERRC", "✍️ 직접 ERRC 작성", "📊 저장된 분석 조회"])
+    
+    with tab1:
+        st.header("🔍 회사 조사 기반 ERRC 분석")
+        st.info("회사 정보를 입력하면 Perplexity API를 통해 회사와 경쟁사를 조사하여 ERRC 분석을 수행합니다.")
+        
+        # Perplexity API 설정
+        st.subheader("🔑 Perplexity API 설정")
+        
+        # 환경변수에서 Perplexity API 키 가져오기
+        perplexity_api_key = os.getenv('PERPLEXITY_API_KEY')
+        
+        if perplexity_api_key:
+            perplexity_api_key = clean_api_key(perplexity_api_key)
+            if verify_perplexity_api_key(perplexity_api_key):
+                st.success("✅ Perplexity API 키가 유효합니다.")
+                # 회사 정보 입력
+                st.subheader("🏢 분석 대상 회사 정보")
+                company_name = st.text_input("회사명", placeholder="예: 아카라라이프")
+                industry = st.text_input("산업군", placeholder="예: IoT, 인테리어, 스마트홈")
+                
+                # 경쟁사 입력 (최대 3개)
+                st.subheader("🏭 경쟁사 정보")
+                st.info("경쟁사를 직접 입력하거나, 입력하지 않으면 LLM이 자동으로 찾습니다.")
+                
+                competitor1 = st.text_input("경쟁사 1", placeholder="경쟁사명 (선택사항)")
+                competitor2 = st.text_input("경쟁사 2", placeholder="경쟁사명 (선택사항)")
+                competitor3 = st.text_input("경쟁사 3", placeholder="경쟁사명 (선택사항)")
+                
+                # 입력된 경쟁사 목록
+                competitors_input = [c for c in [competitor1, competitor2, competitor3] if c.strip()]
+                
+                if company_name and industry:
+                    # 이미 조사된 결과가 있는지 확인
+                    if ('company_result' in st.session_state and 
+                        'competitors_result' in st.session_state and
+                        st.session_state.get('company_name') == company_name and
+                        st.session_state.get('industry') == industry):
+                        
+                        st.success("✅ 이전 조사 결과가 있습니다. 아래 결과를 확인하세요.")
+                        
+                        # 저장된 결과 사용
+                        company_result = st.session_state['company_result']
+                        competitors_result = st.session_state['competitors_result']
+                        
+                        # 조사 결과 표시
+                        st.subheader("📋 조사 결과")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            with st.expander("🏢 회사 정보", expanded=True):
+                                st.markdown(company_result['content'])
+                        
+                        with col2:
+                            with st.expander("🏭 경쟁사 정보", expanded=True):
+                                st.markdown(competitors_result['content'])
+                        
+                        # ERRC 분석 실행
+                        st.subheader("🔵 ERRC 분석")
+                        model_name = st.selectbox(
+                            "사용할 AI 모델",
+                            ["gpt-4o-mini", "gpt-4", "claude-3-5-sonnet-20241022"],
+                            index=0,
+                            key="errc_model_saved_tab1"
+                        )
+                        
+                        if st.button("🔵 ERRC 분석 실행", type="primary", key="errc_analysis_button_saved"):
+                            with st.spinner("ERRC 분석을 수행하고 있습니다..."):
+                                # ERRC 분석
+                                errc_result = analyze_company_with_errc(
+                                    company_result['content'],
+                                    competitors_result['content'],
+                                    model_name
+                                )
+                                
+                                if errc_result['success']:
+                                    st.success("✅ ERRC 분석 완료")
+                                    
+                                    # 전략 캔버스 작성
+                                    with st.spinner("전략 캔버스를 작성하고 있습니다..."):
+                                        canvas_result = create_strategy_canvas(
+                                            errc_result['content'],
+                                            company_result['content'],
+                                            competitors_result['content'],
+                                            model_name
+                                        )
+                                        
+                                        if canvas_result['success']:
+                                            st.success("✅ 전략 캔버스 작성 완료")
+                                            
+                                            # ERRC 분석 결과 시각화
+                                            st.markdown("## 🔵 ERRC 분석 결과")
+                                            
+                                            # ERRC JSON 파싱 및 사분면 테이블 표시
+                                            errc_data = parse_errc_json(errc_result['content'])
+                                            if errc_data:
+                                                display_errc_quadrant_table(errc_data)
+                                            else:
+                                                st.markdown(errc_result['content'])
+                                            
+                                            # 전략 캔버스 시각화
+                                            st.markdown("## 📊 전략 캔버스")
+                                            
+                                            # 전략 캔버스 JSON 파싱 및 plotly 시각화
+                                            canvas_data = parse_canvas_json(canvas_result['content'])
+                                            if canvas_data:
+                                                create_strategy_canvas_plotly(canvas_data)
+                                            else:
+                                                st.markdown(canvas_result['content'])
+                                            
+                                            # 결과 저장
+                                            analysis_date = datetime.now()
+                                            save_success, analysis_id = save_errc_analysis(
+                                                company_name,
+                                                industry,
+                                                company_result['content'],
+                                                competitors_result['content'],
+                                                errc_result['content'],
+                                                canvas_result['content']
+                                            )
+                                            
+                                            if save_success:
+                                                st.success(f"✅ 분석 결과가 저장되었습니다. (ID: {analysis_id})")
+                                            else:
+                                                st.warning("⚠️ 분석 결과 저장에 실패했습니다.")
+                                        else:
+                                            st.error(f"❌ 전략 캔버스 작성 실패: {canvas_result['error']}")
+                                else:
+                                    st.error(f"❌ ERRC 분석 실패: {errc_result['error']}")
+                        
+                        # 새로운 조사 버튼
+                        if st.button("🔄 새로운 조사 시작", key="new_search_button"):
+                            # 세션 상태 초기화
+                            if 'company_result' in st.session_state:
+                                del st.session_state['company_result']
+                            if 'competitors_result' in st.session_state:
+                                del st.session_state['competitors_result']
+                            if 'company_name' in st.session_state:
+                                del st.session_state['company_name']
+                            if 'industry' in st.session_state:
+                                del st.session_state['industry']
+                            st.rerun()
+                    
+                    else:
+                        # 새로운 조사 시작
+                        if st.button("🔍 회사 및 경쟁사 조사 시작", type="primary", key="start_search_button"):
+                            with st.spinner("회사 정보를 조사하고 있습니다..."):
+                                # 회사 정보 조사
+                                company_query = f"{company_name} 회사에 대한 상세 정보"
+                                company_result = search_with_perplexity(company_query, perplexity_api_key)
+                                
+                                if company_result['success']:
+                                    st.success("✅ 회사 정보 조사 완료")
+                                    
+                                    # 조사 결과를 세션에 저장
+                                    st.session_state['company_result'] = company_result
+                                    st.session_state['company_name'] = company_name
+                                    st.session_state['industry'] = industry
+                                    
+                                    # 경쟁사 조사
+                                    with st.spinner("경쟁사 정보를 조사하고 있습니다..."):
+                                        if competitors_input:
+                                            # 직접 입력된 경쟁사 정보 조사
+                                            competitors_info = []
+                                            for competitor in competitors_input:
+                                                comp_result = search_with_perplexity(
+                                                    f"{competitor} 회사 정보", 
+                                                    perplexity_api_key
+                                                )
+                                                if comp_result['success']:
+                                                    competitors_info.append(f"**{competitor}:**\n{comp_result['content']}")
+                                                else:
+                                                    competitors_info.append(f"**{competitor}:** 조사 실패")
+                                            
+                                            competitors_result = {
+                                                'content': '\n\n'.join(competitors_info),
+                                                'success': True,
+                                                'error': None
+                                            }
+                                        else:
+                                            # LLM이 자동으로 경쟁사 찾기
+                                            competitors_result = search_competitors_with_perplexity(
+                                                company_name, industry, perplexity_api_key
+                                            )
+                                        
+                                        if competitors_result['success']:
+                                            st.success("✅ 경쟁사 정보 조사 완료")
+                                            
+                                            # 경쟁사 결과를 세션에 저장
+                                            st.session_state['competitors_result'] = competitors_result
+                                            
+                                            # 조사 결과 표시
+                                            st.subheader("📋 조사 결과")
+                                            
+                                            col1, col2 = st.columns(2)
+                                            with col1:
+                                                with st.expander("🏢 회사 정보", expanded=True):
+                                                    st.markdown(company_result['content'])
+                                            
+                                            with col2:
+                                                with st.expander("🏭 경쟁사 정보", expanded=True):
+                                                    st.markdown(competitors_result['content'])
+                                            
+                                            # ERRC 분석 실행
+                                            st.subheader("🔵 ERRC 분석")
+                                            model_name = st.selectbox(
+                                                "사용할 AI 모델",
+                                                ["gpt-4o-mini", "gpt-4", "claude-3-5-sonnet-20241022"],
+                                                index=0,
+                                                key="errc_model_tab1"
+                                            )
+                                            
+                                            if st.button("🔵 ERRC 분석 실행", type="primary", key="errc_analysis_button"):
+                                                with st.spinner("ERRC 분석을 수행하고 있습니다..."):
+                                                    # ERRC 분석
+                                                    errc_result = analyze_company_with_errc(
+                                                        company_result['content'],
+                                                        competitors_result['content'],
+                                                        model_name
+                                                    )
+                                                    
+                                                    if errc_result['success']:
+                                                        st.success("✅ ERRC 분석 완료")
+                                                        
+                                                        # 전략 캔버스 작성
+                                                        with st.spinner("전략 캔버스를 작성하고 있습니다..."):
+                                                            canvas_result = create_strategy_canvas(
+                                                                errc_result['content'],
+                                                                company_result['content'],
+                                                                competitors_result['content'],
+                                                                model_name
+                                                            )
+                                                            
+                                                            if canvas_result['success']:
+                                                                st.success("✅ 전략 캔버스 작성 완료")
+                                                                
+                                                                # 결과 표시
+                                                                st.markdown("## 🔵 ERRC 분석 결과")
+                                                                st.markdown(errc_result['content'])
+                                                                
+                                                                st.markdown("## 📊 전략 캔버스")
+                                                                st.markdown(canvas_result['content'])
+                                                                
+                                                                # 결과 저장
+                                                                analysis_date = datetime.now()
+                                                                save_success, analysis_id = save_errc_analysis(
+                                                                    company_name,
+                                                                    industry,
+                                                                    company_result['content'],
+                                                                    competitors_result['content'],
+                                                                    errc_result['content'],
+                                                                    canvas_result['content']
+                                                                )
+                                                                
+                                                                if save_success:
+                                                                    st.success(f"✅ 분석 결과가 저장되었습니다. (ID: {analysis_id})")
+                                                                else:
+                                                                    st.warning("⚠️ 분석 결과 저장에 실패했습니다.")
+                                                            else:
+                                                                st.error(f"❌ 전략 캔버스 작성 실패: {canvas_result['error']}")
+                                                    else:
+                                                        st.error(f"❌ ERRC 분석 실패: {errc_result['error']}")
+                                        else:
+                                            st.error(f"❌ 경쟁사 정보 조사 실패: {competitors_result['error']}")
+                                else:
+                                    st.error(f"❌ 회사 정보 조사 실패: {company_result['error']}")
+                else:
+                    st.warning("⚠️ 회사명과 산업군을 입력해주세요.")
+            else:
+                st.error("❌ Perplexity API 키가 유효하지 않습니다.")
+                st.info("올바른 Perplexity API 키를 입력해주세요.")
+        else:
+            st.error("❌ Perplexity API 키가 필요합니다.")
+    
+    with tab2:
+        st.header("✍️ 직접 ERRC 작성")
+        st.info("직접 ERRC를 작성하고, 해당 회사의 경쟁사를 조사하여 전략 캔버스를 생성합니다.")
+        
+        # Perplexity API 설정
+        st.subheader("🔑 Perplexity API 설정")
+        
+        # 환경변수에서 Perplexity API 키 가져오기 (tab2용)
+        perplexity_api_key_tab2 = os.getenv('PERPLEXITY_API_KEY')
+        
+        if perplexity_api_key_tab2:
+            perplexity_api_key_tab2 = clean_api_key(perplexity_api_key_tab2)
+            if verify_perplexity_api_key(perplexity_api_key_tab2):
+                st.success("✅ Perplexity API 키가 유효합니다.")
+                # 회사 정보 입력
+                st.subheader("🏢 회사 정보")
+                company_name_tab2 = st.text_input("회사명", key="company_name_tab2", placeholder="예: 아카라라이프")
+                industry_tab2 = st.text_input("산업군", key="industry_tab2", placeholder="예: IoT, 인테리어, 스마트홈")
+                
+                # 경쟁사 입력 (최대 3개)
+                st.subheader("🏭 경쟁사 정보")
+                st.info("경쟁사를 직접 입력하거나, 입력하지 않으면 LLM이 자동으로 찾습니다.")
+                
+                competitor1_tab2 = st.text_input("경쟁사 1", key="competitor1_tab2", placeholder="경쟁사명 (선택사항)")
+                competitor2_tab2 = st.text_input("경쟁사 2", key="competitor2_tab2", placeholder="경쟁사명 (선택사항)")
+                competitor3_tab2 = st.text_input("경쟁사 3", key="competitor3_tab2", placeholder="경쟁사명 (선택사항)")
+                
+                # 입력된 경쟁사 목록
+                competitors_input_tab2 = [c for c in [competitor1_tab2, competitor2_tab2, competitor3_tab2] if c.strip()]
+                
+                # ERRC 직접 작성
+                st.subheader("🔵 ERRC 직접 작성")
+                st.info("다음 항목들을 직접 작성해주세요:")
+                
+                eliminate_items = st.text_area(
+                    "E (Eliminate) - 제거할 요소들",
+                    placeholder="불필요한 요소들을 한 줄씩 입력하세요\n예: 복잡한 주문 절차\n예: 불필요한 메뉴 항목",
+                    height=100
+                )
+                
+                reduce_items = st.text_area(
+                    "R (Reduce) - 축소할 요소들",
+                    placeholder="과도한 투자나 활동을 한 줄씩 입력하세요\n예: 긴 메뉴판\n예: 과도한 제품 설명",
+                    height=100
+                )
+                
+                raise_items = st.text_area(
+                    "R (Raise) - 강화할 요소들",
+                    placeholder="핵심 가치를 한 줄씩 입력하세요\n예: 시그니처 메뉴 품질\n예: 고객 서비스",
+                    height=100
+                )
+                
+                create_items = st.text_area(
+                    "C (Create) - 창출할 요소들",
+                    placeholder="새로운 가치를 한 줄씩 입력하세요\n예: 독특한 시즌 메뉴\n예: 셀프 교육 영상",
+                    height=100
+                )
+                
+                # 추가 분석
+                additional_analysis = st.text_area(
+                    "추가 분석 및 전략",
+                    placeholder="ERRC 분석을 바탕으로 한 추가적인 전략이나 인사이트를 작성하세요",
+                    height=150
+                )
+                
+                if company_name_tab2 and industry_tab2 and (eliminate_items or reduce_items or raise_items or create_items):
+                    if st.button("🔍 경쟁사 조사 및 AI 평가", type="primary"):
+                        with st.spinner("경쟁사 정보를 조사하고 있습니다..."):
+                            if competitors_input_tab2:
+                                # 직접 입력된 경쟁사 정보 조사
+                                competitors_info_tab2 = []
+                                for competitor in competitors_input_tab2:
+                                    comp_result = search_with_perplexity(
+                                        f"{competitor} 회사 정보", 
+                                        perplexity_api_key_tab2
+                                    )
+                                    if comp_result['success']:
+                                        competitors_info_tab2.append(f"**{competitor}:**\n{comp_result['content']}")
+                                    else:
+                                        competitors_info_tab2.append(f"**{competitor}:** 조사 실패")
+                                
+                                competitors_result = {
+                                    'content': '\n\n'.join(competitors_info_tab2),
+                                    'success': True,
+                                    'error': None
+                                }
+                            else:
+                                # LLM이 자동으로 경쟁사 찾기
+                                competitors_result = search_competitors_with_perplexity(
+                                    company_name_tab2, industry_tab2, perplexity_api_key_tab2
+                                )
+                            if competitors_result['success']:
+                                st.success("✅ 경쟁사 정보 조사 완료")
+                                
+                                # 경쟁사 정보 표시
+                                st.markdown("### 📋 경쟁사 조사 결과")
+                                st.markdown(competitors_result['content'])
+                                
+                                custom_errc = f"""
+**직접 작성된 ERRC 분석:**
+
+**E (Eliminate) - 제거할 요소:**
+{eliminate_items if eliminate_items else "제거할 요소 없음"}
+
+**R (Reduce) - 축소할 요소:**
+{reduce_items if reduce_items else "축소할 요소 없음"}
+
+**R (Raise) - 강화할 요소:**
+{raise_items if raise_items else "강화할 요소 없음"}
+
+**C (Create) - 창출할 요소:**
+{create_items if create_items else "창출할 요소 없음"}
+
+**추가 분석 및 전략:**
+{additional_analysis if additional_analysis else "추가 분석 없음"}
+"""
+                                
+                                # AI 모델 선택
+                                model_name_tab2 = st.selectbox(
+                                    "사용할 AI 모델",
+                                    ["gpt-4o-mini", "gpt-4", "claude-3-5-sonnet-20241022"],
+                                    index=0,
+                                    key="model_tab2"
+                                )
+                                
+                                # 자동 생성 옵션
+                                st.markdown("### ⚙️ 생성 옵션")
+                                auto_generate_canvas = st.checkbox(
+                                    "AI 조언 기반 전략 캔버스 자동 생성 (체크 해제 시 작성자 ERRC 기반 생성)",
+                                    value=True,
+                                    key="auto_canvas_tab2_unique"
+                                )
+                                
+                                # AI 모델 선택
+                                model_name_tab2 = st.selectbox(
+                                    "사용할 AI 모델",
+                                    ["gpt-4o-mini", "gpt-4", "claude-3-5-sonnet-20241022"],
+                                    index=0,
+                                    key="model_tab2_unique"
+                                )
+                                
+                                # 자동 분석 실행
+                                if st.button("🚀 AI 조언 및 전략 캔버스 자동 생성", type="primary", key="auto_analysis_tab2"):
+                                    with st.spinner("AI가 ERRC를 분석하고 조언을 제공하고 있습니다..."):
+                                        # 1. AI 평가 및 조언
+                                        evaluation_result = evaluate_custom_errc(
+                                            custom_errc,
+                                            f"회사명: {company_name_tab2}\n산업군: {industry_tab2}",
+                                            competitors_result['content'],
+                                            model_name_tab2
+                                        )
+                                        
+                                        if evaluation_result['success']:
+                                            st.success("✅ AI 평가 및 조언 완료")
+                                            
+                                            # 평가 결과 시각화
+                                            st.markdown("## 🤖 AI 평가 및 조언")
+                                            evaluation_data = parse_evaluation_json(evaluation_result['content'])
+                                            if evaluation_data:
+                                                display_evaluation_results(evaluation_data)
+                                            else:
+                                                st.markdown(evaluation_result['content'])
+                                            
+                                            # 2. 전략 캔버스 생성
+                                            with st.spinner("전략 캔버스를 생성하고 있습니다..."):
+                                                if auto_generate_canvas:
+                                                    # AI 조언 기반 전략 캔버스 생성
+                                                    canvas_result = create_strategy_canvas(
+                                                        evaluation_result['content'],  # AI 평가 결과를 기반으로
+                                                        f"회사명: {company_name_tab2}\n산업군: {industry_tab2}",
+                                                        competitors_result['content'],
+                                                        model_name_tab2
+                                                    )
+                                                else:
+                                                    # 작성자 ERRC 기반 전략 캔버스 생성
+                                                    canvas_result = create_strategy_canvas(
+                                                        custom_errc,  # 작성자 ERRC를 기반으로
+                                                        f"회사명: {company_name_tab2}\n산업군: {industry_tab2}",
+                                                        competitors_result['content'],
+                                                        model_name_tab2
+                                                    )
+                                                
+                                                if canvas_result['success']:
+                                                    st.success("✅ 전략 캔버스 생성 완료")
+                                                    st.markdown("## 📊 전략 캔버스")
+                                                    
+                                                    # 전략 캔버스 시각화
+                                                    canvas_data = parse_canvas_json(canvas_result['content'])
+                                                    if canvas_data:
+                                                        create_strategy_canvas_plotly(canvas_data)
+                                                    else:
+                                                        st.markdown(canvas_result['content'])
+                                                else:
+                                                    st.error(f"❌ 전략 캔버스 생성 실패: {canvas_result['error']}")
+                                            
+                                            # 3. 결과 저장
+                                            analysis_date = datetime.now()
+                                            save_success, analysis_id = save_errc_analysis(
+                                                company_name_tab2,
+                                                industry_tab2,
+                                                f"직접 작성된 회사 정보: {company_name_tab2}",
+                                                competitors_result['content'],
+                                                evaluation_result['content'],  # AI 평가 결과 저장
+                                                canvas_result['content'] if canvas_result['success'] else "전략 캔버스 생성 실패"
+                                            )
+                                            if save_success:
+                                                st.success(f"✅ 분석 결과가 저장되었습니다. (ID: {analysis_id})")
+                                            else:
+                                                st.warning("⚠️ 분석 결과 저장에 실패했습니다.")
+                                        else:
+                                            st.error(f"❌ AI 평가 실패: {evaluation_result['error']}")
+                                
+                                # 직접 작성된 ERRC 표시
+                                st.markdown("## 🔵 직접 작성된 ERRC")
+                                st.markdown(custom_errc)
+                                
+                                # 새로운 분석 시작 버튼
+                                if st.button("🔄 새로운 분석 시작", key="new_analysis_tab2"):
+                                    st.rerun()
+                            else:
+                                st.error(f"❌ 경쟁사 정보 조사 실패: {competitors_result['error']}")
+                else:
+                    st.warning("⚠️ 회사 정보와 ERRC 항목을 입력해주세요.")
+            else:
+                st.error("❌ Perplexity API 키가 유효하지 않습니다.")
+        else:
+            st.error("❌ Perplexity API 키가 필요합니다.")
+    
+    with tab3:
+        st.header("📊 저장된 ERRC 분석 조회")
+        
+        # 저장된 분석 목록 가져오기
+        saved_analyses = get_saved_errc_analyses()
+        
+        if saved_analyses:
+            for analysis in saved_analyses:
+                # 상세보기 상태를 세션에 저장
+                if f"show_errc_detail_{analysis['analysis_id']}" not in st.session_state:
+                    st.session_state[f"show_errc_detail_{analysis['analysis_id']}"] = False
+                
+                # 상세보기가 활성화된 경우 전체 화면으로 표시
+                if st.session_state[f"show_errc_detail_{analysis['analysis_id']}"]:
+                    # 전체 화면 상세보기
+                    st.markdown("---")
+                    st.markdown("## 📊 **전체 화면 ERRC 분석**")
+                    
+                    # 분석 정보 요약
+                    col_info1, col_info2, col_info3 = st.columns(3)
+                    with col_info1:
+                        st.metric("분석 ID", analysis['analysis_id'])
+                        st.metric("회사명", analysis['company_name'])
+                    with col_info2:
+                        st.metric("산업군", analysis['industry'])
+                        st.metric("분석 날짜", analysis['analysis_date'].strftime('%Y-%m-%d %H:%M'))
+                    with col_info3:
+                        st.metric("ERRC 분석", "✅ 완료" if analysis['errc_analysis_content'] else "❌ 없음")
+                        st.metric("전략 캔버스", "✅ 완료" if analysis['strategy_canvas_content'] else "❌ 없음")
+                    
+                    # 탭으로 구분하여 표시
+                    tab_errc, tab_canvas = st.tabs(["🔵 ERRC 분석", "📊 전략 캔버스"])
+                    
+                    with tab_errc:
+                        st.markdown("### 🔵 **ERRC 분석 결과**")
+                        if analysis['errc_analysis_content']:
+                            # ERRC JSON 파싱 및 사분면 테이블 표시
+                            errc_data = parse_errc_json(analysis['errc_analysis_content'])
+                            if errc_data:
+                                display_errc_quadrant_table(errc_data)
+                            else:
+                                st.markdown(analysis['errc_analysis_content'])
+                        else:
+                            st.info("ERRC 분석 결과가 없습니다.")
+                    
+                    with tab_canvas:
+                        st.markdown("### 📊 **전략 캔버스**")
+                        if analysis['strategy_canvas_content']:
+                            # 전략 캔버스 JSON 파싱 및 plotly 시각화
+                            canvas_data = parse_canvas_json(analysis['strategy_canvas_content'])
+                            if canvas_data:
+                                create_strategy_canvas_plotly(canvas_data)
+                            else:
+                                st.markdown(analysis['strategy_canvas_content'])
+                        else:
+                            st.info("전략 캔버스가 없습니다.")
+                    
+                    # 닫기 버튼
+                    if st.button("❌ 상세보기 닫기", key=f"close_errc_detail_{analysis['analysis_id']}"):
+                        st.session_state[f"show_errc_detail_{analysis['analysis_id']}"] = False
+                        st.rerun()
+                
+                else:
+                    # 일반 목록 표시
+                    with st.expander(f"📄 {analysis['company_name']} - {analysis['analysis_date']}", expanded=False):
+                        col1, col2 = st.columns([3, 1])
+                        
+                        with col1:
+                            st.write(f"**회사명:** {analysis['company_name']}")
+                            st.write(f"**산업군:** {analysis['industry']}")
+                            st.write(f"**분석 날짜:** {analysis['analysis_date'].strftime('%Y-%m-%d %H:%M')}")
+                            st.write(f"**ERRC 분석:** {'✅ 완료' if analysis['errc_analysis_content'] else '❌ 없음'}")
+                            st.write(f"**전략 캔버스:** {'✅ 완료' if analysis['strategy_canvas_content'] else '❌ 없음'}")
+                            
+                        with col2:
+                            detail_btn = st.button("📋 상세보기", key=f"errc_detail_{analysis['analysis_id']}")
+                            
+                            if detail_btn:
+                                st.session_state[f"show_errc_detail_{analysis['analysis_id']}"] = True
+                                st.rerun()
+                        
+                        # 삭제 기능
+                        st.markdown("### ⚠️ 분석 관리")
+                        delete_button_key = f"delete_errc_button_{analysis['analysis_id']}"
+                        
+                        # 삭제 확인을 위한 체크박스
+                        confirm_delete = st.checkbox(f"삭제 확인", key=f"confirm_errc_{analysis['analysis_id']}")
+                        
+                        if confirm_delete:
+                            if st.button("🗑️ 분석 삭제", key=delete_button_key, type="primary", use_container_width=True):
+                                if delete_errc_analysis(analysis['analysis_id']):
+                                    st.success("✅ 분석이 성공적으로 삭제되었습니다.")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ 분석 삭제에 실패했습니다.")
+                        else:
+                            st.button("🗑️ 분석 삭제", key=delete_button_key, disabled=True, use_container_width=True)
+                            st.caption("삭제하려면 먼저 '삭제 확인' 체크박스를 선택하세요.")
+        else:
+            st.info("저장된 ERRC 분석이 없습니다.")
+
+if __name__ == "__main__":
+    main() 
